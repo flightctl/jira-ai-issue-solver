@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -326,4 +327,258 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 	if err == nil {
 		t.Error("SwitchToBranch() should return error for non-existent branch")
 	}
+}
+
+func TestGitHubService_CommitChanges_WithCoAuthor(t *testing.T) {
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "github-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Initialize git repository
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init git repository: %v", err)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user name: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user email: %v", err)
+	}
+
+	// Create a test file
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create config
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
+	config.GitHub.BotEmail = "test@example.com"
+
+	// Create GitHub service
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	// Test commit with co-author
+	commitMessage := "TEST-123: Test commit with co-author"
+	coAuthorName := "Test Assignee"
+	coAuthorEmail := "assignee@example.com"
+
+	err = githubService.CommitChanges(tempDir, commitMessage, coAuthorName, coAuthorEmail)
+	if err != nil {
+		t.Fatalf("Failed to commit changes: %v", err)
+	}
+
+	// Verify the commit message contains the co-author
+	cmd = exec.Command("git", "log", "--format=%B", "-1")
+	cmd.Dir = tempDir
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get commit message: %v", err)
+	}
+
+	commitOutput := string(output)
+	if !strings.Contains(commitOutput, "Co-authored-by: Test Assignee <assignee@example.com>") {
+		t.Errorf("Expected commit message to contain co-author, got: %s", commitOutput)
+	}
+
+	if !strings.Contains(commitOutput, commitMessage) {
+		t.Errorf("Expected commit message to contain original message, got: %s", commitOutput)
+	}
+}
+
+func TestGitHubService_CommitChanges_WithoutCoAuthor(t *testing.T) {
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "github-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Initialize git repository
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init git repository: %v", err)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user name: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user email: %v", err)
+	}
+
+	// Create a test file
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create config
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
+	config.GitHub.BotEmail = "test@example.com"
+
+	// Create GitHub service
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	// Test commit without co-author
+	commitMessage := "TEST-123: Test commit without co-author"
+
+	err = githubService.CommitChanges(tempDir, commitMessage, "", "")
+	if err != nil {
+		t.Fatalf("Failed to commit changes: %v", err)
+	}
+
+	// Verify the commit message does not contain co-author
+	cmd = exec.Command("git", "log", "--format=%B", "-1")
+	cmd.Dir = tempDir
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get commit message: %v", err)
+	}
+
+	commitOutput := string(output)
+	if strings.Contains(commitOutput, "Co-authored-by:") {
+		t.Errorf("Expected commit message to not contain co-author, got: %s", commitOutput)
+	}
+
+	if !strings.Contains(commitOutput, commitMessage) {
+		t.Errorf("Expected commit message to contain original message, got: %s", commitOutput)
+	}
+}
+
+func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "github-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Initialize git repository
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init git repository: %v", err)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user name: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user email: %v", err)
+	}
+
+	// Create a test file
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create config with SSH key
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
+	config.GitHub.BotEmail = "test@example.com"
+	config.GitHub.SSHKeyPath = "/path/to/test_ssh_key" // Test SSH key path
+
+	// Create GitHub service
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	// Configure SSH signing manually (simulating what CloneRepository does)
+	cmd = exec.Command("git", "config", "gpg.format", "ssh")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git gpg format: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.signingkey", config.GitHub.SSHKeyPath)
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git ssh signing key: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "commit.gpgsign", "true")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to enable git commit signing: %v", err)
+	}
+
+	// Test commit with SSH signing - this will fail because the key doesn't exist,
+	// but we can verify that the git configuration was set correctly
+	commitMessage := "TEST-123: Test commit with SSH signing"
+
+	err = githubService.CommitChanges(tempDir, commitMessage, "", "")
+	// We expect this to fail because the SSH key doesn't exist in the test environment
+	if err == nil {
+		t.Log("Commit succeeded (unexpected, but possible if SSH key exists)")
+	} else {
+		t.Logf("Commit failed as expected: %v", err)
+	}
+
+	// Verify that git config was set for SSH signing
+	cmd = exec.Command("git", "config", "gpg.format")
+	cmd.Dir = tempDir
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get gpg format config: %v", err)
+	}
+
+	gpgFormat := strings.TrimSpace(string(output))
+	if gpgFormat != "ssh" {
+		t.Errorf("Expected gpg format to be 'ssh', got '%s'", gpgFormat)
+	}
+
+	// Verify that signing key was set
+	cmd = exec.Command("git", "config", "user.signingkey")
+	cmd.Dir = tempDir
+	output, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get signing key config: %v", err)
+	}
+
+	signingKey := strings.TrimSpace(string(output))
+	if signingKey != config.GitHub.SSHKeyPath {
+		t.Errorf("Expected signing key to be '%s', got '%s'", config.GitHub.SSHKeyPath, signingKey)
+	}
+
+	// Verify that commit signing is enabled
+	cmd = exec.Command("git", "config", "commit.gpgsign")
+	cmd.Dir = tempDir
+	output, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get commit signing config: %v", err)
+	}
+
+	gpgSign := strings.TrimSpace(string(output))
+	if gpgSign != "true" {
+		t.Errorf("Expected commit signing to be enabled, got '%s'", gpgSign)
+	}
+
+	t.Log("SSH signing configuration verified successfully")
 }

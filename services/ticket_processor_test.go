@@ -95,7 +95,7 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 	var capturedHead, capturedCommitMessage, capturedPRTitle string
 
 	mockGitHub := &mocks.MockGitHubService{
-		CommitChangesFunc: func(directory, message string) error {
+		CommitChangesFunc: func(directory, message string, coAuthorName, coAuthorEmail string) error {
 			capturedCommitMessage = message
 			return nil
 		},

@@ -25,7 +25,7 @@ type GitHubService interface {
 	CreateBranch(directory, branchName string) error
 
 	// CommitChanges commits changes to a local repository
-	CommitChanges(directory, message string) error
+	CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error
 
 	// PushChanges pushes changes to a remote repository
 	PushChanges(directory, branchName string) error
@@ -164,6 +164,29 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 		return fmt.Errorf("failed to configure git user email: %w", err)
 	}
 
+	// Configure SSH signing if a key is specified
+	if s.config.GitHub.SSHKeyPath != "" {
+		cmd = s.executor("git", "config", "gpg.format", "ssh")
+		cmd.Dir = directory
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to configure git gpg format: %w", err)
+		}
+
+		cmd = s.executor("git", "config", "user.signingkey", s.config.GitHub.SSHKeyPath)
+		cmd.Dir = directory
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to configure git ssh signing key: %w", err)
+		}
+
+		cmd = s.executor("git", "config", "commit.gpgsign", "true")
+		cmd.Dir = directory
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to enable git commit signing: %w", err)
+		}
+
+		s.logger.Info("Configured SSH signing for repository", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
+	}
+
 	// Configure git to use the GitHub token for authentication
 	// This prevents credential prompts during push operations
 	cmd = s.executor("git", "config", "credential.helper", "store")
@@ -274,7 +297,7 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 }
 
 // CommitChanges commits changes to a local repository
-func (s *GitHubServiceImpl) CommitChanges(directory, message string) error {
+func (s *GitHubServiceImpl) CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error {
 	// Add all changes
 	cmd := s.executor("git", "add", ".")
 	cmd.Dir = directory
@@ -302,8 +325,14 @@ func (s *GitHubServiceImpl) CommitChanges(directory, message string) error {
 		return nil
 	}
 
-	// Commit changes
-	cmd = s.executor("git", "commit", "-m", message)
+	// Build commit message with optional co-author
+	commitMessage := message
+	if coAuthorName != "" && coAuthorEmail != "" {
+		commitMessage = fmt.Sprintf("%s\n\nCo-authored-by: %s <%s>", message, coAuthorName, coAuthorEmail)
+	}
+
+	// Commit changes (SSH signing is handled by git config)
+	cmd = s.executor("git", "commit", "-m", commitMessage)
 	cmd.Dir = directory
 
 	stderr.Reset()

@@ -8,7 +8,7 @@ import (
 type MockGitHubService struct {
 	CloneRepositoryFunc      func(repoURL, directory string) error
 	CreateBranchFunc         func(directory, branchName string) error
-	CommitChangesFunc        func(directory, message string) error
+	CommitChangesFunc        func(directory, message string, coAuthorName, coAuthorEmail string) error
 	PushChangesFunc          func(directory, branchName string) error
 	CreatePullRequestFunc    func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error)
 	ForkRepositoryFunc       func(owner, repo string) (string, error)
@@ -41,9 +41,9 @@ func (m *MockGitHubService) CreateBranch(directory, branchName string) error {
 }
 
 // CommitChanges is the mock implementation of GitHubService's CommitChanges method
-func (m *MockGitHubService) CommitChanges(directory, message string) error {
+func (m *MockGitHubService) CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error {
 	if m.CommitChangesFunc != nil {
-		return m.CommitChangesFunc(directory, message)
+		return m.CommitChangesFunc(directory, message, coAuthorName, coAuthorEmail)
 	}
 	return nil
 }

@@ -222,8 +222,15 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
+	// Get assignee info for co-author
+	var coAuthorName, coAuthorEmail string
+	if ticket.Fields.Assignee != nil {
+		coAuthorName = ticket.Fields.Assignee.DisplayName
+		coAuthorEmail = ticket.Fields.Assignee.EmailAddress
+	}
+
 	// Commit the changes
-	err = p.githubService.CommitChanges(repoDir, fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary))
+	err = p.githubService.CommitChanges(repoDir, fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary), coAuthorName, coAuthorEmail)
 	if err != nil {
 		p.logger.Error("Failed to commit changes",
 			zap.String("ticket", ticketKey),

@@ -27,6 +27,7 @@ github:
   bot_email: ai-bot@your-org.com
   target_branch: main
   pr_label: ai-pr
+  # ssh_key_path: "/path/to/ssh_signing_key"  # Optional: Path to SSH private key for commit signing
 
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude

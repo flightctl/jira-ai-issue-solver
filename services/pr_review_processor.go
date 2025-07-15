@@ -295,9 +295,17 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 		return fmt.Errorf("failed to generate code fixes: %w", err)
 	}
 
+	// Get ticket details to get assignee info for co-author
+	ticket, err := p.jiraService.GetTicket(ticketKey)
+	var coAuthorName, coAuthorEmail string
+	if err == nil && ticket.Fields.Assignee != nil {
+		coAuthorName = ticket.Fields.Assignee.DisplayName
+		coAuthorEmail = ticket.Fields.Assignee.EmailAddress
+	}
+
 	// Commit the changes
 	commitMessage := fmt.Sprintf("%s: Apply PR feedback fixes", ticketKey)
-	err = p.githubService.CommitChanges(repoDir, commitMessage)
+	err = p.githubService.CommitChanges(repoDir, commitMessage, coAuthorName, coAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to commit changes: %w", err)
 	}

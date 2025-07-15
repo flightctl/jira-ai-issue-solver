@@ -124,6 +124,7 @@ type Config struct {
 		BotEmail            string `yaml:"bot_email"`
 		TargetBranch        string `yaml:"target_branch" default:"main"`
 		PRLabel             string `yaml:"pr_label" default:"ai-pr"`
+		SSHKeyPath          string `yaml:"ssh_key_path"` // Path to SSH private key for commit signing
 	} `yaml:"github"`
 
 	// AI Provider selection

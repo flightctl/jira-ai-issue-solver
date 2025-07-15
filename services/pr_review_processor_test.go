@@ -118,16 +118,10 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 }
 
 func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
-		config: &models.Config{
-			GitHub: struct {
-				PersonalAccessToken string `yaml:"personal_access_token"`
-				BotUsername         string `yaml:"bot_username"`
-				BotEmail            string `yaml:"bot_email"`
-				TargetBranch        string `yaml:"target_branch" default:"main"`
-				PRLabel             string `yaml:"pr_label" default:"ai-pr"`
-			}{BotUsername: "ai-bot"},
-		},
+		config: config,
 	}
 
 	pr := &models.GitHubPRDetails{
@@ -233,17 +227,8 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 }
 
 func TestPRReviewProcessor_GetRepositoryURLFromPR(t *testing.T) {
-	config := &models.Config{
-		GitHub: struct {
-			PersonalAccessToken string `yaml:"personal_access_token"`
-			BotUsername         string `yaml:"bot_username"`
-			BotEmail            string `yaml:"bot_email"`
-			TargetBranch        string `yaml:"target_branch" default:"main"`
-			PRLabel             string `yaml:"pr_label" default:"ai-pr"`
-		}{
-			BotUsername: "test-bot",
-		},
-	}
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
 
 	processor := &PRReviewProcessorImpl{
 		config: config,
@@ -301,17 +286,11 @@ func TestPRReviewProcessor_GetLastProcessingTimestamp(t *testing.T) {
 			}, nil
 		},
 	}
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
 		githubService: mockGitHub,
-		config: &models.Config{
-			GitHub: struct {
-				PersonalAccessToken string `yaml:"personal_access_token"`
-				BotUsername         string `yaml:"bot_username"`
-				BotEmail            string `yaml:"bot_email"`
-				TargetBranch        string `yaml:"target_branch" default:"main"`
-				PRLabel             string `yaml:"pr_label" default:"ai-pr"`
-			}{BotUsername: "ai-bot"},
-		},
+		config:        config,
 	}
 	ts, err := processor.getLastProcessingTimestamp("owner", "repo", 1)
 	if err != nil {
@@ -349,17 +328,11 @@ func TestPRReviewProcessor_GetLastProcessingTimestamp_MultipleTimestamps(t *test
 			}, nil
 		},
 	}
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
 		githubService: mockGitHub,
-		config: &models.Config{
-			GitHub: struct {
-				PersonalAccessToken string `yaml:"personal_access_token"`
-				BotUsername         string `yaml:"bot_username"`
-				BotEmail            string `yaml:"bot_email"`
-				TargetBranch        string `yaml:"target_branch" default:"main"`
-				PRLabel             string `yaml:"pr_label" default:"ai-pr"`
-			}{BotUsername: "ai-bot"},
-		},
+		config:        config,
 	}
 	ts, err := processor.getLastProcessingTimestamp("owner", "repo", 1)
 	if err != nil {
@@ -382,17 +355,11 @@ func TestPRReviewProcessor_UpdateProcessingTimestamp(t *testing.T) {
 			return nil
 		},
 	}
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
 		githubService: mockGitHub,
-		config: &models.Config{
-			GitHub: struct {
-				PersonalAccessToken string `yaml:"personal_access_token"`
-				BotUsername         string `yaml:"bot_username"`
-				BotEmail            string `yaml:"bot_email"`
-				TargetBranch        string `yaml:"target_branch" default:"main"`
-				PRLabel             string `yaml:"pr_label" default:"ai-pr"`
-			}{BotUsername: "ai-bot"},
-		},
+		config:        config,
 	}
 	err := processor.updateProcessingTimestamp("owner", "repo", 1, "TEST-123")
 	if err != nil {
@@ -404,16 +371,10 @@ func TestPRReviewProcessor_UpdateProcessingTimestamp(t *testing.T) {
 }
 
 func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
-		config: &models.Config{
-			GitHub: struct {
-				PersonalAccessToken string `yaml:"personal_access_token"`
-				BotUsername         string `yaml:"bot_username"`
-				BotEmail            string `yaml:"bot_email"`
-				TargetBranch        string `yaml:"target_branch" default:"main"`
-				PRLabel             string `yaml:"pr_label" default:"ai-pr"`
-			}{BotUsername: "ai-bot"},
-		},
+		config: config,
 	}
 
 	baseTime := time.Date(2024, 7, 10, 12, 0, 0, 0, time.UTC)

@@ -157,6 +157,34 @@ The `github` section contains GitHub-specific settings:
 - `bot_username`: The username of the GitHub bot account
 - `bot_email`: The email address for the GitHub bot account
 - `target_branch`: The target branch for pull requests (default: "main"). This allows you to create PRs against a specific branch for testing purposes. For example, you can set this to "develop" or "staging" to test changes before merging to main.
+- `ssh_key_path`: Path to SSH private key for commit signing (optional). When set, commits will be signed using SSH keys for enhanced security.
+
+#### SSH Commit Signing Setup
+
+To enable SSH commit signing for the bot:
+
+1. **Generate SSH Key for Signing** (separate from authentication keys):
+   ```bash
+   ssh-keygen -t ed25519 -C "bot@your-org.com" -f ~/.ssh/git_signing_key
+   ```
+
+2. **Add Public Key to GitHub**:
+   - Copy the public key: `cat ~/.ssh/git_signing_key.pub`
+   - Go to GitHub Settings → SSH and GPG keys → New SSH key
+   - Paste the public key and give it a descriptive name like "Bot Signing Key"
+
+3. **Configure in Bot**:
+   ```yaml
+   github:
+     ssh_key_path: "/path/to/git_signing_key"
+   ```
+
+4. **Verify Signing**:
+   ```bash
+   git log --show-signature
+   ```
+
+**Note**: SSH signing requires Git 2.34+ and is the recommended approach for modern Git workflows.
 
 ### Component Mapping
 

@@ -46,3 +46,9 @@ logs/
 .env.local
 .env.*.local 
 config.yaml
+jira-ai-issue-solver
+
+# SSH keys and sensitive files
+.ssh/
+*.pem
+*.key
