@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 
 	"jira-ai-issue-solver/mocks"
@@ -87,12 +88,13 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 	config.GitHub.PRLabel = "ai-pr"
 	config.TempDir = "/tmp"
 	config.Jira.DisableErrorComments = true
+	config.Jira.BaseURL = "https://your-domain.atlassian.net"
 	config.ComponentToRepo = map[string]string{
 		"frontend": "https://github.com/example/frontend.git",
 	}
 
 	// Create mock services with captured values
-	var capturedHead, capturedCommitMessage, capturedPRTitle string
+	var capturedHead, capturedCommitMessage, capturedPRTitle, capturedPRBody string
 
 	mockGitHub := &mocks.MockGitHubService{
 		CommitChangesFunc: func(directory, message string, coAuthorName, coAuthorEmail string) error {
@@ -102,6 +104,7 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
 			capturedHead = head
 			capturedPRTitle = title
+			capturedPRBody = body
 			return &models.GitHubCreatePRResponse{
 				ID:      1,
 				Number:  1,
@@ -164,6 +167,107 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 	expectedPRTitle := "TEST-123: Test ticket"
 	if capturedPRTitle != expectedPRTitle {
 		t.Errorf("Expected PR title to be '%s', got '%s'", expectedPRTitle, capturedPRTitle)
+	}
+
+	// Verify that the PR body contains the expected format
+	expectedPRBodyContains := "This PR addresses the issue described in [TEST-123]"
+	if !strings.Contains(capturedPRBody, expectedPRBodyContains) {
+		t.Errorf("Expected PR body to contain '%s', got '%s'", expectedPRBodyContains, capturedPRBody)
+	}
+
+	// Verify that the PR body contains the Jira URL
+	expectedJiraURL := "https://your-domain.atlassian.net/browse/TEST-123"
+	if !strings.Contains(capturedPRBody, expectedJiraURL) {
+		t.Errorf("Expected PR body to contain Jira URL '%s', got '%s'", expectedJiraURL, capturedPRBody)
+	}
+}
+
+func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Test that the PR description includes assignee information when available
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
+	config.GitHub.BotEmail = "test@example.com"
+	config.GitHub.PersonalAccessToken = "test-token"
+	config.GitHub.PRLabel = "ai-pr"
+	config.TempDir = "/tmp"
+	config.Jira.DisableErrorComments = true
+	config.Jira.BaseURL = "https://your-domain.atlassian.net"
+	config.ComponentToRepo = map[string]string{
+		"frontend": "https://github.com/example/frontend.git",
+	}
+
+	// Create mock services with captured values
+	var capturedPRBody string
+
+	mockGitHub := &mocks.MockGitHubService{
+		CommitChangesFunc: func(directory, message string, coAuthorName, coAuthorEmail string) error {
+			return nil
+		},
+		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
+			capturedPRBody = body
+			return &models.GitHubCreatePRResponse{
+				ID:      1,
+				Number:  1,
+				State:   "open",
+				Title:   title,
+				Body:    body,
+				HTMLURL: "https://github.com/example/repo/pull/1",
+			}, nil
+		},
+		ForkRepositoryFunc: func(owner, repo string) (string, error) {
+			return "https://github.com/test-bot/repo.git", nil
+		},
+		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
+			return true, "https://github.com/test-bot/repo.git", nil
+		},
+	}
+	mockJira := &mocks.MockJiraService{
+		GetTicketFunc: func(key string) (*models.JiraTicketResponse, error) {
+			return &models.JiraTicketResponse{
+				Key: key,
+				Fields: models.JiraFields{
+					Summary:     "Test ticket with assignee",
+					Description: "Test description",
+					Assignee: &models.JiraUser{
+						DisplayName:  "John Doe",
+						EmailAddress: "john.doe@example.com",
+					},
+					Components: []models.JiraComponent{
+						{
+							ID:   "1",
+							Name: "frontend",
+						},
+					},
+				},
+			}, nil
+		},
+		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
+			return "customfield_10001", nil
+		},
+	}
+	mockAI := &mocks.MockClaudeService{}
+
+	processor := NewTicketProcessor(mockJira, mockGitHub, mockAI, config, logger)
+
+	// Process a ticket
+	err := processor.ProcessTicket("TEST-456")
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Verify that the PR body contains assignee information
+	expectedAssigneeInfo := "**Assignee:** John Doe (john.doe@example.com)"
+	if !strings.Contains(capturedPRBody, expectedAssigneeInfo) {
+		t.Errorf("Expected PR body to contain assignee info '%s', got '%s'", expectedAssigneeInfo, capturedPRBody)
+	}
+
+	// Verify that the PR body contains the Jira URL
+	expectedJiraURL := "https://your-domain.atlassian.net/browse/TEST-456"
+	if !strings.Contains(capturedPRBody, expectedJiraURL) {
+		t.Errorf("Expected PR body to contain Jira URL '%s', got '%s'", expectedJiraURL, capturedPRBody)
 	}
 }
 

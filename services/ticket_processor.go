@@ -254,8 +254,15 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 
 	// Create a pull request
 	prTitle := fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary)
-	prBody := fmt.Sprintf("This PR addresses the issue described in %s.\n\n**Summary:** %s\n\n**Description:** %s",
-		ticketKey, ticket.Fields.Summary, ticket.Fields.Description)
+
+	// Build PR description with Jira ticket URL and assignee information
+	prBody := fmt.Sprintf("This PR addresses the issue described in [%s](%s/browse/%s).\n\n**Summary:** %s\n\n**Description:** %s",
+		ticketKey, p.config.Jira.BaseURL, ticketKey, ticket.Fields.Summary, ticket.Fields.Description)
+
+	// Add assignee information if available
+	if ticket.Fields.Assignee != nil {
+		prBody += fmt.Sprintf("\n\n**Assignee:** %s (%s)", ticket.Fields.Assignee.DisplayName, ticket.Fields.Assignee.EmailAddress)
+	}
 
 	// When creating a pull request from a fork, the head parameter should be in the format "forkOwner:branchName"
 	head := fmt.Sprintf("%s:%s", p.config.GitHub.BotUsername, branchName)
