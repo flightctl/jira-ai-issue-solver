@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  jira-ai-issue-solver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: localhost/jira-ai-issue-solver:latest
+    container_name: jira-ai-issue-solver
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount configuration file
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount temp directory for persistence
+      - jira_ai_temp:/app/temp
+    environment:
+      - TZ=UTC
+    restart: unless-stopped
+    # Podman-specific health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Security: run as non-root user
+    user: "1001:0"
+    # Resource limits (Podman format)
+    mem_limit: 512m
+    cpus: 0.5
+
+volumes:
+  jira_ai_temp: 

@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Test files
+*_test.go
+test-*.yaml
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+/tmp
+*.tmp
+
+# Docker files
+Dockerfile*
+.dockerignore
+
+# Build artifacts
+jira-ai-issue-solver
+
+# Mocks (not needed in production)
+mocks/
+
+# Development configs
+test-config.yaml
+
+# Configuration files (should use environment variables instead)
+config.yaml
+config.example.yaml
+.env
+*.env 

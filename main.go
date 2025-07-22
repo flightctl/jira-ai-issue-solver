@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -77,7 +78,7 @@ func getLogLevel(level models.LogLevel) zapcore.Level {
 
 func main() {
 	// Parse command line flags
-	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	configPath := flag.String("config", "", "Path to configuration file (optional, uses environment variables by default)")
 	flag.Parse()
 
 	// Load configuration
@@ -93,31 +94,37 @@ func main() {
 	defer Logger.Sync()
 
 	// Validate required configuration
-	if config.Jira.BaseURL == "" {
-		Logger.Fatal("JIRA_BASE_URL is required")
-	}
-	if config.Jira.Username == "" {
-		Logger.Fatal("JIRA_USERNAME is required")
-	}
-	if config.Jira.APIToken == "" {
-		Logger.Fatal("JIRA_API_TOKEN is required")
-	}
-	if config.GitHub.PersonalAccessToken == "" {
-		Logger.Fatal("GITHUB_PERSONAL_ACCESS_TOKEN is required")
-	}
-	if config.GitHub.BotUsername == "" {
-		Logger.Fatal("GITHUB_BOT_USERNAME is required")
-	}
-	if config.GitHub.BotEmail == "" {
-		Logger.Fatal("GITHUB_BOT_EMAIL is required")
-	}
 	if len(config.ComponentToRepo) == 0 {
 		Logger.Fatal("At least one component_to_repo mapping is required")
 	}
 
-	// Create services
-	jiraService := services.NewJiraService(config)
-	githubService := services.NewGitHubService(config, Logger)
+	// Check if Jira configuration is provided
+	if config.Jira.BaseURL == "" || config.Jira.Username == "" || config.Jira.APIToken == "" {
+		Logger.Warn("Jira configuration not provided - Jira services will be disabled")
+	}
+
+	// Check if GitHub configuration is provided
+	if config.GitHub.PersonalAccessToken == "" || config.GitHub.BotUsername == "" || config.GitHub.BotEmail == "" {
+		Logger.Warn("GitHub configuration not provided - GitHub services will be disabled")
+	}
+
+	// Create services (only if configuration is provided)
+	var jiraService services.JiraService
+	var githubService services.GitHubService
+
+	if config.Jira.BaseURL != "" && config.Jira.Username != "" && config.Jira.APIToken != "" {
+		jiraService = services.NewJiraService(config)
+		Logger.Info("Jira service initialized")
+	} else {
+		Logger.Info("Jira service disabled - configuration not provided")
+	}
+
+	if config.GitHub.PersonalAccessToken != "" && config.GitHub.BotUsername != "" && config.GitHub.BotEmail != "" {
+		githubService = services.NewGitHubService(config, Logger)
+		Logger.Info("GitHub service initialized")
+	} else {
+		Logger.Info("GitHub service disabled - configuration not provided")
+	}
 
 	// Create AI service based on provider selection
 	var aiService services.AIService
@@ -132,16 +139,24 @@ func main() {
 		Logger.Fatal("Unsupported AI provider", zap.String("provider", config.AIProvider))
 	}
 
-	jiraIssueScannerService := services.NewJiraIssueScannerService(jiraService, githubService, aiService, config, Logger)
-	prFeedbackScannerService := services.NewPRFeedbackScannerService(jiraService, githubService, aiService, config, Logger)
+	// Only create scanner services if both Jira and GitHub are configured
+	var jiraIssueScannerService services.JiraIssueScannerService
+	var prFeedbackScannerService services.PRFeedbackScannerService
 
-	// Start the Jira issue scanner service for periodic ticket scanning
-	Logger.Info("Starting Jira issue scanner service...")
-	jiraIssueScannerService.Start()
+	if jiraService != nil && githubService != nil {
+		jiraIssueScannerService = services.NewJiraIssueScannerService(jiraService, githubService, aiService, config, Logger)
+		prFeedbackScannerService = services.NewPRFeedbackScannerService(jiraService, githubService, aiService, config, Logger)
 
-	// Start the PR feedback scanner service for processing PR review feedback
-	Logger.Info("Starting PR feedback scanner service...")
-	prFeedbackScannerService.Start()
+		// Start the Jira issue scanner service for periodic ticket scanning
+		Logger.Info("Starting Jira issue scanner service...")
+		jiraIssueScannerService.Start()
+
+		// Start the PR feedback scanner service for processing PR review feedback
+		Logger.Info("Starting PR feedback scanner service...")
+		prFeedbackScannerService.Start()
+	} else {
+		Logger.Info("Scanner services disabled - Jira or GitHub configuration not provided")
+	}
 
 	// Create HTTP server (simplified for health checks only)
 	mux := http.NewServeMux()
@@ -155,15 +170,23 @@ func main() {
 		}
 	})
 
+	// Get port from environment variable (for Cloud Run compatibility) or config
+	port := config.Server.Port
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if envPortInt, err := strconv.Atoi(envPort); err == nil {
+			port = envPortInt
+		}
+	}
+
 	// Create server
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", config.Server.Port),
+		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
 	}
 
 	// Start the server in a goroutine
 	go func() {
-		Logger.Info("Starting server", zap.Int("port", config.Server.Port))
+		Logger.Info("Starting server", zap.Int("port", port))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			Logger.Fatal("Server error", zap.Error(err))
 		}
@@ -176,8 +199,12 @@ func main() {
 
 	// Gracefully shutdown the scanner services
 	Logger.Info("Shutting down scanner services...")
-	jiraIssueScannerService.Stop()
-	prFeedbackScannerService.Stop()
+	if jiraIssueScannerService != nil {
+		jiraIssueScannerService.Stop()
+	}
+	if prFeedbackScannerService != nil {
+		prFeedbackScannerService.Stop()
+	}
 
 	// Gracefully shutdown the server
 	Logger.Info("Shutting down server...")

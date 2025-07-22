@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  jira-ai-issue-solver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jira-ai-issue-solver:latest
+    container_name: jira-ai-issue-solver
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount configuration file
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount temp directory for persistence
+      - jira_ai_temp:/app/temp
+    environment:
+      # These can be overridden by creating a .env file
+      - TZ=UTC
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Security: run as non-root user (already set in Dockerfile)
+    user: "1001:0"
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+volumes:
+  jira_ai_temp:
+    driver: local 
