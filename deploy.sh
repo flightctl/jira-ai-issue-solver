@@ -180,9 +180,19 @@ parse_env_vars_from_config() {
     export JIRA_INTERVAL_SECONDS=$(yq eval '.jira.interval_seconds' config.yaml)
     export JIRA_DISABLE_ERROR_COMMENTS=$(yq eval '.jira.disable_error_comments' config.yaml)
     export JIRA_GIT_PULL_REQUEST_FIELD_NAME=$(yq eval '.jira.git_pull_request_field_name' config.yaml)
-    export JIRA_STATUS_TODO=$(yq eval '.jira.status_transitions.todo' config.yaml)
-    export JIRA_STATUS_IN_PROGRESS=$(yq eval '.jira.status_transitions.in_progress' config.yaml)
-    export JIRA_STATUS_IN_REVIEW=$(yq eval '.jira.status_transitions.in_review' config.yaml)
+    # Handle ticket-type-specific status transitions
+    # We'll use environment variables for simple values and create a config file for complex structures
+    # For now, let's use a simpler approach with individual environment variables for each ticket type
+    # This is a temporary solution until we can properly handle the JSON structure
+    export JIRA_STATUS_TRANSITIONS_BUG_TODO=$(yq eval '.jira.status_transitions.Bug.todo' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_BUG_IN_PROGRESS=$(yq eval '.jira.status_transitions.Bug.in_progress' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_BUG_IN_REVIEW=$(yq eval '.jira.status_transitions.Bug.in_review' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_STORY_TODO=$(yq eval '.jira.status_transitions.Story.todo' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_STORY_IN_PROGRESS=$(yq eval '.jira.status_transitions.Story.in_progress' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_STORY_IN_REVIEW=$(yq eval '.jira.status_transitions.Story.in_review' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_TASK_TODO=$(yq eval '.jira.status_transitions.Task.todo' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_TASK_IN_PROGRESS=$(yq eval '.jira.status_transitions.Task.in_progress' config.yaml)
+    export JIRA_STATUS_TRANSITIONS_TASK_IN_REVIEW=$(yq eval '.jira.status_transitions.Task.in_review' config.yaml)
     export GITHUB_BOT_USERNAME=$(yq eval '.github.bot_username' config.yaml)
     export GITHUB_BOT_EMAIL=$(yq eval '.github.bot_email' config.yaml)
     export GITHUB_TARGET_BRANCH=$(yq eval '.github.target_branch' config.yaml)
@@ -235,9 +245,15 @@ deploy_to_cloud_run() {
         --set-env-vars="JIRA_AI_JIRA_INTERVAL_SECONDS=${JIRA_INTERVAL_SECONDS}" \
         --set-env-vars="JIRA_AI_JIRA_DISABLE_ERROR_COMMENTS=${JIRA_DISABLE_ERROR_COMMENTS}" \
         --set-env-vars="JIRA_AI_JIRA_GIT_PULL_REQUEST_FIELD_NAME=${JIRA_GIT_PULL_REQUEST_FIELD_NAME}" \
-        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_TODO=${JIRA_STATUS_TODO}" \
-        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_IN_PROGRESS=${JIRA_STATUS_IN_PROGRESS}" \
-        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_IN_REVIEW=${JIRA_STATUS_IN_REVIEW}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_BUG_TODO=${JIRA_STATUS_TRANSITIONS_BUG_TODO}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_BUG_IN_PROGRESS=${JIRA_STATUS_TRANSITIONS_BUG_IN_PROGRESS}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_BUG_IN_REVIEW=${JIRA_STATUS_TRANSITIONS_BUG_IN_REVIEW}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_STORY_TODO=${JIRA_STATUS_TRANSITIONS_STORY_TODO}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_STORY_IN_PROGRESS=${JIRA_STATUS_TRANSITIONS_STORY_IN_PROGRESS}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_STORY_IN_REVIEW=${JIRA_STATUS_TRANSITIONS_STORY_IN_REVIEW}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_TASK_TODO=${JIRA_STATUS_TRANSITIONS_TASK_TODO}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_TASK_IN_PROGRESS=${JIRA_STATUS_TRANSITIONS_TASK_IN_PROGRESS}" \
+        --set-env-vars="JIRA_AI_JIRA_STATUS_TRANSITIONS_TASK_IN_REVIEW=${JIRA_STATUS_TRANSITIONS_TASK_IN_REVIEW}" \
         --set-env-vars="JIRA_AI_GITHUB_BOT_USERNAME=${GITHUB_BOT_USERNAME}" \
         --set-env-vars="JIRA_AI_GITHUB_BOT_EMAIL=${GITHUB_BOT_EMAIL}" \
         --set-env-vars="JIRA_AI_GITHUB_TARGET_BRANCH=${GITHUB_TARGET_BRANCH}" \

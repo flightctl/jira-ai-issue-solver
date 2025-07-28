@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -206,6 +207,33 @@ func (t TicketTypeStatusTransitions) GetStatusTransitions(ticketType string) Sta
 func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) error {
 	*t = make(TicketTypeStatusTransitions)
 
+	// Handle string data (from environment variables as JSON)
+	if jsonStr, ok := data.(string); ok {
+		// Try to parse as JSON
+		var jsonData map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &jsonData); err != nil {
+			return fmt.Errorf("failed to parse status transitions JSON: %w", err)
+		}
+
+		// Convert JSON data to TicketTypeStatusTransitions
+		for ticketType, transitionData := range jsonData {
+			if transitionMap, ok := transitionData.(map[string]interface{}); ok {
+				transitions := StatusTransitions{}
+				if todo, ok := transitionMap["todo"].(string); ok {
+					transitions.Todo = todo
+				}
+				if inProgress, ok := transitionMap["in_progress"].(string); ok {
+					transitions.InProgress = inProgress
+				}
+				if inReview, ok := transitionMap["in_review"].(string); ok {
+					transitions.InReview = inReview
+				}
+				(*t)[ticketType] = transitions
+			}
+		}
+		return nil
+	}
+
 	// Handle the case where data is a map[string]interface{} (from mapstructure)
 	if mapData, ok := data.(map[string]interface{}); ok {
 		// Check if this is the old format (has todo, in_progress, in_review keys)
@@ -341,9 +369,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.BindEnv("jira.interval_seconds")
 	v.BindEnv("jira.disable_error_comments")
 	v.BindEnv("jira.git_pull_request_field_name")
-	v.BindEnv("jira.status_transitions.todo")
-	v.BindEnv("jira.status_transitions.in_progress")
-	v.BindEnv("jira.status_transitions.in_review")
+	v.BindEnv("jira.status_transitions")
 
 	// GitHub configuration
 	v.BindEnv("github.personal_access_token")
@@ -506,12 +532,70 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
-	// Validate configuration
+	// Fallback to individual environment variables for status transitions if still empty
+	if len(config.Jira.StatusTransitions) == 0 {
+		config.Jira.StatusTransitions = reconstructStatusTransitionsFromEnv(v)
+	}
+
+	// Validate configuration (after all fallbacks have been applied)
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
 
 	return &config, nil
+}
+
+// reconstructStatusTransitionsFromEnv reconstructs status transitions from individual environment variables
+// This is used as a fallback when the JSON approach doesn't work in deployment
+func reconstructStatusTransitionsFromEnv(v *viper.Viper) TicketTypeStatusTransitions {
+	result := make(TicketTypeStatusTransitions)
+
+	// Check for Bug ticket type
+	bugTransitions := StatusTransitions{}
+	if todo := v.GetString("jira.status_transitions_bug_todo"); todo != "" {
+		bugTransitions.Todo = todo
+	}
+	if inProgress := v.GetString("jira.status_transitions_bug_in_progress"); inProgress != "" {
+		bugTransitions.InProgress = inProgress
+	}
+	if inReview := v.GetString("jira.status_transitions_bug_in_review"); inReview != "" {
+		bugTransitions.InReview = inReview
+	}
+	if bugTransitions.Todo != "" || bugTransitions.InProgress != "" || bugTransitions.InReview != "" {
+		result["Bug"] = bugTransitions
+	}
+
+	// Check for Story ticket type
+	storyTransitions := StatusTransitions{}
+	if todo := v.GetString("jira.status_transitions_story_todo"); todo != "" {
+		storyTransitions.Todo = todo
+	}
+	if inProgress := v.GetString("jira.status_transitions_story_in_progress"); inProgress != "" {
+		storyTransitions.InProgress = inProgress
+	}
+	if inReview := v.GetString("jira.status_transitions_story_in_review"); inReview != "" {
+		storyTransitions.InReview = inReview
+	}
+	if storyTransitions.Todo != "" || storyTransitions.InProgress != "" || storyTransitions.InReview != "" {
+		result["Story"] = storyTransitions
+	}
+
+	// Check for Task ticket type
+	taskTransitions := StatusTransitions{}
+	if todo := v.GetString("jira.status_transitions_task_todo"); todo != "" {
+		taskTransitions.Todo = todo
+	}
+	if inProgress := v.GetString("jira.status_transitions_task_in_progress"); inProgress != "" {
+		taskTransitions.InProgress = inProgress
+	}
+	if inReview := v.GetString("jira.status_transitions_task_in_review"); inReview != "" {
+		taskTransitions.InReview = inReview
+	}
+	if taskTransitions.Todo != "" || taskTransitions.InProgress != "" || taskTransitions.InReview != "" {
+		result["Task"] = taskTransitions
+	}
+
+	return result
 }
 
 // setDefaults sets all configuration defaults
@@ -526,9 +610,6 @@ func setDefaults(v *viper.Viper) {
 	// Jira defaults
 	v.SetDefault("jira.interval_seconds", 300)
 	v.SetDefault("jira.disable_error_comments", false)
-	v.SetDefault("jira.status_transitions.todo", "To Do")
-	v.SetDefault("jira.status_transitions.in_progress", "In Progress")
-	v.SetDefault("jira.status_transitions.in_review", "In Review")
 
 	// GitHub defaults
 	v.SetDefault("github.target_branch", "main")
@@ -575,37 +656,33 @@ func (c *Config) validate() error {
 		return errors.New("at least one component_to_repo mapping is required")
 	}
 
-	// Only validate Jira and GitHub configs if they're provided (for debugging flexibility)
-	if c.Jira.BaseURL != "" || c.Jira.Username != "" || c.Jira.APIToken != "" {
-		// If any Jira config is provided, validate all required fields
-		if c.Jira.BaseURL == "" {
-			return errors.New("jira.base_url is required when Jira configuration is provided")
-		}
-		if c.Jira.Username == "" {
-			return errors.New("jira.username is required when Jira configuration is provided")
-		}
-		if c.Jira.APIToken == "" {
-			return errors.New("jira.api_token is required when Jira configuration is provided")
-		}
+	// Validate Jira configuration (required for this application)
+	if c.Jira.BaseURL == "" {
+		return errors.New("jira.base_url is required")
+	}
+	if c.Jira.Username == "" {
+		return errors.New("jira.username is required")
+	}
+	if c.Jira.APIToken == "" {
+		return errors.New("jira.api_token is required")
+	}
 
-		// Validate status transitions if Jira is configured
-		// Check that every configured ticket type has all required status transitions
-		for ticketType, transitions := range c.Jira.StatusTransitions {
-			if transitions.Todo == "" {
-				return fmt.Errorf("jira.status_transitions.%s.todo cannot be empty", ticketType)
-			}
-			if transitions.InProgress == "" {
-				return fmt.Errorf("jira.status_transitions.%s.in_progress cannot be empty", ticketType)
-			}
-			if transitions.InReview == "" {
-				return fmt.Errorf("jira.status_transitions.%s.in_review cannot be empty", ticketType)
-			}
+	// Validate status transitions - every configured ticket type must have all required status transitions
+	for ticketType, transitions := range c.Jira.StatusTransitions {
+		if transitions.Todo == "" {
+			return fmt.Errorf("jira.status_transitions.%s.todo cannot be empty", ticketType)
 		}
+		if transitions.InProgress == "" {
+			return fmt.Errorf("jira.status_transitions.%s.in_progress cannot be empty", ticketType)
+		}
+		if transitions.InReview == "" {
+			return fmt.Errorf("jira.status_transitions.%s.in_review cannot be empty", ticketType)
+		}
+	}
 
-		// Ensure at least one ticket type is configured
-		if len(c.Jira.StatusTransitions) == 0 {
-			return errors.New("at least one ticket type must be configured in jira.status_transitions")
-		}
+	// Ensure at least one ticket type is configured
+	if len(c.Jira.StatusTransitions) == 0 {
+		return errors.New("at least one ticket type must be configured in jira.status_transitions")
 	}
 
 	if c.GitHub.PersonalAccessToken != "" || c.GitHub.BotUsername != "" || c.GitHub.BotEmail != "" {

@@ -98,11 +98,6 @@ func (s *JiraIssueScannerServiceImpl) buildTodoStatusJQL() string {
 
 	// Iterate through all configured ticket types and their status transitions
 	for ticketType, transitions := range s.config.Jira.StatusTransitions {
-		// Skip empty todo status
-		if transitions.Todo == "" {
-			continue
-		}
-
 		// Create condition for this ticket type and its todo status
 		condition := fmt.Sprintf(`(issuetype = "%s" AND status = "%s")`, ticketType, transitions.Todo)
 		conditions = append(conditions, condition)
@@ -125,6 +120,10 @@ func (s *JiraIssueScannerServiceImpl) buildTodoStatusJQL() string {
 // scanForTickets searches for tickets that need AI processing
 func (s *JiraIssueScannerServiceImpl) scanForTickets() {
 	s.logger.Info("Scanning for tickets that need AI processing...")
+
+	// Log current configuration for debugging
+	s.logger.Debug("Current status transitions configuration",
+		zap.Any("status_transitions", s.config.Jira.StatusTransitions))
 
 	// Build dynamic JQL query based on all configured ticket types and their todo statuses
 	jql := s.buildTodoStatusJQL()

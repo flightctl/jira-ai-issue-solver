@@ -98,11 +98,6 @@ func (s *PRFeedbackScannerServiceImpl) buildInReviewStatusJQL() string {
 
 	// Iterate through all configured ticket types and their status transitions
 	for ticketType, transitions := range s.config.Jira.StatusTransitions {
-		// Skip empty in_review status
-		if transitions.InReview == "" {
-			continue
-		}
-
 		// Create condition for this ticket type and its in_review status
 		condition := fmt.Sprintf(`(issuetype = "%s" AND status = "%s")`, ticketType, transitions.InReview)
 		conditions = append(conditions, condition)
@@ -127,6 +122,10 @@ func (s *PRFeedbackScannerServiceImpl) buildInReviewStatusJQL() string {
 // scanForPRFeedback searches for tickets in "In Review" status that need PR feedback processing
 func (s *PRFeedbackScannerServiceImpl) scanForPRFeedback() {
 	s.logger.Info("Scanning for tickets in 'In Review' status that need PR feedback processing...")
+
+	// Log current configuration for debugging
+	s.logger.Debug("Current status transitions configuration",
+		zap.Any("status_transitions", s.config.Jira.StatusTransitions))
 
 	// Build dynamic JQL query based on all configured ticket types and their in_review statuses
 	jql := s.buildInReviewStatusJQL()

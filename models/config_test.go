@@ -23,8 +23,11 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					Format: LogFormatConsole,
 				},
 				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
 					StatusTransitions: TicketTypeStatusTransitions{
-						"default": StatusTransitions{
+						"Bug": StatusTransitions{
 							Todo:       "To Do",
 							InProgress: "In Progress",
 							InReview:   "In Review",
@@ -40,6 +43,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "",
@@ -57,6 +63,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "To Do",
@@ -74,6 +83,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "To Do",
@@ -91,6 +103,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
+					BaseURL:           "https://example.com",
+					Username:          "testuser",
+					APIToken:          "testtoken",
 					StatusTransitions: TicketTypeStatusTransitions{},
 				},
 				ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
@@ -102,6 +117,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "Open",
@@ -139,10 +157,14 @@ logging:
   format: console
 ai_provider: "claude"
 jira:
+  base_url: "https://example.com"
+  username: "testuser"
+  api_token: "testtoken"
   status_transitions:
-    todo: "To Do"
-    in_progress: "In Progress"
-    in_review: "In Review"
+    Bug:
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "In Review"
 github:
   target_branch: "develop"
 component_to_repo:
@@ -168,15 +190,15 @@ component_to_repo:
 	}
 
 	// Verify status transitions
-	defaultTransitions := config.Jira.StatusTransitions.GetStatusTransitions("default")
-	if defaultTransitions.Todo != "To Do" {
-		t.Errorf("Expected todo status 'To Do', got '%s'", defaultTransitions.Todo)
+	bugTransitions := config.Jira.StatusTransitions.GetStatusTransitions("Bug")
+	if bugTransitions.Todo != "To Do" {
+		t.Errorf("Expected todo status 'To Do', got '%s'", bugTransitions.Todo)
 	}
-	if defaultTransitions.InProgress != "In Progress" {
-		t.Errorf("Expected in_progress status 'In Progress', got '%s'", defaultTransitions.InProgress)
+	if bugTransitions.InProgress != "In Progress" {
+		t.Errorf("Expected in_progress status 'In Progress', got '%s'", bugTransitions.InProgress)
 	}
-	if defaultTransitions.InReview != "In Review" {
-		t.Errorf("Expected in_review status 'In Review', got '%s'", defaultTransitions.InReview)
+	if bugTransitions.InReview != "In Review" {
+		t.Errorf("Expected in_review status 'In Review', got '%s'", bugTransitions.InReview)
 	}
 
 	// Verify target branch
@@ -193,10 +215,14 @@ logging:
   format: console
 ai_provider: "claude"
 jira:
+  base_url: "https://example.com"
+  username: "testuser"
+  api_token: "testtoken"
   status_transitions:
-    todo: "To Do"
-    in_progress: "In Progress"
-    in_review: "In Review"
+    Bug:
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "In Review"
 component_to_repo:
   test: https://github.com/test/repo.git
 `
@@ -233,10 +259,14 @@ logging:
   format: console
 ai_provider: "claude"
 jira:
+  base_url: "https://example.com"
+  username: "testuser"
+  api_token: "testtoken"
   status_transitions:
-    todo: "To Do"
-    in_progress: "In Progress"
-    in_review: "In Review"
+    Bug:
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "In Review"
 component_to_repo:
   FlightCtl: https://github.com/your-org/flightctl.git
   flightctl: https://github.com/your-org/flightctl-lowercase.git
@@ -293,11 +323,10 @@ logging:
   format: console
 ai_provider: "claude"
 jira:
+  base_url: "https://example.com"
+  username: "testuser"
+  api_token: "testtoken"
   status_transitions:
-    default:
-      todo: "To Do"
-      in_progress: "In Progress"
-      in_review: "In Review"
     Bug:
       todo: "Open"
       in_progress: "In Progress"
@@ -330,18 +359,6 @@ component_to_repo:
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Verify default status transitions
-	defaultTransitions := config.Jira.StatusTransitions.GetStatusTransitions("default")
-	if defaultTransitions.Todo != "To Do" {
-		t.Errorf("Expected default todo status 'To Do', got '%s'", defaultTransitions.Todo)
-	}
-	if defaultTransitions.InProgress != "In Progress" {
-		t.Errorf("Expected default in_progress status 'In Progress', got '%s'", defaultTransitions.InProgress)
-	}
-	if defaultTransitions.InReview != "In Review" {
-		t.Errorf("Expected default in_review status 'In Review', got '%s'", defaultTransitions.InReview)
-	}
-
 	// Verify Bug-specific status transitions
 	bugTransitions := config.Jira.StatusTransitions.GetStatusTransitions("Bug")
 	if bugTransitions.Todo != "Open" {
@@ -366,10 +383,10 @@ component_to_repo:
 		t.Errorf("Expected Story in_review status 'Testing', got '%s'", storyTransitions.InReview)
 	}
 
-	// Verify fallback to default for unknown ticket type
+	// Verify that unknown ticket type returns empty transitions (no fallback)
 	unknownTransitions := config.Jira.StatusTransitions.GetStatusTransitions("Unknown")
-	if unknownTransitions.Todo != "To Do" {
-		t.Errorf("Expected unknown ticket type to fallback to default todo 'To Do', got '%s'", unknownTransitions.Todo)
+	if unknownTransitions.Todo != "" {
+		t.Errorf("Expected unknown ticket type to return empty todo, got '%s'", unknownTransitions.Todo)
 	}
 }
 
@@ -402,13 +419,8 @@ func TestTicketTypeStatusTransitions_GetStatusTransitions(t *testing.T) {
 			expectedInRev:  "Code Review",
 		},
 		{
-			name: "ticket type not found, fallback to default",
+			name: "ticket type not found, no fallback",
 			transitions: TicketTypeStatusTransitions{
-				"default": StatusTransitions{
-					Todo:       "To Do",
-					InProgress: "In Progress",
-					InReview:   "In Review",
-				},
 				"Bug": StatusTransitions{
 					Todo:       "Open",
 					InProgress: "In Progress",
@@ -416,9 +428,9 @@ func TestTicketTypeStatusTransitions_GetStatusTransitions(t *testing.T) {
 				},
 			},
 			ticketType:     "Story",
-			expectedTodo:   "To Do",
-			expectedInProg: "In Progress",
-			expectedInRev:  "In Review",
+			expectedTodo:   "",
+			expectedInProg: "",
+			expectedInRev:  "",
 		},
 		{
 			name: "no default, return empty transitions",
