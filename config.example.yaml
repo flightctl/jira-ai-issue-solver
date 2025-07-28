@@ -15,10 +15,26 @@ jira:
   interval_seconds: 300
   disable_error_comments: false
   # git_pull_request_field_name: "Git Pull Request"  # Required for PR feedback processing - set to your custom field name for PR URL
+  # Status transitions can now be configured per ticket type
+  # All ticket types must be explicitly configured
   status_transitions:
-    todo: "To Do"
-    in_progress: "In Progress"
-    in_review: "In Review"
+    # Specific transitions for Bug tickets
+    Bug:
+      todo: "Open"
+      in_progress: "In Progress"
+      in_review: "Code Review"
+    
+    # Specific transitions for Story tickets
+    Story:
+      todo: "Backlog"
+      in_progress: "Development"
+      in_review: "Testing"
+    
+    # Specific transitions for Task tickets
+    Task:
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "Review"
 
 # GitHub Configuration
 github:
@@ -50,11 +66,15 @@ gemini:
   api_key: "your-gemini-api-key-here"
 
 # Component to Repository Mapping
+# Note: Component names are case-sensitive and will be matched exactly as they appear in Jira
 component_to_repo:
   frontend: https://github.com/your-org/frontend.git
   backend: https://github.com/your-org/backend.git
   api: https://github.com/your-org/api.git
   mobile: https://github.com/your-org/mobile.git
+  # Example of case-sensitive mapping:
+  # FlightCtl: https://github.com/your-org/flightctl.git
+  # flightctl: https://github.com/your-org/flightctl-lowercase.git
 
 # Temporary Directory
 temp_dir: /tmp/jira-ai-issue-solver 

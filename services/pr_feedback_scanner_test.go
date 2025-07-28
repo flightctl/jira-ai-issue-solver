@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -111,7 +112,11 @@ func TestPRFeedbackScannerService_StartStop(t *testing.T) {
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 1 // 1 second for testing
 	config.Jira.Username = "testuser"
-	config.Jira.StatusTransitions.InReview = "In Review"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			InReview: "In Review",
+		},
+	}
 	config.Jira.GitPullRequestFieldName = "Git Pull Request"
 	config.TempDir = "/tmp/test"
 
@@ -232,7 +237,11 @@ func TestPRFeedbackScannerService_ScanForPRFeedback(t *testing.T) {
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
 	config.Jira.Username = "testuser"
-	config.Jira.StatusTransitions.InReview = "In Review"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			InReview: "In Review",
+		},
+	}
 	config.Jira.GitPullRequestFieldName = "Git Pull Request"
 	config.TempDir = "/tmp/test"
 
@@ -248,4 +257,88 @@ func TestPRFeedbackScannerService_ScanForPRFeedback(t *testing.T) {
 
 	// Test scanning for PR feedback
 	scanner.scanForPRFeedback()
+}
+
+func TestPRFeedbackScannerService_BuildInReviewStatusJQL(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with multiple ticket types
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.GitPullRequestFieldName = "Git Pull Request"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			InReview: "Code Review",
+		},
+		"Story": models.StatusTransitions{
+			InReview: "Testing",
+		},
+		"Task": models.StatusTransitions{
+			InReview: "Review",
+		},
+	}
+
+	// Create scanner service
+	scanner := &PRFeedbackScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildInReviewStatusJQL()
+
+	// Verify the JQL contains all expected conditions (order may vary due to map iteration)
+	expectedConditions := []string{
+		`(issuetype = "Bug" AND status = "Code Review")`,
+		`(issuetype = "Story" AND status = "Testing")`,
+		`(issuetype = "Task" AND status = "Review")`,
+	}
+
+	// Check that all expected conditions are present
+	for _, condition := range expectedConditions {
+		if !strings.Contains(jql, condition) {
+			t.Errorf("Expected JQL to contain condition: %s", condition)
+		}
+	}
+
+	// Check basic structure
+	if !strings.Contains(jql, "Contributors = currentUser()") {
+		t.Errorf("Expected JQL to contain 'Contributors = currentUser()'")
+	}
+	if !strings.Contains(jql, `"Git Pull Request" IS NOT EMPTY`) {
+		t.Errorf("Expected JQL to contain 'Git Pull Request' IS NOT EMPTY")
+	}
+	if !strings.Contains(jql, "ORDER BY updated DESC") {
+		t.Errorf("Expected JQL to contain 'ORDER BY updated DESC'")
+	}
+}
+
+func TestPRFeedbackScannerService_BuildInReviewStatusJQL_SingleType(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with single ticket type
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.GitPullRequestFieldName = "Git Pull Request"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			InReview: "Code Review",
+		},
+	}
+
+	// Create scanner service
+	scanner := &PRFeedbackScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildInReviewStatusJQL()
+	expectedJQL := `Contributors = currentUser() AND (issuetype = "Bug" AND status = "Code Review") AND "Git Pull Request" IS NOT EMPTY ORDER BY updated DESC`
+
+	if jql != expectedJQL {
+		t.Errorf("Expected JQL:\n%s\n\nGot JQL:\n%s", expectedJQL, jql)
+	}
 }

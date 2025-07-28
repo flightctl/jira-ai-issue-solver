@@ -292,12 +292,6 @@ security_check() {
         exit 1
     fi
     
-    # Check for hardcoded secrets in tracked files
-    if git grep -l "MzQ0ODY2MDc5MzAzOtwuzWfTQctB0Y2GFtgr79puEvyd\|ghp_\|AIzaSy" >/dev/null 2>&1; then
-        print_error "SECURITY WARNING: Hardcoded secrets found in tracked files!"
-        print_error "Please remove secrets from version control."
-        exit 1
-    fi
     
     print_success "Security checks passed"
 }

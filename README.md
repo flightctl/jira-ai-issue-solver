@@ -90,6 +90,44 @@ See `config.example.yaml` for a complete configuration example. Key sections:
 - **AI Provider**: Choose between Claude or Gemini
 - **Component Mapping**: Map Jira components to GitHub repositories
 
+### Status Transitions
+
+The tool supports configurable status transitions for different ticket types. You must define specific status transitions for each ticket type (e.g., Bug, Story, Task) that you want the tool to process.
+
+#### Simple Configuration (Backward Compatible)
+```yaml
+jira:
+  status_transitions:
+    todo: "To Do"
+    in_progress: "In Progress"
+    in_review: "In Review"
+```
+
+#### Ticket-Type-Specific Configuration
+```yaml
+jira:
+  status_transitions:
+    # Specific transitions for Bug tickets
+    Bug:
+      todo: "Open"
+      in_progress: "In Progress"
+      in_review: "Code Review"
+    
+    # Specific transitions for Story tickets
+    Story:
+      todo: "Backlog"
+      in_progress: "Development"
+      in_review: "Testing"
+    
+    # Specific transitions for Task tickets
+    Task:
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "Review"
+```
+
+The tool will automatically detect the ticket type from the Jira issue and use the appropriate status transitions. **All ticket types that you want the tool to process must be explicitly configured.** The tool will generate JQL queries that search for tickets across all configured ticket types and their respective statuses.
+
 ## Debugging
 
 The project includes comprehensive debugging support:

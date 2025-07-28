@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +110,11 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions.Todo = "To Do"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			Todo: "Open",
+		},
+	}
 	config.TempDir = "/tmp/test"
 
 	// Create a mock ticket processor with a no-op ProcessTicket
@@ -131,6 +136,85 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 
 	// Test scanning for tickets
 	scanner.scanForTickets()
+}
+
+func TestJiraIssueScannerService_BuildTodoStatusJQL(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with multiple ticket types
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			Todo: "Open",
+		},
+		"Story": models.StatusTransitions{
+			Todo: "Backlog",
+		},
+		"Task": models.StatusTransitions{
+			Todo: "To Do",
+		},
+	}
+
+	// Create scanner service
+	scanner := &JiraIssueScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildTodoStatusJQL()
+
+	// Verify the JQL contains all expected conditions (order may vary due to map iteration)
+	expectedConditions := []string{
+		`(issuetype = "Bug" AND status = "Open")`,
+		`(issuetype = "Story" AND status = "Backlog")`,
+		`(issuetype = "Task" AND status = "To Do")`,
+	}
+
+	// Check that all expected conditions are present
+	for _, condition := range expectedConditions {
+		if !strings.Contains(jql, condition) {
+			t.Errorf("Expected JQL to contain condition: %s", condition)
+		}
+	}
+
+	// Check basic structure
+	if !strings.Contains(jql, "Contributors = currentUser()") {
+		t.Errorf("Expected JQL to contain 'Contributors = currentUser()'")
+	}
+	if !strings.Contains(jql, "ORDER BY updated DESC") {
+		t.Errorf("Expected JQL to contain 'ORDER BY updated DESC'")
+	}
+}
+
+func TestJiraIssueScannerService_BuildTodoStatusJQL_SingleType(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with single ticket type
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			Todo: "Open",
+		},
+	}
+
+	// Create scanner service
+	scanner := &JiraIssueScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildTodoStatusJQL()
+	expectedJQL := `Contributors = currentUser() AND (issuetype = "Bug" AND status = "Open") ORDER BY updated DESC`
+
+	if jql != expectedJQL {
+		t.Errorf("Expected JQL:\n%s\n\nGot JQL:\n%s", expectedJQL, jql)
+	}
 }
 
 // Note: The JQL query now only filters by assignee and status for simpler logic.

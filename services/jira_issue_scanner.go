@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"jira-ai-issue-solver/models"
@@ -90,14 +91,43 @@ func (s *JiraIssueScannerServiceImpl) Stop() {
 	close(s.stopChan)
 }
 
+// buildTodoStatusJQL builds a JQL query that searches for tickets across all configured ticket types
+// and their respective todo statuses
+func (s *JiraIssueScannerServiceImpl) buildTodoStatusJQL() string {
+	var conditions []string
+
+	// Iterate through all configured ticket types and their status transitions
+	for ticketType, transitions := range s.config.Jira.StatusTransitions {
+		// Skip empty todo status
+		if transitions.Todo == "" {
+			continue
+		}
+
+		// Create condition for this ticket type and its todo status
+		condition := fmt.Sprintf(`(issuetype = "%s" AND status = "%s")`, ticketType, transitions.Todo)
+		conditions = append(conditions, condition)
+	}
+
+	// Build the final JQL query
+	var jql string
+	if len(conditions) == 1 {
+		jql = fmt.Sprintf(`Contributors = currentUser() AND %s ORDER BY updated DESC`, conditions[0])
+	} else {
+		// Join multiple conditions with OR
+		orConditions := strings.Join(conditions, " OR ")
+		jql = fmt.Sprintf(`Contributors = currentUser() AND (%s) ORDER BY updated DESC`, orConditions)
+	}
+
+	s.logger.Debug("Generated JQL query", zap.String("jql", jql))
+	return jql
+}
+
 // scanForTickets searches for tickets that need AI processing
 func (s *JiraIssueScannerServiceImpl) scanForTickets() {
 	s.logger.Info("Scanning for tickets that need AI processing...")
 
-	todoStatus := s.config.Jira.StatusTransitions.Todo
-
-	// Build JQL query to find tickets assigned to current user in TODO status
-	jql := fmt.Sprintf(`Contributors = currentUser() AND status = "%s" ORDER BY updated DESC`, todoStatus)
+	// Build dynamic JQL query based on all configured ticket types and their todo statuses
+	jql := s.buildTodoStatusJQL()
 
 	searchResponse, err := s.jiraService.SearchTickets(jql)
 	if err != nil {

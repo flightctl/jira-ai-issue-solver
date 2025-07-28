@@ -76,8 +76,12 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		zap.String("component", firstComponent),
 		zap.String("repo_url", repoURL))
 
+	// Get status transitions for this ticket type
+	ticketType := ticket.Fields.IssueType.Name
+	statusTransitions := p.config.Jira.StatusTransitions.GetStatusTransitions(ticketType)
+
 	// Update the ticket status to the configured "In Progress" status
-	err = p.jiraService.UpdateTicketStatus(ticketKey, p.config.Jira.StatusTransitions.InProgress)
+	err = p.jiraService.UpdateTicketStatus(ticketKey, statusTransitions.InProgress)
 	if err != nil {
 		p.logger.Error("Failed to update ticket status",
 			zap.String("ticket", ticketKey),
@@ -306,7 +310,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// Update the ticket status to the configured "In Review" status
-	err = p.jiraService.UpdateTicketStatus(ticketKey, p.config.Jira.StatusTransitions.InReview)
+	err = p.jiraService.UpdateTicketStatus(ticketKey, statusTransitions.InReview)
 	if err != nil {
 		p.logger.Error("Failed to update ticket status",
 			zap.String("ticket", ticketKey),

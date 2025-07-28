@@ -50,6 +50,7 @@ type JiraFields struct {
 	Summary     string          `json:"summary"`
 	Description string          `json:"description"`
 	Status      JiraStatus      `json:"status"`
+	IssueType   JiraIssueType   `json:"issuetype"`
 	Project     JiraProject     `json:"project"`
 	Components  []JiraComponent `json:"components"`
 	Labels      []string        `json:"labels"`
@@ -65,6 +66,13 @@ type JiraFields struct {
 type JiraStatus struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type JiraIssueType struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	IconURL     string `json:"iconUrl"`
 }
 
 // JiraProject represents a Jira project

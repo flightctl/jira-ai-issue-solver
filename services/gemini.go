@@ -214,6 +214,9 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 			wg.Done()
 		}()
 		scanner := bufio.NewScanner(stdoutPipe)
+		// Increase buffer size to handle large output
+		buf := make([]byte, 1024*1024) // 1MB buffer
+		scanner.Buffer(buf, 1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {
@@ -236,6 +239,9 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 			wg.Done()
 		}()
 		scanner := bufio.NewScanner(stderrPipe)
+		// Increase buffer size to handle large output
+		buf := make([]byte, 1024*1024) // 1MB buffer
+		scanner.Buffer(buf, 1024*1024)
 		for scanner.Scan() {
 			s.logger.Debug("=== Gemini stderr ===\n" + scanner.Text() + "\n===================")
 		}

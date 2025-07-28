@@ -231,6 +231,9 @@ func (s *ClaudeServiceImpl) GenerateCodeClaude(prompt string, repoDir string) (*
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderrPipe)
+		// Increase buffer size to handle large output
+		buf := make([]byte, 1024*1024) // 1MB buffer
+		scanner.Buffer(buf, 1024*1024)
 		for scanner.Scan() {
 			s.logger.Error("stderr", zap.String("line", scanner.Text()))
 		}
@@ -242,6 +245,9 @@ func (s *ClaudeServiceImpl) GenerateCodeClaude(prompt string, repoDir string) (*
 		s.logger.Info("Starting Claude stream processing...")
 		var finalResponse *models.ClaudeResponse
 		scanner := bufio.NewScanner(stdoutPipe)
+		// Increase buffer size to handle large output from Claude CLI
+		buf := make([]byte, 1024*1024) // 1MB buffer
+		scanner.Buffer(buf, 1024*1024)
 
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())

@@ -3,8 +3,11 @@ package models
 import (
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"strings"
 
+	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -89,7 +92,7 @@ func (f *LogFormat) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// ComponentToRepoMap is a custom type for parsing component_to_repo from environment variables
+// ComponentToRepoMap is a custom type for parsing component_to_repo from environment variables and YAML
 type ComponentToRepoMap map[string]string
 
 // UnmarshalText implements encoding.TextUnmarshaler for parsing from environment variables
@@ -114,19 +117,144 @@ func (c *ComponentToRepoMap) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// JiraConfig represents Jira configuration
+// UnmarshalYAML implements custom unmarshaling for YAML to preserve case sensitivity
+func (c *ComponentToRepoMap) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("expected mapping node for ComponentToRepoMap, got %v", value.Kind)
+	}
+
+	result := make(map[string]string)
+	for i := 0; i < len(value.Content); i += 2 {
+		if i+1 >= len(value.Content) {
+			break
+		}
+		keyNode := value.Content[i]
+		valueNode := value.Content[i+1]
+
+		if keyNode.Kind != yaml.ScalarNode {
+			continue
+		}
+
+		var key, val string
+		if err := keyNode.Decode(&key); err != nil {
+			continue
+		}
+		if err := valueNode.Decode(&val); err != nil {
+			continue
+		}
+
+		// Preserve the exact case of the key as it appears in YAML
+		result[key] = val
+	}
+
+	*c = result
+	return nil
+}
+
+// StatusTransitions represents the status transitions for different ticket types
+type StatusTransitions struct {
+	Todo       string `yaml:"todo" mapstructure:"todo" default:"To Do"`
+	InProgress string `yaml:"in_progress" mapstructure:"in_progress" default:"In Progress"`
+	InReview   string `yaml:"in_review" mapstructure:"in_review" default:"In Review"`
+}
+
+// TicketTypeStatusTransitions maps ticket types to their specific status transitions
+type TicketTypeStatusTransitions map[string]StatusTransitions
+
+// UnmarshalYAML implements custom unmarshaling for TicketTypeStatusTransitions
+func (t *TicketTypeStatusTransitions) UnmarshalYAML(value *yaml.Node) error {
+	*t = make(TicketTypeStatusTransitions)
+
+	// Handle the case where status_transitions is a simple struct (backward compatibility)
+	if value.Kind == yaml.MappingNode {
+		// Check if the first key is one of the expected status transition keys
+		for i := 0; i < len(value.Content); i += 2 {
+			if i+1 < len(value.Content) {
+				key := value.Content[i].Value
+				if key == "todo" || key == "in_progress" || key == "in_review" {
+					// This is the old format, decode as simple transitions
+					var simpleTransitions StatusTransitions
+					if err := value.Decode(&simpleTransitions); err != nil {
+						return err
+					}
+					(*t)["default"] = simpleTransitions
+					return nil
+				}
+			}
+		}
+	}
+
+	// Handle the case where status_transitions is a map of ticket types
+	return value.Decode((*map[string]StatusTransitions)(t))
+}
+
+// GetStatusTransitions returns the status transitions for a specific ticket type
+// Falls back to "default" if the ticket type is not found
+func (t TicketTypeStatusTransitions) GetStatusTransitions(ticketType string) StatusTransitions {
+	if transitions, exists := t[ticketType]; exists {
+		return transitions
+	}
+	// Fall back to default if the ticket type is not found
+	if transitions, exists := t["default"]; exists {
+		return transitions
+	}
+	// Return empty transitions if no default is found
+	return StatusTransitions{}
+}
+
+// UnmarshalMapstructure implements custom mapstructure decoding for backward compatibility
+func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) error {
+	*t = make(TicketTypeStatusTransitions)
+
+	// Handle the case where data is a map[string]interface{} (from mapstructure)
+	if mapData, ok := data.(map[string]interface{}); ok {
+		// Check if this is the old format (has todo, in_progress, in_review keys)
+		if _, hasTodo := mapData["todo"]; hasTodo {
+			// Old format - convert to default transitions
+			transitions := StatusTransitions{}
+			if todo, ok := mapData["todo"].(string); ok {
+				transitions.Todo = todo
+			}
+			if inProgress, ok := mapData["in_progress"].(string); ok {
+				transitions.InProgress = inProgress
+			}
+			if inReview, ok := mapData["in_review"].(string); ok {
+				transitions.InReview = inReview
+			}
+			(*t)["default"] = transitions
+			return nil
+		}
+
+		// New format - convert map[string]interface{} to map[string]StatusTransitions
+		for ticketType, transitionData := range mapData {
+			if transitionMap, ok := transitionData.(map[string]interface{}); ok {
+				transitions := StatusTransitions{}
+				if todo, ok := transitionMap["todo"].(string); ok {
+					transitions.Todo = todo
+				}
+				if inProgress, ok := transitionMap["in_progress"].(string); ok {
+					transitions.InProgress = inProgress
+				}
+				if inReview, ok := transitionMap["in_review"].(string); ok {
+					transitions.InReview = inReview
+				}
+				(*t)[ticketType] = transitions
+			}
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unsupported data type for TicketTypeStatusTransitions: %T", data)
+}
+
 type JiraConfig struct {
-	BaseURL                 string `yaml:"base_url" mapstructure:"base_url"`
-	Username                string `yaml:"username" mapstructure:"username"`
-	APIToken                string `yaml:"api_token" mapstructure:"api_token"`
-	IntervalSeconds         int    `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
-	DisableErrorComments    bool   `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
-	GitPullRequestFieldName string `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
-	StatusTransitions       struct {
-		Todo       string `yaml:"todo" mapstructure:"todo" default:"To Do"`
-		InProgress string `yaml:"in_progress" mapstructure:"in_progress" default:"In Progress"`
-		InReview   string `yaml:"in_review" mapstructure:"in_review" default:"In Review"`
-	} `yaml:"status_transitions" mapstructure:"status_transitions"`
+	BaseURL                 string                      `yaml:"base_url" mapstructure:"base_url"`
+	Username                string                      `yaml:"username" mapstructure:"username"`
+	APIToken                string                      `yaml:"api_token" mapstructure:"api_token"`
+	IntervalSeconds         int                         `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
+	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
+	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
+	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
 }
 
 // Config represents the application configuration
@@ -282,11 +410,85 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// Unmarshal into struct
 	var config Config
-	if err := v.Unmarshal(&config); err != nil {
+	if err := v.Unmarshal(&config, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+			if t == reflect.TypeOf(TicketTypeStatusTransitions{}) {
+				var result TicketTypeStatusTransitions
+				if err := result.UnmarshalMapstructure(data); err != nil {
+					return nil, err
+				}
+				return result, nil
+			}
+			return data, nil
+		},
+	))); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Handle component_to_repo parsing manually if it's empty
+	// Handle component_to_repo parsing manually to preserve case sensitivity
+	// Viper's mapstructure tag converts keys to lowercase, so we need to parse this manually
+	if configPath != "" {
+		// Read the raw YAML file to extract component_to_repo with case sensitivity
+		yamlData, err := os.ReadFile(configPath)
+		if err == nil {
+			var rawConfig map[string]interface{}
+			if err := yaml.Unmarshal(yamlData, &rawConfig); err == nil {
+				// Handle component_to_repo
+				if componentToRepoRaw, exists := rawConfig["component_to_repo"]; exists {
+					if componentToRepoMap, ok := componentToRepoRaw.(map[string]interface{}); ok {
+						result := make(map[string]string)
+						for key, value := range componentToRepoMap {
+							if strValue, ok := value.(string); ok {
+								result[key] = strValue
+							}
+						}
+						config.ComponentToRepo = ComponentToRepoMap(result)
+					}
+				}
+
+				// Handle status_transitions for new format
+				if jiraRaw, exists := rawConfig["jira"]; exists {
+					if jiraMap, ok := jiraRaw.(map[string]interface{}); ok {
+						if statusTransitionsRaw, exists := jiraMap["status_transitions"]; exists {
+							if statusTransitionsMap, ok := statusTransitionsRaw.(map[string]interface{}); ok {
+								// Check if this is the new format (has nested structure)
+								hasNestedStructure := false
+								for _, value := range statusTransitionsMap {
+									if _, ok := value.(map[string]interface{}); ok {
+										hasNestedStructure = true
+										break
+									}
+								}
+
+								if hasNestedStructure {
+									// New format - parse nested structure
+									result := make(TicketTypeStatusTransitions)
+									for ticketType, transitionData := range statusTransitionsMap {
+										if transitionMap, ok := transitionData.(map[string]interface{}); ok {
+											transitions := StatusTransitions{}
+											if todo, ok := transitionMap["todo"].(string); ok {
+												transitions.Todo = todo
+											}
+											if inProgress, ok := transitionMap["in_progress"].(string); ok {
+												transitions.InProgress = inProgress
+											}
+											if inReview, ok := transitionMap["in_review"].(string); ok {
+												transitions.InReview = inReview
+											}
+											result[ticketType] = transitions
+										}
+									}
+									config.Jira.StatusTransitions = result
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback to environment variable parsing if still empty
 	if len(config.ComponentToRepo) == 0 {
 		componentToRepoStr := v.GetString("component_to_repo")
 		if componentToRepoStr != "" {
@@ -387,14 +589,22 @@ func (c *Config) validate() error {
 		}
 
 		// Validate status transitions if Jira is configured
-		if c.Jira.StatusTransitions.Todo == "" {
-			return errors.New("jira.status_transitions.todo cannot be empty")
+		// Check that every configured ticket type has all required status transitions
+		for ticketType, transitions := range c.Jira.StatusTransitions {
+			if transitions.Todo == "" {
+				return fmt.Errorf("jira.status_transitions.%s.todo cannot be empty", ticketType)
+			}
+			if transitions.InProgress == "" {
+				return fmt.Errorf("jira.status_transitions.%s.in_progress cannot be empty", ticketType)
+			}
+			if transitions.InReview == "" {
+				return fmt.Errorf("jira.status_transitions.%s.in_review cannot be empty", ticketType)
+			}
 		}
-		if c.Jira.StatusTransitions.InProgress == "" {
-			return errors.New("jira.status_transitions.in_progress cannot be empty")
-		}
-		if c.Jira.StatusTransitions.InReview == "" {
-			return errors.New("jira.status_transitions.in_review cannot be empty")
+
+		// Ensure at least one ticket type is configured
+		if len(c.Jira.StatusTransitions) == 0 {
+			return errors.New("at least one ticket type must be configured in jira.status_transitions")
 		}
 	}
 

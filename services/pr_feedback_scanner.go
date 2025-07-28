@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"jira-ai-issue-solver/models"
@@ -90,16 +91,45 @@ func (s *PRFeedbackScannerServiceImpl) Stop() {
 	close(s.stopChan)
 }
 
+// buildInReviewStatusJQL builds a JQL query that searches for tickets across all configured ticket types
+// and their respective "In Review" statuses
+func (s *PRFeedbackScannerServiceImpl) buildInReviewStatusJQL() string {
+	var conditions []string
+
+	// Iterate through all configured ticket types and their status transitions
+	for ticketType, transitions := range s.config.Jira.StatusTransitions {
+		// Skip empty in_review status
+		if transitions.InReview == "" {
+			continue
+		}
+
+		// Create condition for this ticket type and its in_review status
+		condition := fmt.Sprintf(`(issuetype = "%s" AND status = "%s")`, ticketType, transitions.InReview)
+		conditions = append(conditions, condition)
+	}
+
+	// Build the final JQL query
+	var jql string
+	if len(conditions) == 1 {
+		jql = fmt.Sprintf(`Contributors = currentUser() AND %s AND "%s" IS NOT EMPTY ORDER BY updated DESC`,
+			conditions[0], s.config.Jira.GitPullRequestFieldName)
+	} else {
+		// Join multiple conditions with OR
+		orConditions := strings.Join(conditions, " OR ")
+		jql = fmt.Sprintf(`Contributors = currentUser() AND (%s) AND "%s" IS NOT EMPTY ORDER BY updated DESC`,
+			orConditions, s.config.Jira.GitPullRequestFieldName)
+	}
+
+	s.logger.Debug("Generated JQL query for PR feedback", zap.String("jql", jql))
+	return jql
+}
+
 // scanForPRFeedback searches for tickets in "In Review" status that need PR feedback processing
 func (s *PRFeedbackScannerServiceImpl) scanForPRFeedback() {
 	s.logger.Info("Scanning for tickets in 'In Review' status that need PR feedback processing...")
 
-	inReviewStatus := s.config.Jira.StatusTransitions.InReview
-
-	// Build JQL query to find tickets assigned to current user in "In Review" status
-	// and that have a PR URL set
-	jql := fmt.Sprintf(`Contributors = currentUser() AND status = "%s" AND "%s" IS NOT EMPTY ORDER BY updated DESC`,
-		inReviewStatus, s.config.Jira.GitPullRequestFieldName)
+	// Build dynamic JQL query based on all configured ticket types and their in_review statuses
+	jql := s.buildInReviewStatusJQL()
 
 	searchResponse, err := s.jiraService.SearchTickets(jql)
 	if err != nil {

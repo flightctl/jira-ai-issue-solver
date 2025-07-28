@@ -58,9 +58,13 @@ func TestTicketProcessor_ProcessTicket(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions.Todo = "To Do"
-	config.Jira.StatusTransitions.InProgress = "In Progress"
-	config.Jira.StatusTransitions.InReview = "In Review"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"default": models.StatusTransitions{
+			Todo:       "To Do",
+			InProgress: "In Progress",
+			InReview:   "In Review",
+		},
+	}
 	config.ComponentToRepo = map[string]string{
 		"frontend": "https://github.com/example/frontend.git",
 	}
@@ -322,9 +326,13 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 	// Create config with custom status transitions
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions.Todo = "To Do"
-	config.Jira.StatusTransitions.InProgress = "Development"
-	config.Jira.StatusTransitions.InReview = "Code Review"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"default": models.StatusTransitions{
+			Todo:       "To Do",
+			InProgress: "Development",
+			InReview:   "Code Review",
+		},
+	}
 	config.ComponentToRepo = map[string]string{
 		"frontend": "https://github.com/example/frontend.git",
 	}
