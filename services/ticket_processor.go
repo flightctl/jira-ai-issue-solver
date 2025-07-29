@@ -133,36 +133,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 			zap.String("fork_url", forkURL))
 
 		// Wait for the fork to be ready by checking if it exists
-		for i := 0; i < 10; i++ { // Try up to 10 times (50 seconds total)
-			exists, forkURL, err = p.githubService.CheckForkExists(owner, repo)
-			if err != nil {
-				p.logger.Warn("Failed to check fork readiness",
-					zap.String("ticket", ticketKey),
-					zap.Int("attempt", i+1),
-					zap.Error(err))
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			if exists {
-				p.logger.Info("Fork is ready",
-					zap.String("ticket", ticketKey),
-					zap.Int("attempts", i+1))
-				break
-			}
-
-			p.logger.Debug("Fork not ready yet, waiting",
-				zap.String("ticket", ticketKey),
-				zap.Int("attempt", i+1))
-			time.Sleep(5 * time.Second)
-		}
-
-		if !exists {
-			p.logger.Error("Fork failed to become ready after multiple attempts",
-				zap.String("ticket", ticketKey))
-			p.handleFailure(ticketKey, "Fork failed to become ready after multiple attempts")
-			return fmt.Errorf("fork failed to become ready after multiple attempts")
-		}
+		time.Sleep(10 * time.Second)
 	}
 
 	// Clone the repository
