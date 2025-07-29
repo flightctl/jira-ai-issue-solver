@@ -48,6 +48,10 @@ github:
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
 
+# AI Configuration
+ai:
+  generate_documentation: true  # Set to false to disable documentation generation (CLAUDE.md or GEMINI.md)
+
 # Claude CLI Configuration (used when ai_provider: claude)
 claude:
   cli_path: claude

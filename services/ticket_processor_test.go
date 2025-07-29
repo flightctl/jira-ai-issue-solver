@@ -363,3 +363,55 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		}
 	}
 }
+
+func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
+	logger := zap.NewNop()
+
+	// Test case 1: Documentation generation enabled
+	config1 := &models.Config{
+		AIProvider: "claude",
+		AI: struct {
+			GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+		}{
+			GenerateDocumentation: true,
+		},
+	}
+
+	processor1 := &TicketProcessorImpl{
+		config: config1,
+		logger: logger,
+	}
+
+	// Test case 2: Documentation generation disabled
+	config2 := &models.Config{
+		AIProvider: "gemini",
+		AI: struct {
+			GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+		}{
+			GenerateDocumentation: false,
+		},
+	}
+
+	processor2 := &TicketProcessorImpl{
+		config: config2,
+		logger: logger,
+	}
+
+	// Verify configurations are set correctly
+	if !processor1.config.AI.GenerateDocumentation {
+		t.Error("Documentation generation should be enabled for processor1")
+	}
+
+	if processor2.config.AI.GenerateDocumentation {
+		t.Error("Documentation generation should be disabled for processor2")
+	}
+
+	// Verify AI provider is set correctly
+	if processor1.config.AIProvider != "claude" {
+		t.Error("AI provider should be claude for processor1")
+	}
+
+	if processor2.config.AIProvider != "gemini" {
+		t.Error("AI provider should be gemini for processor2")
+	}
+}

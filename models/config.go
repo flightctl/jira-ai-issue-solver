@@ -333,6 +333,11 @@ type Config struct {
 		APIKey   string `yaml:"api_key" mapstructure:"api_key"`
 	} `yaml:"gemini" mapstructure:"gemini"`
 
+	// AI configuration
+	AI struct {
+		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+	} `yaml:"ai" mapstructure:"ai"`
+
 	// Component to Repository mapping
 	ComponentToRepo ComponentToRepoMap `yaml:"component_to_repo" mapstructure:"component_to_repo"`
 
@@ -396,6 +401,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.BindEnv("gemini.all_files")
 	v.BindEnv("gemini.sandbox")
 	v.BindEnv("gemini.api_key")
+
+	// AI configuration
+	v.BindEnv("ai.generate_documentation")
 
 	// Server configuration
 	v.BindEnv("server.port")
@@ -631,6 +639,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gemini.model", "gemini-2.5-pro")
 	v.SetDefault("gemini.all_files", false)
 	v.SetDefault("gemini.sandbox", false)
+
+	// AI defaults
+	v.SetDefault("ai.generate_documentation", true)
 
 	// Temp directory defaults
 	v.SetDefault("temp_dir", "/tmp/jira-ai-issue-solver")

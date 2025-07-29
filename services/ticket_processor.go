@@ -202,14 +202,20 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
-	// Generate documentation file (CLAUDE.md or GEMINI.md) if it doesn't exist
-	err = p.aiService.GenerateDocumentation(repoDir)
-	if err != nil {
-		p.logger.Warn("Failed to generate documentation",
+	// Generate documentation file (CLAUDE.md or GEMINI.md) if it doesn't exist and is enabled in config
+	if p.config.AI.GenerateDocumentation {
+		err = p.aiService.GenerateDocumentation(repoDir)
+		if err != nil {
+			p.logger.Warn("Failed to generate documentation",
+				zap.String("ticket", ticketKey),
+				zap.String("repo_dir", repoDir),
+				zap.Error(err))
+			// Continue processing even if documentation generation fails
+		}
+	} else {
+		p.logger.Info("Documentation generation disabled in configuration",
 			zap.String("ticket", ticketKey),
-			zap.String("repo_dir", repoDir),
-			zap.Error(err))
-		// Continue processing even if documentation generation fails
+			zap.String("ai_provider", p.config.AIProvider))
 	}
 
 	// Generate a prompt for Claude CLI

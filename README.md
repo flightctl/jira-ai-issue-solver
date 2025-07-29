@@ -58,6 +58,7 @@ export GITHUB_SSH_KEY_PATH=/path/to/ssh/key
 
 # AI Configuration
 export AI_PROVIDER=claude
+export AI_GENERATE_DOCUMENTATION=true
 export CLAUDE_CLI_PATH=claude
 export CLAUDE_TIMEOUT=300
 export CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=false
@@ -65,6 +66,8 @@ export CLAUDE_ALLOWED_TOOLS="Bash Edit"
 export CLAUDE_DISALLOWED_TOOLS=Python
 
 # Or for Gemini
+export AI_PROVIDER=gemini
+export AI_GENERATE_DOCUMENTATION=true
 export GEMINI_CLI_PATH=gemini
 export GEMINI_TIMEOUT=300
 export GEMINI_MODEL=gemini-2.5-pro
@@ -127,6 +130,29 @@ jira:
 ```
 
 The tool will automatically detect the ticket type from the Jira issue and use the appropriate status transitions. **All ticket types that you want the tool to process must be explicitly configured.** The tool will generate JQL queries that search for tickets across all configured ticket types and their respective statuses.
+
+### Documentation Generation
+
+The tool can automatically generate documentation files (`CLAUDE.md` or `GEMINI.md`) in repositories when processing tickets. These files serve as indexes to all markdown documentation in the repository.
+
+#### Configuration
+```yaml
+ai:
+  generate_documentation: true  # Set to false to disable documentation generation (CLAUDE.md or GEMINI.md)
+```
+
+#### Environment Variables
+```bash
+export AI_GENERATE_DOCUMENTATION=true
+```
+
+When enabled, the tool will:
+- Check if the documentation file already exists
+- If not, generate a comprehensive index of all markdown files in the repository
+- Include links to existing documentation rather than duplicating content
+- Organize the documentation with a table of contents and logical sections
+
+This feature is enabled by default but can be disabled by setting the configuration option to `false`.
 
 ## Debugging
 

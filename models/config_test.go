@@ -464,3 +464,52 @@ func TestTicketTypeStatusTransitions_GetStatusTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_WithAIConfiguration(t *testing.T) {
+	// Create a temporary config file
+	configContent := `
+ai_provider: claude
+ai:
+  generate_documentation: false
+claude:
+  cli_path: claude
+  timeout: 300
+component_to_repo:
+  "test-component": "https://github.com/test/repo"
+jira:
+  base_url: https://test.atlassian.net
+  username: test-user
+  api_token: test-token
+  status_transitions:
+    Bug:
+      todo: "To Do"
+      in_progress: "In Progress"
+      in_review: "In Review"
+`
+
+	tempFile, err := os.CreateTemp("", "config_test_*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	if _, err := tempFile.WriteString(configContent); err != nil {
+		t.Fatalf("Failed to write config content: %v", err)
+	}
+	tempFile.Close()
+
+	// Load the config
+	config, err := LoadConfig(tempFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Verify AI configuration
+	if config.AIProvider != "claude" {
+		t.Errorf("Expected AI provider to be 'claude', got '%s'", config.AIProvider)
+	}
+
+	if config.AI.GenerateDocumentation {
+		t.Error("Expected generate_documentation to be false, got true")
+	}
+}
