@@ -32,6 +32,7 @@ RUN apk update && \
     git \
     nodejs \
     npm \
+    openssh \
     && rm -rf /var/cache/apk/*
 
 # Install AI CLI tools
