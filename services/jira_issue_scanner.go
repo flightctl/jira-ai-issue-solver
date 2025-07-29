@@ -67,7 +67,7 @@ func (s *JiraIssueScannerServiceImpl) Start() {
 		defer ticker.Stop()
 
 		// Run initial scan immediately
-		s.scanForTickets()
+		//s.scanForTickets()
 
 		for {
 			select {
