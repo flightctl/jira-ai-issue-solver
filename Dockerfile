@@ -69,4 +69,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 ENTRYPOINT ["./jira-ai-issue-solver"]
 
 # Default command (uses environment variables by default)
-CMD ["./jira-ai-issue-solver"] 
+CMD ["--config", "/app/config.yaml"] 
