@@ -67,7 +67,7 @@ func (s *PRFeedbackScannerServiceImpl) Start() {
 		defer ticker.Stop()
 
 		// Run initial scan immediately
-		//s.scanForPRFeedback()
+		s.scanForPRFeedback()
 
 		for {
 			select {
