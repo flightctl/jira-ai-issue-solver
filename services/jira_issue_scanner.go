@@ -110,7 +110,7 @@ func (s *JiraIssueScannerServiceImpl) buildTodoStatusJQL() string {
 	// Add project key filtering (mandatory)
 	projectConditions := make([]string, len(s.config.Jira.ProjectKeys))
 	for i, projectKey := range s.config.Jira.ProjectKeys {
-		projectConditions[i] = fmt.Sprintf(`project = "%s"`, projectKey)
+		projectConditions[i] = fmt.Sprintf(`project = "%s"`, strings.TrimSpace(projectKey))
 	}
 	projectFilter := strings.Join(projectConditions, " OR ")
 	jql = fmt.Sprintf(`%s AND (%s)`, jql, projectFilter)
