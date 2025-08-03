@@ -103,15 +103,20 @@ func (s *JiraIssueScannerServiceImpl) buildTodoStatusJQL() string {
 		conditions = append(conditions, condition)
 	}
 
-	// Build the final JQL query
-	var jql string
-	if len(conditions) == 1 {
-		jql = fmt.Sprintf(`Contributors = currentUser() AND %s ORDER BY updated DESC`, conditions[0])
-	} else {
-		// Join multiple conditions with OR
-		orConditions := strings.Join(conditions, " OR ")
-		jql = fmt.Sprintf(`Contributors = currentUser() AND (%s) ORDER BY updated DESC`, orConditions)
+	// Build the base JQL query
+	orConditions := strings.Join(conditions, " OR ")
+	jql := fmt.Sprintf(`Contributors = currentUser() AND (%s)`, orConditions)
+
+	// Add project key filtering (mandatory)
+	projectConditions := make([]string, len(s.config.Jira.ProjectKeys))
+	for i, projectKey := range s.config.Jira.ProjectKeys {
+		projectConditions[i] = fmt.Sprintf(`project = "%s"`, projectKey)
 	}
+	projectFilter := strings.Join(projectConditions, " OR ")
+	jql = fmt.Sprintf(`%s AND (%s)`, jql, projectFilter)
+
+	// Add ordering
+	jql = fmt.Sprintf(`%s ORDER BY updated DESC`, jql)
 
 	s.logger.Debug("Generated JQL query", zap.String("jql", jql))
 	return jql

@@ -15,6 +15,11 @@ jira:
   interval_seconds: 300
   disable_error_comments: false
   # git_pull_request_field_name: "Git Pull Request"  # Required for PR feedback processing - set to your custom field name for PR URL
+  # Project keys to filter by (required - at least one project key must be specified)
+  project_keys:
+    - "PROJ1"
+    - "PROJ2"
+    - "PROJ3"
   # Status transitions can now be configured per ticket type
   # All ticket types must be explicitly configured
   status_transitions:

@@ -118,6 +118,31 @@ func (c *ComponentToRepoMap) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// ProjectKeys is a custom type for parsing project_keys from environment variables and YAML
+type ProjectKeys []string
+
+// UnmarshalText implements encoding.TextUnmarshaler for parsing from environment variables
+func (p *ProjectKeys) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*p = make([]string, 0)
+		return nil
+	}
+
+	str := string(text)
+	keys := strings.Split(str, ",")
+	result := make([]string, 0, len(keys))
+
+	for _, key := range keys {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey != "" {
+			result = append(result, trimmedKey)
+		}
+	}
+
+	*p = result
+	return nil
+}
+
 // UnmarshalYAML implements custom unmarshaling for YAML to preserve case sensitivity
 func (c *ComponentToRepoMap) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.MappingNode {
@@ -283,6 +308,7 @@ type JiraConfig struct {
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
 	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
+	ProjectKeys             ProjectKeys                 `yaml:"project_keys" mapstructure:"project_keys"`
 }
 
 // Config represents the application configuration
@@ -375,6 +401,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.BindEnv("jira.disable_error_comments")
 	v.BindEnv("jira.git_pull_request_field_name")
 	v.BindEnv("jira.status_transitions")
+	v.BindEnv("jira.project_keys")
 
 	// GitHub configuration
 	v.BindEnv("github.personal_access_token")
@@ -694,6 +721,11 @@ func (c *Config) validate() error {
 	// Ensure at least one ticket type is configured
 	if len(c.Jira.StatusTransitions) == 0 {
 		return errors.New("at least one ticket type must be configured in jira.status_transitions")
+	}
+
+	// Validate project keys - at least one project key must be configured
+	if len(c.Jira.ProjectKeys) == 0 {
+		return errors.New("at least one project key must be configured in jira.project_keys")
 	}
 
 	if c.GitHub.PersonalAccessToken != "" || c.GitHub.BotUsername != "" || c.GitHub.BotEmail != "" {

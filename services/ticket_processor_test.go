@@ -65,6 +65,7 @@ func TestTicketProcessor_ProcessTicket(t *testing.T) {
 			InReview:   "In Review",
 		},
 	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
 	config.ComponentToRepo = map[string]string{
 		"frontend": "https://github.com/example/frontend.git",
 	}
@@ -333,6 +334,7 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 			InReview:   "Code Review",
 		},
 	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
 	config.ComponentToRepo = map[string]string{
 		"frontend": "https://github.com/example/frontend.git",
 	}

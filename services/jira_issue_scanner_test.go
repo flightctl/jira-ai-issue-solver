@@ -156,6 +156,7 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL(t *testing.T) {
 			Todo: "To Do",
 		},
 	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
 
 	// Create scanner service
 	scanner := &JiraIssueScannerServiceImpl{
@@ -201,6 +202,7 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL_SingleType(t *testing.T) {
 			Todo: "Open",
 		},
 	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
 
 	// Create scanner service
 	scanner := &JiraIssueScannerServiceImpl{
@@ -210,11 +212,113 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL_SingleType(t *testing.T) {
 
 	// Test JQL generation
 	jql := scanner.buildTodoStatusJQL()
-	expectedJQL := `Contributors = currentUser() AND (issuetype = "Bug" AND status = "Open") ORDER BY updated DESC`
+	expectedJQL := `Contributors = currentUser() AND ((issuetype = "Bug" AND status = "Open")) AND (project = "PROJ1") ORDER BY updated DESC`
 
 	if jql != expectedJQL {
 		t.Errorf("Expected JQL:\n%s\n\nGot JQL:\n%s", expectedJQL, jql)
 	}
 }
 
-// Note: The JQL query now only filters by assignee and status for simpler logic.
+func TestJiraIssueScannerService_BuildTodoStatusJQL_WithProjectKeys(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with single ticket type and project keys
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			Todo: "Open",
+		},
+	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
+
+	// Create scanner service
+	scanner := &JiraIssueScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildTodoStatusJQL()
+
+	// Verify the JQL contains project filtering
+	expectedProjectConditions := []string{
+		`project = "PROJ1"`,
+		`project = "PROJ2"`,
+	}
+
+	for _, condition := range expectedProjectConditions {
+		if !strings.Contains(jql, condition) {
+			t.Errorf("Expected JQL to contain project condition: %s", condition)
+		}
+	}
+
+	// Check that the project conditions are properly combined with OR
+	if !strings.Contains(jql, `(project = "PROJ1" OR project = "PROJ2")`) {
+		t.Errorf("Expected JQL to contain properly formatted project OR conditions")
+	}
+
+	// Check basic structure
+	if !strings.Contains(jql, "Contributors = currentUser()") {
+		t.Errorf("Expected JQL to contain 'Contributors = currentUser()'")
+	}
+	if !strings.Contains(jql, "ORDER BY updated DESC") {
+		t.Errorf("Expected JQL to contain 'ORDER BY updated DESC'")
+	}
+}
+
+func TestJiraIssueScannerService_BuildTodoStatusJQL_WithProjectKeysAndMultipleTypes(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with multiple ticket types and project keys
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			Todo: "Open",
+		},
+		"Story": models.StatusTransitions{
+			Todo: "Backlog",
+		},
+	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2", "PROJ3"}
+
+	// Create scanner service
+	scanner := &JiraIssueScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildTodoStatusJQL()
+
+	// Verify the JQL contains all expected conditions
+	expectedConditions := []string{
+		`(issuetype = "Bug" AND status = "Open")`,
+		`(issuetype = "Story" AND status = "Backlog")`,
+		`project = "PROJ1"`,
+		`project = "PROJ2"`,
+		`project = "PROJ3"`,
+	}
+
+	for _, condition := range expectedConditions {
+		if !strings.Contains(jql, condition) {
+			t.Errorf("Expected JQL to contain condition: %s", condition)
+		}
+	}
+
+	// Check that the project conditions are properly combined with OR
+	if !strings.Contains(jql, `(project = "PROJ1" OR project = "PROJ2" OR project = "PROJ3")`) {
+		t.Errorf("Expected JQL to contain properly formatted project OR conditions")
+	}
+
+	// Check basic structure
+	if !strings.Contains(jql, "Contributors = currentUser()") {
+		t.Errorf("Expected JQL to contain 'Contributors = currentUser()'")
+	}
+	if !strings.Contains(jql, "ORDER BY updated DESC") {
+		t.Errorf("Expected JQL to contain 'ORDER BY updated DESC'")
+	}
+}

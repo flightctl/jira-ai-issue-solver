@@ -23,9 +23,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					Format: LogFormatConsole,
 				},
 				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
+					BaseURL:     "https://example.com",
+					Username:    "testuser",
+					APIToken:    "testtoken",
+					ProjectKeys: ProjectKeys{"PROJ1"},
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "To Do",
@@ -43,9 +44,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
+					BaseURL:     "https://example.com",
+					Username:    "testuser",
+					APIToken:    "testtoken",
+					ProjectKeys: ProjectKeys{"PROJ1"},
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "",
@@ -63,9 +65,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
+					BaseURL:     "https://example.com",
+					Username:    "testuser",
+					APIToken:    "testtoken",
+					ProjectKeys: ProjectKeys{"PROJ1"},
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "To Do",
@@ -83,9 +86,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
+					BaseURL:     "https://example.com",
+					Username:    "testuser",
+					APIToken:    "testtoken",
+					ProjectKeys: ProjectKeys{"PROJ1"},
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "To Do",
@@ -106,7 +110,29 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					BaseURL:           "https://example.com",
 					Username:          "testuser",
 					APIToken:          "testtoken",
+					ProjectKeys:       ProjectKeys{"PROJ1"},
 					StatusTransitions: TicketTypeStatusTransitions{},
+				},
+				ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "no project keys configured",
+			config: Config{
+				AIProvider: "claude",
+				Jira: JiraConfig{
+					BaseURL:     "https://example.com",
+					Username:    "testuser",
+					APIToken:    "testtoken",
+					ProjectKeys: ProjectKeys{},
+					StatusTransitions: TicketTypeStatusTransitions{
+						"Bug": StatusTransitions{
+							Todo:       "To Do",
+							InProgress: "In Progress",
+							InReview:   "In Review",
+						},
+					},
 				},
 				ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 			},
@@ -117,9 +143,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 			config: Config{
 				AIProvider: "claude",
 				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
+					BaseURL:     "https://example.com",
+					Username:    "testuser",
+					APIToken:    "testtoken",
+					ProjectKeys: ProjectKeys{"PROJ1"},
 					StatusTransitions: TicketTypeStatusTransitions{
 						"Bug": StatusTransitions{
 							Todo:       "Open",
@@ -160,6 +187,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  project_keys:
+    - "PROJ1"
   status_transitions:
     Bug:
       todo: "To Do"
@@ -218,6 +247,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  project_keys:
+    - "PROJ1"
   status_transitions:
     Bug:
       todo: "To Do"
@@ -262,6 +293,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  project_keys:
+    - "PROJ1"
   status_transitions:
     Bug:
       todo: "To Do"
@@ -326,6 +359,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  project_keys:
+    - "PROJ1"
   status_transitions:
     Bug:
       todo: "Open"
@@ -480,6 +515,8 @@ jira:
   base_url: https://test.atlassian.net
   username: test-user
   api_token: test-token
+  project_keys:
+    - "PROJ1"
   status_transitions:
     Bug:
       todo: "To Do"

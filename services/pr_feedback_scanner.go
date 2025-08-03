@@ -103,17 +103,21 @@ func (s *PRFeedbackScannerServiceImpl) buildInReviewStatusJQL() string {
 		conditions = append(conditions, condition)
 	}
 
-	// Build the final JQL query
-	var jql string
-	if len(conditions) == 1 {
-		jql = fmt.Sprintf(`Contributors = currentUser() AND %s AND "%s" IS NOT EMPTY ORDER BY updated DESC`,
-			conditions[0], s.config.Jira.GitPullRequestFieldName)
-	} else {
-		// Join multiple conditions with OR
-		orConditions := strings.Join(conditions, " OR ")
-		jql = fmt.Sprintf(`Contributors = currentUser() AND (%s) AND "%s" IS NOT EMPTY ORDER BY updated DESC`,
-			orConditions, s.config.Jira.GitPullRequestFieldName)
+	// Build the base JQL query
+	orConditions := strings.Join(conditions, " OR ")
+	jql := fmt.Sprintf(`Contributors = currentUser() AND (%s) AND "%s" IS NOT EMPTY`,
+		orConditions, s.config.Jira.GitPullRequestFieldName)
+
+	// Add project key filtering (mandatory)
+	projectConditions := make([]string, len(s.config.Jira.ProjectKeys))
+	for i, projectKey := range s.config.Jira.ProjectKeys {
+		projectConditions[i] = fmt.Sprintf(`project = "%s"`, projectKey)
 	}
+	projectFilter := strings.Join(projectConditions, " OR ")
+	jql = fmt.Sprintf(`%s AND (%s)`, jql, projectFilter)
+
+	// Add ordering
+	jql = fmt.Sprintf(`%s ORDER BY updated DESC`, jql)
 
 	s.logger.Debug("Generated JQL query for PR feedback", zap.String("jql", jql))
 	return jql

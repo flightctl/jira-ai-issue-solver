@@ -278,6 +278,7 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL(t *testing.T) {
 			InReview: "Review",
 		},
 	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
 
 	// Create scanner service
 	scanner := &PRFeedbackScannerServiceImpl{
@@ -327,6 +328,7 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL_SingleType(t *testing.T
 			InReview: "Code Review",
 		},
 	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
 
 	// Create scanner service
 	scanner := &PRFeedbackScannerServiceImpl{
@@ -336,9 +338,121 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL_SingleType(t *testing.T
 
 	// Test JQL generation
 	jql := scanner.buildInReviewStatusJQL()
-	expectedJQL := `Contributors = currentUser() AND (issuetype = "Bug" AND status = "Code Review") AND "Git Pull Request" IS NOT EMPTY ORDER BY updated DESC`
+	expectedJQL := `Contributors = currentUser() AND ((issuetype = "Bug" AND status = "Code Review")) AND "Git Pull Request" IS NOT EMPTY AND (project = "PROJ1") ORDER BY updated DESC`
 
 	if jql != expectedJQL {
 		t.Errorf("Expected JQL:\n%s\n\nGot JQL:\n%s", expectedJQL, jql)
+	}
+}
+
+func TestPRFeedbackScannerService_BuildInReviewStatusJQL_WithProjectKeys(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with single ticket type and project keys
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.GitPullRequestFieldName = "Git Pull Request"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			InReview: "Code Review",
+		},
+	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
+
+	// Create scanner service
+	scanner := &PRFeedbackScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildInReviewStatusJQL()
+
+	// Verify the JQL contains project filtering
+	expectedProjectConditions := []string{
+		`project = "PROJ1"`,
+		`project = "PROJ2"`,
+	}
+
+	for _, condition := range expectedProjectConditions {
+		if !strings.Contains(jql, condition) {
+			t.Errorf("Expected JQL to contain project condition: %s", condition)
+		}
+	}
+
+	// Check that the project conditions are properly combined with OR
+	if !strings.Contains(jql, `(project = "PROJ1" OR project = "PROJ2")`) {
+		t.Errorf("Expected JQL to contain properly formatted project OR conditions")
+	}
+
+	// Check basic structure
+	if !strings.Contains(jql, "Contributors = currentUser()") {
+		t.Errorf("Expected JQL to contain 'Contributors = currentUser()'")
+	}
+	if !strings.Contains(jql, `"Git Pull Request" IS NOT EMPTY`) {
+		t.Errorf("Expected JQL to contain 'Git Pull Request' IS NOT EMPTY")
+	}
+	if !strings.Contains(jql, "ORDER BY updated DESC") {
+		t.Errorf("Expected JQL to contain 'ORDER BY updated DESC'")
+	}
+}
+
+func TestPRFeedbackScannerService_BuildInReviewStatusJQL_WithProjectKeysAndMultipleTypes(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create config with multiple ticket types and project keys
+	config := &models.Config{}
+	config.Jira.IntervalSeconds = 300
+	config.Jira.GitPullRequestFieldName = "Git Pull Request"
+	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
+		"Bug": models.StatusTransitions{
+			InReview: "Code Review",
+		},
+		"Story": models.StatusTransitions{
+			InReview: "Testing",
+		},
+	}
+	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2", "PROJ3"}
+
+	// Create scanner service
+	scanner := &PRFeedbackScannerServiceImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test JQL generation
+	jql := scanner.buildInReviewStatusJQL()
+
+	// Verify the JQL contains all expected conditions
+	expectedConditions := []string{
+		`(issuetype = "Bug" AND status = "Code Review")`,
+		`(issuetype = "Story" AND status = "Testing")`,
+		`project = "PROJ1"`,
+		`project = "PROJ2"`,
+		`project = "PROJ3"`,
+	}
+
+	for _, condition := range expectedConditions {
+		if !strings.Contains(jql, condition) {
+			t.Errorf("Expected JQL to contain condition: %s", condition)
+		}
+	}
+
+	// Check that the project conditions are properly combined with OR
+	if !strings.Contains(jql, `(project = "PROJ1" OR project = "PROJ2" OR project = "PROJ3")`) {
+		t.Errorf("Expected JQL to contain properly formatted project OR conditions")
+	}
+
+	// Check basic structure
+	if !strings.Contains(jql, "Contributors = currentUser()") {
+		t.Errorf("Expected JQL to contain 'Contributors = currentUser()'")
+	}
+	if !strings.Contains(jql, `"Git Pull Request" IS NOT EMPTY`) {
+		t.Errorf("Expected JQL to contain 'Git Pull Request' IS NOT EMPTY")
+	}
+	if !strings.Contains(jql, "ORDER BY updated DESC") {
+		t.Errorf("Expected JQL to contain 'ORDER BY updated DESC'")
 	}
 }
