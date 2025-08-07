@@ -355,9 +355,15 @@ func TestPRReviewProcessor_UpdateProcessingTimestamp(t *testing.T) {
 			return nil
 		},
 	}
+	mockJira := &mocks.MockJiraService{
+		HasSecurityLevelFunc: func(ticketKey string) (bool, error) {
+			return false, nil // No security level for test
+		},
+	}
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
+		jiraService:   mockJira,
 		githubService: mockGitHub,
 		config:        config,
 	}

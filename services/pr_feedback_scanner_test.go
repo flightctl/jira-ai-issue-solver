@@ -112,12 +112,18 @@ func TestPRFeedbackScannerService_StartStop(t *testing.T) {
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 1 // 1 second for testing
 	config.Jira.Username = "testuser"
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			InReview: "In Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					InReview: "In Review",
+				},
+			},
+			GitPullRequestFieldName: "Git Pull Request",
+			ComponentToRepo:         models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.GitPullRequestFieldName = "Git Pull Request"
 	config.TempDir = "/tmp/test"
 
 	// Create scanner service
@@ -237,12 +243,18 @@ func TestPRFeedbackScannerService_ScanForPRFeedback(t *testing.T) {
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
 	config.Jira.Username = "testuser"
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			InReview: "In Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					InReview: "In Review",
+				},
+			},
+			GitPullRequestFieldName: "Git Pull Request",
+			ComponentToRepo:         models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.GitPullRequestFieldName = "Git Pull Request"
 	config.TempDir = "/tmp/test"
 
 	// Create scanner service with actual PR review processor
@@ -266,19 +278,24 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL(t *testing.T) {
 	// Create config with multiple ticket types
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.GitPullRequestFieldName = "Git Pull Request"
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			InReview: "Code Review",
-		},
-		"Story": models.StatusTransitions{
-			InReview: "Testing",
-		},
-		"Task": models.StatusTransitions{
-			InReview: "Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1", "PROJ2"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					InReview: "Code Review",
+				},
+				"Story": models.StatusTransitions{
+					InReview: "Testing",
+				},
+				"Task": models.StatusTransitions{
+					InReview: "Review",
+				},
+			},
+			GitPullRequestFieldName: "Git Pull Request",
+			ComponentToRepo:         models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
 
 	// Create scanner service
 	scanner := &PRFeedbackScannerServiceImpl{
@@ -322,13 +339,18 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL_SingleType(t *testing.T
 	// Create config with single ticket type
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.GitPullRequestFieldName = "Git Pull Request"
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			InReview: "Code Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					InReview: "Code Review",
+				},
+			},
+			GitPullRequestFieldName: "Git Pull Request",
+			ComponentToRepo:         models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
 
 	// Create scanner service
 	scanner := &PRFeedbackScannerServiceImpl{
@@ -352,13 +374,18 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL_WithProjectKeys(t *test
 	// Create config with single ticket type and project keys
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.GitPullRequestFieldName = "Git Pull Request"
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			InReview: "Code Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1", "PROJ2"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					InReview: "Code Review",
+				},
+			},
+			GitPullRequestFieldName: "Git Pull Request",
+			ComponentToRepo:         models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
 
 	// Create scanner service
 	scanner := &PRFeedbackScannerServiceImpl{
@@ -405,16 +432,21 @@ func TestPRFeedbackScannerService_BuildInReviewStatusJQL_WithProjectKeysAndMulti
 	// Create config with multiple ticket types and project keys
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.GitPullRequestFieldName = "Git Pull Request"
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			InReview: "Code Review",
-		},
-		"Story": models.StatusTransitions{
-			InReview: "Testing",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1", "PROJ2", "PROJ3"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					InReview: "Code Review",
+				},
+				"Story": models.StatusTransitions{
+					InReview: "Testing",
+				},
+			},
+			GitPullRequestFieldName: "Git Pull Request",
+			ComponentToRepo:         models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2", "PROJ3"}
 
 	// Create scanner service
 	scanner := &PRFeedbackScannerServiceImpl{

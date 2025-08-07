@@ -94,8 +94,15 @@ func main() {
 	defer Logger.Sync()
 
 	// Validate required configuration
-	if len(config.ComponentToRepo) == 0 {
-		Logger.Fatal("At least one component_to_repo mapping is required")
+	hasComponentToRepo := false
+	for _, project := range config.Jira.Projects {
+		if len(project.ComponentToRepo) > 0 {
+			hasComponentToRepo = true
+			break
+		}
+	}
+	if !hasComponentToRepo {
+		Logger.Fatal("At least one component_to_repo mapping is required in project configuration")
 	}
 
 	// Check if Jira configuration is provided

@@ -38,8 +38,17 @@ type JiraService interface {
 	// AddComment adds a comment to a ticket
 	AddComment(key string, comment string) error
 
+	// GetTicketWithComments fetches a ticket from Jira with comments expanded
+	GetTicketWithComments(key string) (*models.JiraTicketResponse, error)
+
 	// SearchTickets searches for tickets using JQL
 	SearchTickets(jql string) (*models.JiraSearchResponse, error)
+
+	// HasSecurityLevel checks if a ticket has a security level set (other than "None")
+	HasSecurityLevel(key string) (bool, error)
+
+	// GetTicketSecurityLevel gets the security level of a ticket
+	GetTicketSecurityLevel(key string) (*models.JiraSecurity, error)
 }
 
 // JiraServiceImpl implements the JiraService interface
@@ -126,6 +135,37 @@ func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]in
 	}
 
 	return ticketWithFields.Fields, ticketWithFields.Names, nil
+}
+
+// GetTicketWithComments fetches a ticket from Jira with comments expanded
+func (s *JiraServiceImpl) GetTicketWithComments(key string) (*models.JiraTicketResponse, error) {
+	url := fmt.Sprintf("%s/rest/api/2/issue/%s?expand=comment", s.config.Jira.BaseURL, key)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get ticket with comments: %s, status code: %d", string(body), resp.StatusCode)
+	}
+
+	var ticket models.JiraTicketResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ticket); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &ticket, nil
 }
 
 // UpdateTicketLabels updates the labels of a ticket
@@ -443,4 +483,71 @@ func (s *JiraServiceImpl) SearchTickets(jql string) (*models.JiraSearchResponse,
 	}
 
 	return &searchResponse, nil
+}
+
+// HasSecurityLevel checks if a ticket has a security level set (other than "None")
+func (s *JiraServiceImpl) HasSecurityLevel(key string) (bool, error) {
+	security, err := s.GetTicketSecurityLevel(key)
+	if err != nil {
+		return false, err
+	}
+	// Consider ticket secure if security level exists and is not "None" or empty
+	return security != nil && security.Name != "" && strings.ToLower(security.Name) != "none", nil
+}
+
+// GetTicketSecurityLevel gets the security level of a ticket
+func (s *JiraServiceImpl) GetTicketSecurityLevel(key string) (*models.JiraSecurity, error) {
+	// First try the standard fields API
+	ticket, err := s.GetTicket(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if ticket.Fields.Security != nil {
+		return ticket.Fields.Security, nil
+	}
+
+	// If not found in standard fields, try expanded fields API
+	fields, names, err := s.GetTicketWithExpandedFields(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ticket with expanded fields: %w", err)
+	}
+
+	// Look for security field by name mapping
+	var securityFieldID string
+	for fieldID, fieldName := range names {
+		if strings.ToLower(fieldName) == "security level" || strings.ToLower(fieldName) == "security" {
+			securityFieldID = fieldID
+			break
+		}
+	}
+
+	if securityFieldID == "" {
+		// Security field not found - assume no security level
+		return nil, nil
+	}
+
+	// Extract security level from expanded fields
+	if securityValue, ok := fields[securityFieldID]; ok && securityValue != nil {
+		// Handle different possible formats of security field
+		switch v := securityValue.(type) {
+		case map[string]interface{}:
+			security := &models.JiraSecurity{}
+			if id, ok := v["id"].(string); ok {
+				security.ID = id
+			}
+			if name, ok := v["name"].(string); ok {
+				security.Name = name
+			}
+			if desc, ok := v["description"].(string); ok {
+				security.Description = desc
+			}
+			return security, nil
+		case string:
+			// Sometimes just the name is returned
+			return &models.JiraSecurity{Name: v}, nil
+		}
+	}
+
+	return nil, nil
 }

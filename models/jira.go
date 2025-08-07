@@ -60,6 +60,14 @@ type JiraFields struct {
 	Reporter    JiraUser        `json:"reporter"`
 	Assignee    *JiraUser       `json:"assignee,omitempty"`
 	Comment     JiraComments    `json:"comment,omitempty"`
+	Security    *JiraSecurity   `json:"security,omitempty"`
+}
+
+// JiraSecurity represents the security level of a Jira issue
+type JiraSecurity struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // JiraStatus represents the status of a Jira issue

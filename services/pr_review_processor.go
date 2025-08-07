@@ -127,19 +127,59 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 	return nil
 }
 
-// getPRURLFromTicket extracts the PR URL from the ticket's custom field
+// getPRURLFromTicket extracts the PR URL from the ticket's custom field or comments
 func (p *PRReviewProcessorImpl) getPRURLFromTicket(ticket *models.JiraTicketResponse) (string, error) {
-	if p.config.Jira.GitPullRequestFieldName == "" {
-		return "", fmt.Errorf("GitPullRequestFieldName not configured")
+	var prURL string
+	var err error
+
+	// Get project configuration for this ticket
+	projectConfig := p.config.GetProjectConfigForTicket(ticket.Key)
+	if projectConfig == nil {
+		return "", fmt.Errorf("no project configuration found for ticket %s", ticket.Key)
 	}
 
-	// Get the field ID for the field name
-	fieldID, err := p.jiraService.GetFieldIDByName(p.config.Jira.GitPullRequestFieldName)
+	// First, try to get PR URL from the git custom field if configured for this project
+	if projectConfig.GitPullRequestFieldName != "" {
+		prURL, err = p.getPRURLFromGitField(ticket, projectConfig)
+		if err != nil {
+			p.logger.Debug("Failed to get PR URL from git field, will try comments",
+				zap.String("ticket", ticket.Key),
+				zap.Error(err))
+		} else if prURL != "" {
+			p.logger.Debug("Found PR URL in git field",
+				zap.String("ticket", ticket.Key),
+				zap.String("pr_url", prURL))
+			return prURL, nil
+		}
+	}
+
+	// If no PR URL found in git field (or field not configured), try comments
+	p.logger.Debug("No PR URL found in git field, checking comments", zap.String("ticket", ticket.Key))
+	prURL, err = p.getPRURLFromComments(ticket.Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve field name '%s' to ID: %w", p.config.Jira.GitPullRequestFieldName, err)
+		return "", fmt.Errorf("failed to get PR URL from comments: %w", err)
+	}
+
+	if prURL != "" {
+		p.logger.Debug("Found PR URL in comments",
+			zap.String("ticket", ticket.Key),
+			zap.String("pr_url", prURL))
+		return prURL, nil
+	}
+
+	// No PR URL found in either location
+	return "", nil
+}
+
+// getPRURLFromGitField extracts the PR URL from the ticket's git custom field
+func (p *PRReviewProcessorImpl) getPRURLFromGitField(ticket *models.JiraTicketResponse, projectConfig *models.ProjectConfig) (string, error) {
+	// Get the field ID for the field name
+	fieldID, err := p.jiraService.GetFieldIDByName(projectConfig.GitPullRequestFieldName)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve field name '%s' to ID: %w", projectConfig.GitPullRequestFieldName, err)
 	}
 	// Log the fieldID for debugging
-	p.logger.Debug("Resolved field name to field ID", zap.String("field_name", p.config.Jira.GitPullRequestFieldName), zap.String("field_id", fieldID))
+	p.logger.Debug("Resolved field name to field ID", zap.String("field_name", projectConfig.GitPullRequestFieldName), zap.String("field_id", fieldID))
 
 	// Get the ticket with expanded fields to access custom fields
 	fields, _, err := p.jiraService.GetTicketWithExpandedFields(ticket.Key)
@@ -168,6 +208,38 @@ func (p *PRReviewProcessorImpl) getPRURLFromTicket(ticket *models.JiraTicketResp
 	}
 	// Log the full output for debugging
 	p.logger.Debug("Full ticket fields", zap.Any("fields", fields))
+
+	return "", nil
+}
+
+// getPRURLFromComments extracts the PR URL from ticket comments
+func (p *PRReviewProcessorImpl) getPRURLFromComments(ticketKey string) (string, error) {
+	// Get the ticket with comments expanded
+	ticket, err := p.jiraService.GetTicketWithComments(ticketKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ticket with comments: %w", err)
+	}
+
+	// GitHub PR URL pattern
+	githubPRPattern := regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/pull/\d+`)
+
+	// Search through comments for GitHub PR URLs
+	// Look through comments in reverse order (newest first) to find the most recent PR URL
+	for i := len(ticket.Fields.Comment.Comments) - 1; i >= 0; i-- {
+		comment := ticket.Fields.Comment.Comments[i]
+
+		// Find GitHub PR URL in the comment body
+		matches := githubPRPattern.FindAllString(comment.Body, -1)
+		if len(matches) > 0 {
+			// Return the first (and typically only) PR URL found
+			p.logger.Debug("Found PR URL in comment",
+				zap.String("ticket", ticketKey),
+				zap.String("pr_url", matches[0]),
+				zap.String("comment_id", comment.ID),
+				zap.String("comment_author", comment.Author.DisplayName))
+			return matches[0], nil
+		}
+	}
 
 	return "", nil
 }
@@ -386,10 +458,31 @@ func (p *PRReviewProcessorImpl) getLastProcessingTimestamp(owner, repo string, p
 // updateProcessingTimestamp adds a comment with the current processing timestamp
 func (p *PRReviewProcessorImpl) updateProcessingTimestamp(owner, repo string, prNumber int, ticketKey string) error {
 	currentTime := time.Now().UTC()
+
+	// Check if ticket has security level set and redact comment if needed
+	hasSecurityLevel, err := p.jiraService.HasSecurityLevel(ticketKey)
+	if err != nil {
+		p.logger.Warn("Failed to check security level for ticket when adding timestamp comment",
+			zap.String("ticket", ticketKey),
+			zap.Error(err))
+		// Continue with normal comment if security check fails
+		hasSecurityLevel = false
+	}
+
 	commentBody := fmt.Sprintf(`🤖 AI Processing Timestamp: %s
 
 AI has processed feedback for ticket %s at this time. Future processing will only consider feedback submitted after this timestamp.`,
 		currentTime.Format(time.RFC3339), ticketKey)
+
+	if hasSecurityLevel {
+		p.logger.Info("Ticket has security level set, redacting timestamp comment",
+			zap.String("ticket", ticketKey))
+		commentBody = fmt.Sprintf(`🤖 AI Processing Timestamp: %s
+
+AI has processed feedback for ticket %s at this time. Details redacted due to security level restrictions.`,
+			currentTime.Format(time.RFC3339), ticketKey)
+	}
+
 	return p.githubService.AddPRComment(owner, repo, prNumber, commentBody)
 }
 

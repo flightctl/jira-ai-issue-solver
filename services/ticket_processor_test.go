@@ -58,16 +58,20 @@ func TestTicketProcessor_ProcessTicket(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"default": models.StatusTransitions{
-			Todo:       "To Do",
-			InProgress: "In Progress",
-			InReview:   "In Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"default": models.StatusTransitions{
+					Todo:       "To Do",
+					InProgress: "In Progress",
+					InReview:   "In Review",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{
+				"frontend": "https://github.com/example/frontend.git",
+			},
 		},
-	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
-	config.ComponentToRepo = map[string]string{
-		"frontend": "https://github.com/example/frontend.git",
 	}
 	config.TempDir = "/tmp/test"
 
@@ -92,10 +96,22 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 	config.GitHub.PersonalAccessToken = "test-token"
 	config.GitHub.PRLabel = "ai-pr"
 	config.TempDir = "/tmp"
-	config.Jira.DisableErrorComments = true
 	config.Jira.BaseURL = "https://your-domain.atlassian.net"
-	config.ComponentToRepo = map[string]string{
-		"frontend": "https://github.com/example/frontend.git",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"default": models.StatusTransitions{
+					Todo:       "To Do",
+					InProgress: "In Progress",
+					InReview:   "In Review",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{
+				"frontend": "https://github.com/example/frontend.git",
+			},
+			DisableErrorComments: true,
+		},
 	}
 
 	// Create mock services with captured values
@@ -198,10 +214,22 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 	config.GitHub.PersonalAccessToken = "test-token"
 	config.GitHub.PRLabel = "ai-pr"
 	config.TempDir = "/tmp"
-	config.Jira.DisableErrorComments = true
 	config.Jira.BaseURL = "https://your-domain.atlassian.net"
-	config.ComponentToRepo = map[string]string{
-		"frontend": "https://github.com/example/frontend.git",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"default": models.StatusTransitions{
+					Todo:       "To Do",
+					InProgress: "In Progress",
+					InReview:   "In Review",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{
+				"frontend": "https://github.com/example/frontend.git",
+			},
+			DisableErrorComments: true,
+		},
 	}
 
 	// Create mock services with captured values
@@ -327,16 +355,20 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 	// Create config with custom status transitions
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"default": models.StatusTransitions{
-			Todo:       "To Do",
-			InProgress: "Development",
-			InReview:   "Code Review",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"default": models.StatusTransitions{
+					Todo:       "To Do",
+					InProgress: "Development",
+					InReview:   "Code Review",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{
+				"frontend": "https://github.com/example/frontend.git",
+			},
 		},
-	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
-	config.ComponentToRepo = map[string]string{
-		"frontend": "https://github.com/example/frontend.git",
 	}
 	config.TempDir = "/tmp/test"
 

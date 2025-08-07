@@ -110,9 +110,15 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			Todo: "Open",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo: "Open",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
 	config.TempDir = "/tmp/test"
@@ -145,18 +151,23 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL(t *testing.T) {
 	// Create config with multiple ticket types
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			Todo: "Open",
-		},
-		"Story": models.StatusTransitions{
-			Todo: "Backlog",
-		},
-		"Task": models.StatusTransitions{
-			Todo: "To Do",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1", "PROJ2"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo: "Open",
+				},
+				"Story": models.StatusTransitions{
+					Todo: "Backlog",
+				},
+				"Task": models.StatusTransitions{
+					Todo: "To Do",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
 
 	// Create scanner service
 	scanner := &JiraIssueScannerServiceImpl{
@@ -197,12 +208,17 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL_SingleType(t *testing.T) {
 	// Create config with single ticket type
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			Todo: "Open",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo: "Open",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1"}
 
 	// Create scanner service
 	scanner := &JiraIssueScannerServiceImpl{
@@ -226,12 +242,17 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL_WithProjectKeys(t *testing.T
 	// Create config with single ticket type and project keys
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			Todo: "Open",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1", "PROJ2"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo: "Open",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2"}
 
 	// Create scanner service
 	scanner := &JiraIssueScannerServiceImpl{
@@ -275,15 +296,20 @@ func TestJiraIssueScannerService_BuildTodoStatusJQL_WithProjectKeysAndMultipleTy
 	// Create config with multiple ticket types and project keys
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
-	config.Jira.StatusTransitions = models.TicketTypeStatusTransitions{
-		"Bug": models.StatusTransitions{
-			Todo: "Open",
-		},
-		"Story": models.StatusTransitions{
-			Todo: "Backlog",
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"PROJ1", "PROJ2", "PROJ3"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo: "Open",
+				},
+				"Story": models.StatusTransitions{
+					Todo: "Backlog",
+				},
+			},
+			ComponentToRepo: models.ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
 		},
 	}
-	config.Jira.ProjectKeys = models.ProjectKeys{"PROJ1", "PROJ2", "PROJ3"}
 
 	// Create scanner service
 	scanner := &JiraIssueScannerServiceImpl{

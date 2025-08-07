@@ -14,7 +14,10 @@ type MockJiraService struct {
 	UpdateTicketFieldByNameFunc     func(key string, fieldName string, value interface{}) error
 	GetFieldIDByNameFunc            func(fieldName string) (string, error)
 	AddCommentFunc                  func(key string, comment string) error
+	GetTicketWithCommentsFunc       func(key string) (*models.JiraTicketResponse, error)
 	SearchTicketsFunc               func(jql string) (*models.JiraSearchResponse, error)
+	HasSecurityLevelFunc            func(key string) (bool, error)
+	GetTicketSecurityLevelFunc      func(key string) (*models.JiraSecurity, error)
 }
 
 // GetTicket is the mock implementation of JiraService's GetTicket method
@@ -81,10 +84,35 @@ func (m *MockJiraService) AddComment(key string, comment string) error {
 	return nil
 }
 
+// GetTicketWithComments is the mock implementation of JiraService's GetTicketWithComments method
+func (m *MockJiraService) GetTicketWithComments(key string) (*models.JiraTicketResponse, error) {
+	if m.GetTicketWithCommentsFunc != nil {
+		return m.GetTicketWithCommentsFunc(key)
+	}
+	// Default mock behavior - return the same as GetTicket but assume comments are expanded
+	return m.GetTicket(key)
+}
+
 // SearchTickets is the mock implementation of JiraService's SearchTickets method
 func (m *MockJiraService) SearchTickets(jql string) (*models.JiraSearchResponse, error) {
 	if m.SearchTicketsFunc != nil {
 		return m.SearchTicketsFunc(jql)
+	}
+	return nil, nil
+}
+
+// HasSecurityLevel is the mock implementation of JiraService's HasSecurityLevel method
+func (m *MockJiraService) HasSecurityLevel(key string) (bool, error) {
+	if m.HasSecurityLevelFunc != nil {
+		return m.HasSecurityLevelFunc(key)
+	}
+	return false, nil
+}
+
+// GetTicketSecurityLevel is the mock implementation of JiraService's GetTicketSecurityLevel method
+func (m *MockJiraService) GetTicketSecurityLevel(key string) (*models.JiraSecurity, error) {
+	if m.GetTicketSecurityLevelFunc != nil {
+		return m.GetTicketSecurityLevelFunc(key)
 	}
 	return nil, nil
 }

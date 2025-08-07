@@ -54,6 +54,21 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
+	// Check if ticket has security level set for redaction throughout the process
+	hasSecurityLevel, err := p.jiraService.HasSecurityLevel(ticketKey)
+	if err != nil {
+		p.logger.Warn("Failed to check security level for ticket",
+			zap.String("ticket", ticketKey),
+			zap.Error(err))
+		// Continue with normal processing if security check fails
+		hasSecurityLevel = false
+	}
+
+	if hasSecurityLevel {
+		p.logger.Info("Ticket has security level set, will redact sensitive information",
+			zap.String("ticket", ticketKey))
+	}
+
 	// Get the repository URL from the component mapping
 	if len(ticket.Fields.Components) == 0 {
 		p.logger.Warn("No components found on ticket", zap.String("ticket", ticketKey))
@@ -61,9 +76,16 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return fmt.Errorf("no components found on ticket")
 	}
 
+	// Get project configuration for this ticket
+	projectConfig := p.config.GetProjectConfigForTicket(ticketKey)
+	if projectConfig == nil {
+		p.handleFailure(ticketKey, "No project configuration found for ticket")
+		return fmt.Errorf("no project configuration found for ticket %s", ticketKey)
+	}
+
 	// Use the first component to find the repository
 	firstComponent := ticket.Fields.Components[0].Name
-	repoURL, ok := p.config.ComponentToRepo[firstComponent]
+	repoURL, ok := projectConfig.ComponentToRepo[firstComponent]
 	if !ok || repoURL == "" {
 		p.logger.Error("No repository mapping found for component",
 			zap.String("ticket", ticketKey),
@@ -78,7 +100,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 
 	// Get status transitions for this ticket type
 	ticketType := ticket.Fields.IssueType.Name
-	statusTransitions := p.config.Jira.StatusTransitions.GetStatusTransitions(ticketType)
+	statusTransitions := projectConfig.StatusTransitions.GetStatusTransitions(ticketType)
 
 	// Update the ticket status to the configured "In Progress" status
 	err = p.jiraService.UpdateTicketStatus(ticketKey, statusTransitions.InProgress)
@@ -210,8 +232,12 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		coAuthorEmail = ticket.Fields.Assignee.EmailAddress
 	}
 
-	// Commit the changes
-	err = p.githubService.CommitChanges(repoDir, fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary), coAuthorName, coAuthorEmail)
+	// Commit the changes (redact commit message if security level is set)
+	commitMessage := fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary)
+	if hasSecurityLevel {
+		commitMessage = fmt.Sprintf("%s: Security-related changes", ticketKey)
+	}
+	err = p.githubService.CommitChanges(repoDir, commitMessage, coAuthorName, coAuthorEmail)
 	if err != nil {
 		p.logger.Error("Failed to commit changes",
 			zap.String("ticket", ticketKey),
@@ -233,16 +259,18 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
-	// Create a pull request
+	// Create PR content (redact if security level is set)
 	prTitle := fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary)
-
-	// Build PR description with Jira ticket URL and assignee information
 	prBody := fmt.Sprintf("This PR addresses the issue described in [%s](%s/browse/%s).\n\n**Summary:** %s\n\n**Description:** %s",
 		ticketKey, p.config.Jira.BaseURL, ticketKey, ticket.Fields.Summary, ticket.Fields.Description)
 
 	// Add assignee information if available
 	if ticket.Fields.Assignee != nil {
 		prBody += fmt.Sprintf("\n\n**Assignee:** %s (%s)", ticket.Fields.Assignee.DisplayName, ticket.Fields.Assignee.EmailAddress)
+	}
+
+	if hasSecurityLevel {
+		prTitle, prBody = redactPRContentForSecurity(ticketKey)
 	}
 
 	// When creating a pull request from a fork, the head parameter should be in the format "forkOwner:branchName"
@@ -260,8 +288,8 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// Update the Git Pull Request field on the Jira ticket
-	if p.config.Jira.GitPullRequestFieldName != "" {
-		err = p.jiraService.UpdateTicketFieldByName(ticketKey, p.config.Jira.GitPullRequestFieldName, pr.HTMLURL)
+	if projectConfig.GitPullRequestFieldName != "" {
+		err = p.jiraService.UpdateTicketFieldByName(ticketKey, projectConfig.GitPullRequestFieldName, pr.HTMLURL)
 		if err != nil {
 			p.logger.Error("Failed to update Git Pull Request field",
 				zap.String("ticket", ticketKey),
@@ -275,7 +303,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		}
 	}
 
-	// Add a comment to the ticket
+	// Add a comment to the ticket (Jira comments are not redacted since they're internal)
 	comment := fmt.Sprintf("AI-generated pull request created: %s", pr.HTMLURL)
 	err = p.jiraService.AddComment(ticketKey, comment)
 	if err != nil {
@@ -301,8 +329,16 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 
 // handleFailure handles a failure in processing a ticket
 func (p *TicketProcessorImpl) handleFailure(ticketKey, errorMessage string) {
+	// Get project configuration for this ticket to check if error comments are disabled
+	projectConfig := p.config.GetProjectConfigForTicket(ticketKey)
+
 	// Add a comment to the ticket only if error comments are not disabled
-	if !p.config.Jira.DisableErrorComments {
+	disableComments := false
+	if projectConfig != nil {
+		disableComments = projectConfig.DisableErrorComments
+	}
+
+	if !disableComments {
 		err := p.jiraService.AddComment(ticketKey, fmt.Sprintf("AI failed to process this ticket: %s", errorMessage))
 		if err != nil {
 			p.logger.Error("Failed to add error comment", zap.String("ticket", ticketKey), zap.Error(err))
@@ -336,4 +372,11 @@ func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) 
 		"Make sure to follow the existing code style and patterns in the codebase."
 
 	return prompt
+}
+
+// redactPRContentForSecurity creates redacted PR title and body when ticket has security level
+func redactPRContentForSecurity(ticketKey string) (title string, body string) {
+	title = fmt.Sprintf("%s: Security-related changes", ticketKey)
+	body = fmt.Sprintf("This PR addresses security-related changes for ticket %s.\n\nDetails have been redacted due to security level restrictions.", ticketKey)
+	return
 }

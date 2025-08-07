@@ -300,15 +300,21 @@ func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) er
 	return fmt.Errorf("unsupported data type for TicketTypeStatusTransitions: %T", data)
 }
 
-type JiraConfig struct {
-	BaseURL                 string                      `yaml:"base_url" mapstructure:"base_url"`
-	Username                string                      `yaml:"username" mapstructure:"username"`
-	APIToken                string                      `yaml:"api_token" mapstructure:"api_token"`
-	IntervalSeconds         int                         `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
-	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
-	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
-	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
+// ProjectConfig represents configuration for a specific project or group of projects
+type ProjectConfig struct {
 	ProjectKeys             ProjectKeys                 `yaml:"project_keys" mapstructure:"project_keys"`
+	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
+	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
+	ComponentToRepo         ComponentToRepoMap          `yaml:"component_to_repo" mapstructure:"component_to_repo"`
+	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
+}
+
+type JiraConfig struct {
+	BaseURL         string          `yaml:"base_url" mapstructure:"base_url"`
+	Username        string          `yaml:"username" mapstructure:"username"`
+	APIToken        string          `yaml:"api_token" mapstructure:"api_token"`
+	IntervalSeconds int             `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
+	Projects        []ProjectConfig `yaml:"projects" mapstructure:"projects"`
 }
 
 // Config represents the application configuration
@@ -364,11 +370,37 @@ type Config struct {
 		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
 	} `yaml:"ai" mapstructure:"ai"`
 
-	// Component to Repository mapping
-	ComponentToRepo ComponentToRepoMap `yaml:"component_to_repo" mapstructure:"component_to_repo"`
-
 	// Temporary directory for cloning repositories
 	TempDir string `yaml:"temp_dir" mapstructure:"temp_dir" default:"/tmp/jira-ai-issue-solver"`
+}
+
+// GetProjectConfigForTicket returns the project configuration for a given ticket key
+func (c *Config) GetProjectConfigForTicket(ticketKey string) *ProjectConfig {
+	projectKey := strings.Split(ticketKey, "-")[0]
+
+	for _, project := range c.Jira.Projects {
+		for _, key := range project.ProjectKeys {
+			if strings.EqualFold(key, projectKey) {
+				return &project
+			}
+		}
+	}
+
+	// Return the first project if no specific match found (fallback)
+	if len(c.Jira.Projects) > 0 {
+		return &c.Jira.Projects[0]
+	}
+
+	return nil
+}
+
+// GetAllProjectKeys returns all project keys from all project configurations
+func (c *Config) GetAllProjectKeys() []string {
+	var allKeys []string
+	for _, project := range c.Jira.Projects {
+		allKeys = append(allKeys, project.ProjectKeys...)
+	}
+	return allKeys
 }
 
 // LoadConfig loads configuration from multiple sources with Viper
@@ -486,43 +518,67 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Handle component_to_repo parsing manually to preserve case sensitivity
-	// Viper's mapstructure tag converts keys to lowercase, so we need to parse this manually
+	// Handle migration from old format to new project-based format and component_to_repo parsing
 	if configPath != "" {
-		// Read the raw YAML file to extract component_to_repo with case sensitivity
+		// Read the raw YAML file to extract component_to_repo with case sensitivity and handle migration
 		yamlData, err := os.ReadFile(configPath)
 		if err == nil {
 			var rawConfig map[string]interface{}
 			if err := yaml.Unmarshal(yamlData, &rawConfig); err == nil {
-				// Handle component_to_repo
-				if componentToRepoRaw, exists := rawConfig["component_to_repo"]; exists {
-					if componentToRepoMap, ok := componentToRepoRaw.(map[string]interface{}); ok {
-						result := make(map[string]string)
-						for key, value := range componentToRepoMap {
-							if strValue, ok := value.(string); ok {
-								result[key] = strValue
-							}
-						}
-						config.ComponentToRepo = ComponentToRepoMap(result)
-					}
-				}
-
-				// Handle status_transitions for new format
+				// Check if this is the old format (has individual fields under jira)
 				if jiraRaw, exists := rawConfig["jira"]; exists {
 					if jiraMap, ok := jiraRaw.(map[string]interface{}); ok {
-						if statusTransitionsRaw, exists := jiraMap["status_transitions"]; exists {
-							if statusTransitionsMap, ok := statusTransitionsRaw.(map[string]interface{}); ok {
-								// Check if this is the new format (has nested structure)
-								hasNestedStructure := false
-								for _, value := range statusTransitionsMap {
-									if _, ok := value.(map[string]interface{}); ok {
-										hasNestedStructure = true
-										break
-									}
-								}
+						// Check if old format fields exist but projects array doesn't
+						hasOldFormat := false
+						if _, hasProjectKeys := jiraMap["project_keys"]; hasProjectKeys {
+							hasOldFormat = true
+						}
+						if _, hasStatusTransitions := jiraMap["status_transitions"]; hasStatusTransitions {
+							hasOldFormat = true
+						}
+						if _, hasGitField := jiraMap["git_pull_request_field_name"]; hasGitField {
+							hasOldFormat = true
+						}
+						if _, hasDisableComments := jiraMap["disable_error_comments"]; hasDisableComments {
+							hasOldFormat = true
+						}
 
-								if hasNestedStructure {
-									// New format - parse nested structure
+						if hasOldFormat && len(config.Jira.Projects) == 0 {
+							// Migrate from old format to new format
+							fmt.Println("Detected old configuration format, migrating to new project-based format...")
+
+							migrationProject := ProjectConfig{}
+
+							// Migrate project_keys
+							if projectKeysRaw, exists := jiraMap["project_keys"]; exists {
+								if projectKeysList, ok := projectKeysRaw.([]interface{}); ok {
+									var projectKeys []string
+									for _, key := range projectKeysList {
+										if strKey, ok := key.(string); ok {
+											projectKeys = append(projectKeys, strKey)
+										}
+									}
+									migrationProject.ProjectKeys = ProjectKeys(projectKeys)
+								}
+							}
+
+							// Migrate git_pull_request_field_name
+							if gitFieldRaw, exists := jiraMap["git_pull_request_field_name"]; exists {
+								if gitFieldStr, ok := gitFieldRaw.(string); ok {
+									migrationProject.GitPullRequestFieldName = gitFieldStr
+								}
+							}
+
+							// Migrate disable_error_comments
+							if disableCommentsRaw, exists := jiraMap["disable_error_comments"]; exists {
+								if disableCommentsBool, ok := disableCommentsRaw.(bool); ok {
+									migrationProject.DisableErrorComments = disableCommentsBool
+								}
+							}
+
+							// Migrate status_transitions
+							if statusTransitionsRaw, exists := jiraMap["status_transitions"]; exists {
+								if statusTransitionsMap, ok := statusTransitionsRaw.(map[string]interface{}); ok {
 									result := make(TicketTypeStatusTransitions)
 									for ticketType, transitionData := range statusTransitionsMap {
 										if transitionMap, ok := transitionData.(map[string]interface{}); ok {
@@ -539,18 +595,56 @@ func LoadConfig(configPath string) (*Config, error) {
 											result[ticketType] = transitions
 										}
 									}
-									config.Jira.StatusTransitions = result
+									migrationProject.StatusTransitions = result
 								}
 							}
+
+							// Migrate component_to_repo from root level
+							if componentToRepoRaw, exists := rawConfig["component_to_repo"]; exists {
+								if componentToRepoMap, ok := componentToRepoRaw.(map[string]interface{}); ok {
+									result := make(map[string]string)
+									for key, value := range componentToRepoMap {
+										if strValue, ok := value.(string); ok {
+											result[key] = strValue
+										}
+									}
+									migrationProject.ComponentToRepo = ComponentToRepoMap(result)
+								}
+							}
+
+							// Add the migrated project to the projects array
+							config.Jira.Projects = []ProjectConfig{migrationProject}
+							fmt.Println("Migration completed successfully")
 						}
 					}
 				}
+
+				// Handle component_to_repo at root level (for projects that still have it there)
+				if componentToRepoRaw, exists := rawConfig["component_to_repo"]; exists {
+					if componentToRepoMap, ok := componentToRepoRaw.(map[string]interface{}); ok {
+						result := make(map[string]string)
+						for key, value := range componentToRepoMap {
+							if strValue, ok := value.(string); ok {
+								result[key] = strValue
+							}
+						}
+						// If no projects or the first project doesn't have component_to_repo, add it
+						if len(config.Jira.Projects) > 0 && len(config.Jira.Projects[0].ComponentToRepo) == 0 {
+							config.Jira.Projects[0].ComponentToRepo = ComponentToRepoMap(result)
+						}
+					}
+				}
+
 			}
 		}
 	}
 
-	// Fallback to environment variable parsing if still empty
-	if len(config.ComponentToRepo) == 0 {
+	// Fallback to environment variable parsing for projects if still empty
+	if len(config.Jira.Projects) == 0 {
+		// Create a default project from environment variables
+		defaultProject := ProjectConfig{}
+
+		// Handle component_to_repo from environment
 		componentToRepoStr := v.GetString("component_to_repo")
 		if componentToRepoStr != "" {
 			pairs := strings.Split(componentToRepoStr, ",")
@@ -563,13 +657,38 @@ func LoadConfig(configPath string) (*Config, error) {
 				}
 			}
 
-			config.ComponentToRepo = ComponentToRepoMap(result)
+			defaultProject.ComponentToRepo = ComponentToRepoMap(result)
 		}
-	}
 
-	// Fallback to individual environment variables for status transitions if still empty
-	if len(config.Jira.StatusTransitions) == 0 {
-		config.Jira.StatusTransitions = reconstructStatusTransitionsFromEnv(v)
+		// Handle status transitions from environment
+		defaultProject.StatusTransitions = reconstructStatusTransitionsFromEnv(v)
+
+		// Handle project keys from environment (if set)
+		projectKeysStr := v.GetString("jira.project_keys")
+		if projectKeysStr != "" {
+			keys := strings.Split(projectKeysStr, ",")
+			var projectKeys []string
+			for _, key := range keys {
+				if trimmed := strings.TrimSpace(key); trimmed != "" {
+					projectKeys = append(projectKeys, trimmed)
+				}
+			}
+			defaultProject.ProjectKeys = ProjectKeys(projectKeys)
+		}
+
+		// Handle git PR field name from environment
+		gitFieldName := v.GetString("jira.git_pull_request_field_name")
+		if gitFieldName != "" {
+			defaultProject.GitPullRequestFieldName = gitFieldName
+		}
+
+		// Handle disable error comments from environment
+		defaultProject.DisableErrorComments = v.GetBool("jira.disable_error_comments")
+
+		// Only add the default project if it has some configuration
+		if len(defaultProject.ComponentToRepo) > 0 || len(defaultProject.StatusTransitions) > 0 || len(defaultProject.ProjectKeys) > 0 {
+			config.Jira.Projects = []ProjectConfig{defaultProject}
+		}
 	}
 
 	// Validate configuration (after all fallbacks have been applied)
@@ -689,11 +808,6 @@ func (c *Config) validate() error {
 		return fmt.Errorf("invalid log format: %s. Valid options are: console, json", c.Logging.Format)
 	}
 
-	// Validate component to repo mapping (required for functionality)
-	if len(c.ComponentToRepo) == 0 {
-		return errors.New("at least one component_to_repo mapping is required")
-	}
-
 	// Validate Jira configuration (required for this application)
 	if c.Jira.BaseURL == "" {
 		return errors.New("jira.base_url is required")
@@ -705,27 +819,42 @@ func (c *Config) validate() error {
 		return errors.New("jira.api_token is required")
 	}
 
-	// Validate status transitions - every configured ticket type must have all required status transitions
-	for ticketType, transitions := range c.Jira.StatusTransitions {
-		if transitions.Todo == "" {
-			return fmt.Errorf("jira.status_transitions.%s.todo cannot be empty", ticketType)
-		}
-		if transitions.InProgress == "" {
-			return fmt.Errorf("jira.status_transitions.%s.in_progress cannot be empty", ticketType)
-		}
-		if transitions.InReview == "" {
-			return fmt.Errorf("jira.status_transitions.%s.in_review cannot be empty", ticketType)
-		}
+	// Validate projects configuration - at least one project must be configured
+	if len(c.Jira.Projects) == 0 {
+		return errors.New("at least one project must be configured in jira.projects")
 	}
 
-	// Ensure at least one ticket type is configured
-	if len(c.Jira.StatusTransitions) == 0 {
-		return errors.New("at least one ticket type must be configured in jira.status_transitions")
-	}
+	// Validate each project configuration
+	for i, project := range c.Jira.Projects {
+		projectPrefix := fmt.Sprintf("jira.projects[%d]", i)
 
-	// Validate project keys - at least one project key must be configured
-	if len(c.Jira.ProjectKeys) == 0 {
-		return errors.New("at least one project key must be configured in jira.project_keys")
+		// Validate project keys - at least one project key must be configured per project
+		if len(project.ProjectKeys) == 0 {
+			return fmt.Errorf("%s.project_keys: at least one project key must be configured", projectPrefix)
+		}
+
+		// Validate status transitions - every configured ticket type must have all required status transitions
+		for ticketType, transitions := range project.StatusTransitions {
+			if transitions.Todo == "" {
+				return fmt.Errorf("%s.status_transitions.%s.todo cannot be empty", projectPrefix, ticketType)
+			}
+			if transitions.InProgress == "" {
+				return fmt.Errorf("%s.status_transitions.%s.in_progress cannot be empty", projectPrefix, ticketType)
+			}
+			if transitions.InReview == "" {
+				return fmt.Errorf("%s.status_transitions.%s.in_review cannot be empty", projectPrefix, ticketType)
+			}
+		}
+
+		// Ensure at least one ticket type is configured per project
+		if len(project.StatusTransitions) == 0 {
+			return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", projectPrefix)
+		}
+
+		// Validate component to repo mapping (required for functionality)
+		if len(project.ComponentToRepo) == 0 {
+			return fmt.Errorf("%s.component_to_repo: at least one component_to_repo mapping is required", projectPrefix)
+		}
 	}
 
 	if c.GitHub.PersonalAccessToken != "" || c.GitHub.BotUsername != "" || c.GitHub.BotEmail != "" {

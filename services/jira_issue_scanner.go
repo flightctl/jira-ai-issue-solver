@@ -92,28 +92,48 @@ func (s *JiraIssueScannerServiceImpl) Stop() {
 }
 
 // buildTodoStatusJQL builds a JQL query that searches for tickets across all configured ticket types
-// and their respective todo statuses
+// and their respective todo statuses across all projects
 func (s *JiraIssueScannerServiceImpl) buildTodoStatusJQL() string {
 	var conditions []string
+	var allProjectKeys []string
 
-	// Iterate through all configured ticket types and their status transitions
-	for ticketType, transitions := range s.config.Jira.StatusTransitions {
-		// Create condition for this ticket type and its todo status
-		condition := fmt.Sprintf(`(issuetype = "%s" AND status = "%s")`, ticketType, transitions.Todo)
-		conditions = append(conditions, condition)
+	// Iterate through all configured projects
+	for _, project := range s.config.Jira.Projects {
+		// Add project keys to the list
+		allProjectKeys = append(allProjectKeys, project.ProjectKeys...)
+
+		// Iterate through all configured ticket types and their status transitions for this project
+		for ticketType, transitions := range project.StatusTransitions {
+			// Create condition for this ticket type and its todo status
+			condition := fmt.Sprintf(`(issuetype = "%s" AND status = "%s")`, ticketType, transitions.Todo)
+
+			// Only add if not already present (avoid duplicates across projects)
+			found := false
+			for _, existing := range conditions {
+				if existing == condition {
+					found = true
+					break
+				}
+			}
+			if !found {
+				conditions = append(conditions, condition)
+			}
+		}
 	}
 
 	// Build the base JQL query
 	orConditions := strings.Join(conditions, " OR ")
 	jql := fmt.Sprintf(`Contributors = currentUser() AND (%s)`, orConditions)
 
-	// Add project key filtering (mandatory)
-	projectConditions := make([]string, len(s.config.Jira.ProjectKeys))
-	for i, projectKey := range s.config.Jira.ProjectKeys {
-		projectConditions[i] = fmt.Sprintf(`project = "%s"`, strings.TrimSpace(projectKey))
+	// Add project key filtering (mandatory) - include all project keys from all projects
+	if len(allProjectKeys) > 0 {
+		projectConditions := make([]string, len(allProjectKeys))
+		for i, projectKey := range allProjectKeys {
+			projectConditions[i] = fmt.Sprintf(`project = "%s"`, strings.TrimSpace(projectKey))
+		}
+		projectFilter := strings.Join(projectConditions, " OR ")
+		jql = fmt.Sprintf(`%s AND (%s)`, jql, projectFilter)
 	}
-	projectFilter := strings.Join(projectConditions, " OR ")
-	jql = fmt.Sprintf(`%s AND (%s)`, jql, projectFilter)
 
 	// Add ordering
 	jql = fmt.Sprintf(`%s ORDER BY updated DESC`, jql)
@@ -127,8 +147,8 @@ func (s *JiraIssueScannerServiceImpl) scanForTickets() {
 	s.logger.Info("Scanning for tickets that need AI processing...")
 
 	// Log current configuration for debugging
-	s.logger.Debug("Current status transitions configuration",
-		zap.Any("status_transitions", s.config.Jira.StatusTransitions))
+	s.logger.Debug("Current projects configuration",
+		zap.Any("projects", s.config.Jira.Projects))
 
 	// Build dynamic JQL query based on all configured ticket types and their todo statuses
 	jql := s.buildTodoStatusJQL()

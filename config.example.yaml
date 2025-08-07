@@ -13,33 +13,59 @@ jira:
   username: your-username
   api_token: your-jira-api-token
   interval_seconds: 300
-  disable_error_comments: false
-  # git_pull_request_field_name: "Git Pull Request"  # Required for PR feedback processing - set to your custom field name for PR URL
-  # Project keys to filter by (required - at least one project key must be specified)
-  project_keys:
-    - "PROJ1"
-    - "PROJ2"
-    - "PROJ3"
-  # Status transitions can now be configured per ticket type
-  # All ticket types must be explicitly configured
-  status_transitions:
-    # Specific transitions for Bug tickets
-    Bug:
-      todo: "Open"
-      in_progress: "In Progress"
-      in_review: "Code Review"
+  
+  # Project-specific configurations
+  # Each project can have its own settings for components, status transitions, etc.
+  projects:
+    # Example project 1 - with git PR field
+    - project_keys:
+        - "PROJ1"
+        - "PROJ2"
+      git_pull_request_field_name: "Git Pull Request"  # Required for PR feedback processing - set to your custom field name for PR URL
+      disable_error_comments: false
+      # Status transitions can be configured per ticket type
+      # All ticket types must be explicitly configured
+      status_transitions:
+        # Specific transitions for Bug tickets
+        Bug:
+          todo: "Open"
+          in_progress: "In Progress"
+          in_review: "Code Review"
+        
+        # Specific transitions for Story tickets
+        Story:
+          todo: "Backlog"
+          in_progress: "Development"
+          in_review: "Testing"
+        
+        # Specific transitions for Task tickets
+        Task:
+          todo: "To Do"
+          in_progress: "In Progress"
+          in_review: "Review"
+      
+      # Component to Repository Mapping for this project
+      # Note: Component names are case-sensitive and will be matched exactly as they appear in Jira
+      component_to_repo:
+        frontend: https://github.com/your-org/frontend.git
+        backend: https://github.com/your-org/backend.git
+        api: https://github.com/your-org/api.git
     
-    # Specific transitions for Story tickets
-    Story:
-      todo: "Backlog"
-      in_progress: "Development"
-      in_review: "Testing"
-    
-    # Specific transitions for Task tickets
-    Task:
-      todo: "To Do"
-      in_progress: "In Progress"
-      in_review: "Review"
+    # Example project 2 - using PR URLs in comments instead of git field
+    - project_keys:
+        - "PROJ3"
+      # No git_pull_request_field_name specified - PR URLs will be looked for in comments
+      disable_error_comments: true
+      status_transitions:
+        Bug:
+          todo: "NEW"
+          in_progress: "ASSIGNED"
+          in_review: "POST"
+      component_to_repo:
+        mobile: https://github.com/your-org/mobile.git
+        # Example of case-sensitive mapping:
+        # FlightCtl: https://github.com/your-org/flightctl.git
+        # flightctl: https://github.com/your-org/flightctl-lowercase.git
 
 # GitHub Configuration
 github:
@@ -73,17 +99,6 @@ gemini:
   all_files: false
   sandbox: false
   api_key: "your-gemini-api-key-here"
-
-# Component to Repository Mapping
-# Note: Component names are case-sensitive and will be matched exactly as they appear in Jira
-component_to_repo:
-  frontend: https://github.com/your-org/frontend.git
-  backend: https://github.com/your-org/backend.git
-  api: https://github.com/your-org/api.git
-  mobile: https://github.com/your-org/mobile.git
-  # Example of case-sensitive mapping:
-  # FlightCtl: https://github.com/your-org/flightctl.git
-  # flightctl: https://github.com/your-org/flightctl-lowercase.git
 
 # Temporary Directory
 temp_dir: /tmp/jira-ai-issue-solver 
