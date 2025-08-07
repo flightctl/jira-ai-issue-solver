@@ -85,7 +85,9 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 
 	// Use the first component to find the repository
 	firstComponent := ticket.Fields.Components[0].Name
-	repoURL, ok := projectConfig.ComponentToRepo[firstComponent]
+	// Convert to lowercase for lookup since Viper lowercases all config keys
+	componentKey := strings.ToLower(firstComponent)
+	repoURL, ok := projectConfig.ComponentToRepo[componentKey]
 	if !ok || repoURL == "" {
 		p.logger.Error("No repository mapping found for component",
 			zap.String("ticket", ticketKey),
