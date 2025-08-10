@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 
@@ -191,44 +190,25 @@ type TicketTypeStatusTransitions map[string]StatusTransitions
 func (t *TicketTypeStatusTransitions) UnmarshalYAML(value *yaml.Node) error {
 	*t = make(TicketTypeStatusTransitions)
 
-	// Handle the case where status_transitions is a simple struct (backward compatibility)
-	if value.Kind == yaml.MappingNode {
-		// Check if the first key is one of the expected status transition keys
-		for i := 0; i < len(value.Content); i += 2 {
-			if i+1 < len(value.Content) {
-				key := value.Content[i].Value
-				if key == "todo" || key == "in_progress" || key == "in_review" {
-					// This is the old format, decode as simple transitions
-					var simpleTransitions StatusTransitions
-					if err := value.Decode(&simpleTransitions); err != nil {
-						return err
-					}
-					(*t)["default"] = simpleTransitions
-					return nil
-				}
-			}
-		}
-	}
-
 	// Handle the case where status_transitions is a map of ticket types
 	return value.Decode((*map[string]StatusTransitions)(t))
 }
 
 // GetStatusTransitions returns the status transitions for a specific ticket type
-// Falls back to "default" if the ticket type is not found
 func (t TicketTypeStatusTransitions) GetStatusTransitions(ticketType string) StatusTransitions {
+	// Try exact match first
 	if transitions, exists := t[ticketType]; exists {
 		return transitions
 	}
-	// Fall back to default if the ticket type is not found
-	if transitions, exists := t["default"]; exists {
+	// Try lowercase match (since Viper converts YAML keys to lowercase)
+	if transitions, exists := t[strings.ToLower(ticketType)]; exists {
 		return transitions
 	}
-	// Return empty transitions if no default is found
+	// Return empty transitions if ticket type is not configured
 	return StatusTransitions{}
 }
 
-// UnmarshalMapstructure implements custom mapstructure decoding for backward compatibility
+// UnmarshalMapstructure implements custom mapstructure decoding for handling different data types
 func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) error {
 	*t = make(TicketTypeStatusTransitions)
 
@@ -261,22 +241,6 @@ func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) er
 
 	// Handle the case where data is a map[string]interface{} (from mapstructure)
 	if mapData, ok := data.(map[string]interface{}); ok {
-		// Check if this is the old format (has todo, in_progress, in_review keys)
-		if _, hasTodo := mapData["todo"]; hasTodo {
-			// Old format - convert to default transitions
-			transitions := StatusTransitions{}
-			if todo, ok := mapData["todo"].(string); ok {
-				transitions.Todo = todo
-			}
-			if inProgress, ok := mapData["in_progress"].(string); ok {
-				transitions.InProgress = inProgress
-			}
-			if inReview, ok := mapData["in_review"].(string); ok {
-				transitions.InReview = inReview
-			}
-			(*t)["default"] = transitions
-			return nil
-		}
 
 		// New format - convert map[string]interface{} to map[string]StatusTransitions
 		for ticketType, transitionData := range mapData {
@@ -516,127 +480,6 @@ func LoadConfig(configPath string) (*Config, error) {
 		},
 	))); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	// Handle migration from old format to new project-based format and component_to_repo parsing
-	if configPath != "" {
-		// Read the raw YAML file to extract component_to_repo with case sensitivity and handle migration
-		yamlData, err := os.ReadFile(configPath)
-		if err == nil {
-			var rawConfig map[string]interface{}
-			if err := yaml.Unmarshal(yamlData, &rawConfig); err == nil {
-				// Check if this is the old format (has individual fields under jira)
-				if jiraRaw, exists := rawConfig["jira"]; exists {
-					if jiraMap, ok := jiraRaw.(map[string]interface{}); ok {
-						// Check if old format fields exist but projects array doesn't
-						hasOldFormat := false
-						if _, hasProjectKeys := jiraMap["project_keys"]; hasProjectKeys {
-							hasOldFormat = true
-						}
-						if _, hasStatusTransitions := jiraMap["status_transitions"]; hasStatusTransitions {
-							hasOldFormat = true
-						}
-						if _, hasGitField := jiraMap["git_pull_request_field_name"]; hasGitField {
-							hasOldFormat = true
-						}
-						if _, hasDisableComments := jiraMap["disable_error_comments"]; hasDisableComments {
-							hasOldFormat = true
-						}
-
-						if hasOldFormat && len(config.Jira.Projects) == 0 {
-							// Migrate from old format to new format
-							fmt.Println("Detected old configuration format, migrating to new project-based format...")
-
-							migrationProject := ProjectConfig{}
-
-							// Migrate project_keys
-							if projectKeysRaw, exists := jiraMap["project_keys"]; exists {
-								if projectKeysList, ok := projectKeysRaw.([]interface{}); ok {
-									var projectKeys []string
-									for _, key := range projectKeysList {
-										if strKey, ok := key.(string); ok {
-											projectKeys = append(projectKeys, strKey)
-										}
-									}
-									migrationProject.ProjectKeys = ProjectKeys(projectKeys)
-								}
-							}
-
-							// Migrate git_pull_request_field_name
-							if gitFieldRaw, exists := jiraMap["git_pull_request_field_name"]; exists {
-								if gitFieldStr, ok := gitFieldRaw.(string); ok {
-									migrationProject.GitPullRequestFieldName = gitFieldStr
-								}
-							}
-
-							// Migrate disable_error_comments
-							if disableCommentsRaw, exists := jiraMap["disable_error_comments"]; exists {
-								if disableCommentsBool, ok := disableCommentsRaw.(bool); ok {
-									migrationProject.DisableErrorComments = disableCommentsBool
-								}
-							}
-
-							// Migrate status_transitions
-							if statusTransitionsRaw, exists := jiraMap["status_transitions"]; exists {
-								if statusTransitionsMap, ok := statusTransitionsRaw.(map[string]interface{}); ok {
-									result := make(TicketTypeStatusTransitions)
-									for ticketType, transitionData := range statusTransitionsMap {
-										if transitionMap, ok := transitionData.(map[string]interface{}); ok {
-											transitions := StatusTransitions{}
-											if todo, ok := transitionMap["todo"].(string); ok {
-												transitions.Todo = todo
-											}
-											if inProgress, ok := transitionMap["in_progress"].(string); ok {
-												transitions.InProgress = inProgress
-											}
-											if inReview, ok := transitionMap["in_review"].(string); ok {
-												transitions.InReview = inReview
-											}
-											result[ticketType] = transitions
-										}
-									}
-									migrationProject.StatusTransitions = result
-								}
-							}
-
-							// Migrate component_to_repo from root level
-							if componentToRepoRaw, exists := rawConfig["component_to_repo"]; exists {
-								if componentToRepoMap, ok := componentToRepoRaw.(map[string]interface{}); ok {
-									result := make(map[string]string)
-									for key, value := range componentToRepoMap {
-										if strValue, ok := value.(string); ok {
-											result[key] = strValue
-										}
-									}
-									migrationProject.ComponentToRepo = ComponentToRepoMap(result)
-								}
-							}
-
-							// Add the migrated project to the projects array
-							config.Jira.Projects = []ProjectConfig{migrationProject}
-							fmt.Println("Migration completed successfully")
-						}
-					}
-				}
-
-				// Handle component_to_repo at root level (for projects that still have it there)
-				if componentToRepoRaw, exists := rawConfig["component_to_repo"]; exists {
-					if componentToRepoMap, ok := componentToRepoRaw.(map[string]interface{}); ok {
-						result := make(map[string]string)
-						for key, value := range componentToRepoMap {
-							if strValue, ok := value.(string); ok {
-								result[key] = strValue
-							}
-						}
-						// If no projects or the first project doesn't have component_to_repo, add it
-						if len(config.Jira.Projects) > 0 && len(config.Jira.Projects[0].ComponentToRepo) == 0 {
-							config.Jira.Projects[0].ComponentToRepo = ComponentToRepoMap(result)
-						}
-					}
-				}
-
-			}
-		}
 	}
 
 	// Fallback to environment variable parsing for projects if still empty
