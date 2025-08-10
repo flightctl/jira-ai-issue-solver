@@ -186,6 +186,9 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	// Set Gemini API key if configured
 	if s.config.Gemini.APIKey != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("GEMINI_API_KEY=%s", s.config.Gemini.APIKey))
+		s.logger.Debug("Gemini API key set", zap.String("api_key", s.config.Gemini.APIKey))
+	} else {
+		s.logger.Debug("Gemini API key not set")
 	}
 
 	// Create pipes for stdout and stderr
