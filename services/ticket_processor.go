@@ -386,7 +386,7 @@ func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) 
 
 // redactPRContentForSecurity creates redacted PR title and body when ticket has security level
 func redactPRContentForSecurity(ticketKey string) (title string, body string) {
-	title = fmt.Sprintf("%s: Security-related changes", ticketKey)
-	body = fmt.Sprintf("This PR addresses security-related changes for ticket %s.\n\nDetails have been redacted due to security level restrictions.", ticketKey)
+	title = fmt.Sprintf("%s: Update", ticketKey)
+	body = fmt.Sprintf("This PR addresses ticket %s.", ticketKey)
 	return
 }

@@ -479,7 +479,7 @@ AI has processed feedback for ticket %s at this time. Future processing will onl
 			zap.String("ticket", ticketKey))
 		commentBody = fmt.Sprintf(`🤖 AI Processing Timestamp: %s
 
-AI has processed feedback for ticket %s at this time. Details redacted due to security level restrictions.`,
+AI has processed feedback for ticket %s at this time.`,
 			currentTime.Format(time.RFC3339), ticketKey)
 	}
 
