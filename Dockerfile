@@ -36,7 +36,7 @@ RUN apk update && \
     && rm -rf /var/cache/apk/*
 
 # Install AI CLI tools
-RUN npm install -g @google/gemini-cli @anthropic-ai/claude-code
+RUN npm install -g @google/gemini-cli@0.1.18 @anthropic-ai/claude-code
 
 # Create non-root user for security
 RUN addgroup -g 1001 appgroup && \
