@@ -297,8 +297,9 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
-	// Update the Git Pull Request field on the Jira ticket
+	// Update the Git Pull Request field or add a comment to the Jira ticket
 	if projectConfig.GitPullRequestFieldName != "" {
+		// If we have a designated field, update it
 		err = p.jiraService.UpdateTicketFieldByName(ticketKey, projectConfig.GitPullRequestFieldName, pr.HTMLURL)
 		if err != nil {
 			p.logger.Error("Failed to update Git Pull Request field",
@@ -311,17 +312,23 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 				zap.String("ticket", ticketKey),
 				zap.String("pr_url", pr.HTMLURL))
 		}
-	}
+	} else {
+		// If no designated field, add a structured comment for easy extraction
+		// (Jira comments are not redacted since they're internal)
+		comment := fmt.Sprintf("[AI-BOT-PR] %s", pr.HTMLURL)
 
-	// Add a comment to the ticket (Jira comments are not redacted since they're internal)
-	comment := fmt.Sprintf("AI-generated pull request created: %s", pr.HTMLURL)
-	err = p.jiraService.AddComment(ticketKey, comment)
-	if err != nil {
-		p.logger.Error("Failed to add comment",
-			zap.String("ticket", ticketKey),
-			zap.String("comment", comment),
-			zap.Error(err))
-		// Continue processing even if comment fails
+		err = p.jiraService.AddComment(ticketKey, comment)
+		if err != nil {
+			p.logger.Error("Failed to add comment",
+				zap.String("ticket", ticketKey),
+				zap.String("comment", comment),
+				zap.Error(err))
+			// Continue processing even if comment fails
+		} else {
+			p.logger.Info("Added structured PR comment to ticket",
+				zap.String("ticket", ticketKey),
+				zap.String("pr_url", pr.HTMLURL))
+		}
 	}
 
 	// Update the ticket status to the configured "In Review" status

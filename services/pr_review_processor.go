@@ -220,27 +220,34 @@ func (p *PRReviewProcessorImpl) getPRURLFromComments(ticketKey string) (string, 
 		return "", fmt.Errorf("failed to get ticket with comments: %w", err)
 	}
 
-	// GitHub PR URL pattern
-	githubPRPattern := regexp.MustCompile(`https://github\.com/[^/\s]+/[^/\s]+/pull/\d+`)
+	// Structured AI bot PR comment pattern (preferred)
+	structuredPRPattern := regexp.MustCompile(`\[AI-BOT-PR\]\s+(https://github\.com/[^/\s]+/[^/\s]+/pull/\d+)`)
 
-	// Search through comments for GitHub PR URLs
+	// Search through comments for structured PR URLs first
 	// Look through comments in reverse order (newest first) to find the most recent PR URL
+	// Only check comments made by our bot
 	for i := len(ticket.Fields.Comment.Comments) - 1; i >= 0; i-- {
 		comment := ticket.Fields.Comment.Comments[i]
 
-		// Find GitHub PR URL in the comment body
-		matches := githubPRPattern.FindAllString(comment.Body, -1)
-		if len(matches) > 0 {
-			// Return the first (and typically only) PR URL found
-			p.logger.Debug("Found PR URL in comment",
+		// Skip comments not made by our bot
+		if comment.Author.Name != p.config.Jira.Username {
+			continue
+		}
+
+		// First, look for structured AI bot PR comments
+		structuredMatches := structuredPRPattern.FindStringSubmatch(comment.Body)
+		if len(structuredMatches) > 1 {
+			prURL := structuredMatches[1]
+			p.logger.Debug("Found structured AI-bot PR URL in comment",
 				zap.String("ticket", ticketKey),
-				zap.String("pr_url", matches[0]),
+				zap.String("pr_url", prURL),
 				zap.String("comment_id", comment.ID),
 				zap.String("comment_author", comment.Author.DisplayName))
-			return matches[0], nil
+			return prURL, nil
 		}
 	}
 
+	// No structured PR comment found
 	return "", nil
 }
 
