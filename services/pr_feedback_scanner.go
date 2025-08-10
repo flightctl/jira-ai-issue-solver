@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"jira-ai-issue-solver/models"
@@ -28,6 +29,7 @@ type PRFeedbackScannerServiceImpl struct {
 	logger            *zap.Logger
 	stopChan          chan struct{}
 	isRunning         bool
+	processingTickets sync.Map // map[string]bool to track tickets currently being processed
 }
 
 // NewPRFeedbackScannerService creates a new PRFeedbackScannerService
@@ -89,6 +91,12 @@ func (s *PRFeedbackScannerServiceImpl) Stop() {
 
 	s.isRunning = false
 	close(s.stopChan)
+
+	// Clear any remaining processing tickets to prevent memory leaks
+	s.processingTickets.Range(func(key, value interface{}) bool {
+		s.processingTickets.Delete(key)
+		return true
+	})
 }
 
 // buildInReviewStatusJQL builds a JQL query that searches for tickets across all configured ticket types
@@ -195,8 +203,22 @@ func (s *PRFeedbackScannerServiceImpl) scanForPRFeedback() {
 	for _, issue := range searchResponse.Issues {
 		s.logger.Info("Found ticket in 'In Review' status", zap.String("ticket", issue.Key))
 
+		// Check if this ticket is already being processed
+		if _, isProcessing := s.processingTickets.Load(issue.Key); isProcessing {
+			s.logger.Info("Ticket is already being processed for PR feedback, skipping", zap.String("ticket", issue.Key))
+			continue
+		}
+
+		// Mark this ticket as being processed
+		s.processingTickets.Store(issue.Key, true)
+
 		// Process the ticket asynchronously
 		go func(ticketKey string) {
+			defer func() {
+				// Remove from processing map when done
+				s.processingTickets.Delete(ticketKey)
+			}()
+
 			if err := s.prReviewProcessor.ProcessPRReviewFeedback(ticketKey); err != nil {
 				s.logger.Error("Failed to process PR feedback for ticket", zap.String("ticket", ticketKey), zap.Error(err))
 			}

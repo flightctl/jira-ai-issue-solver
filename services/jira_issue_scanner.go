@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"jira-ai-issue-solver/models"
@@ -20,14 +21,15 @@ type JiraIssueScannerService interface {
 
 // JiraIssueScannerServiceImpl implements the JiraIssueScannerService interface
 type JiraIssueScannerServiceImpl struct {
-	jiraService     JiraService
-	githubService   GitHubService
-	aiService       AIService
-	ticketProcessor TicketProcessor
-	config          *models.Config
-	logger          *zap.Logger
-	stopChan        chan struct{}
-	isRunning       bool
+	jiraService       JiraService
+	githubService     GitHubService
+	aiService         AIService
+	ticketProcessor   TicketProcessor
+	config            *models.Config
+	logger            *zap.Logger
+	stopChan          chan struct{}
+	isRunning         bool
+	processingTickets sync.Map // map[string]bool to track tickets currently being processed
 }
 
 // NewJiraIssueScannerService creates a new JiraIssueScannerService
@@ -89,6 +91,12 @@ func (s *JiraIssueScannerServiceImpl) Stop() {
 
 	s.isRunning = false
 	close(s.stopChan)
+
+	// Clear any remaining processing tickets to prevent memory leaks
+	s.processingTickets.Range(func(key, value interface{}) bool {
+		s.processingTickets.Delete(key)
+		return true
+	})
 }
 
 // buildTodoStatusJQL builds a JQL query that searches for tickets across all configured ticket types
@@ -170,9 +178,26 @@ func (s *JiraIssueScannerServiceImpl) scanForTickets() {
 	for _, issue := range searchResponse.Issues {
 		s.logger.Info("Found ticket", zap.String("ticket", issue.Key))
 
-		// Process all tickets returned by the search
+		// Check if this ticket is already being processed
+		if _, isProcessing := s.processingTickets.Load(issue.Key); isProcessing {
+			s.logger.Info("Ticket is already being processed, skipping", zap.String("ticket", issue.Key))
+			continue
+		}
+
+		// Mark this ticket as being processed
+		s.processingTickets.Store(issue.Key, true)
 
 		// Process the ticket asynchronously
-		go s.ticketProcessor.ProcessTicket(issue.Key)
+		go func(ticketKey string) {
+			defer func() {
+				// Remove from processing map when done
+				s.processingTickets.Delete(ticketKey)
+			}()
+
+			err := s.ticketProcessor.ProcessTicket(ticketKey)
+			if err != nil {
+				s.logger.Error("Failed to process ticket", zap.String("ticket", ticketKey), zap.Error(err))
+			}
+		}(issue.Key)
 	}
 }
