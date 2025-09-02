@@ -54,30 +54,88 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 		return err
 	}
 
-	// Get the PR URL from the custom field
-	prURL, err := p.getPRURLFromTicket(ticket)
+	// Get all PR URLs from the ticket
+	prURLs, err := p.getPRURLsFromTicket(ticket)
 	if err != nil {
-		p.logger.Error("Failed to get PR URL from ticket", zap.String("ticket", ticketKey), zap.Error(err))
+		p.logger.Error("Failed to get PR URLs from ticket", zap.String("ticket", ticketKey), zap.Error(err))
 		return err
 	}
 
-	if prURL == "" {
-		p.logger.Info("No PR URL found for ticket", zap.String("ticket", ticketKey))
+	if len(prURLs) == 0 {
+		p.logger.Info("No PR URLs found for ticket", zap.String("ticket", ticketKey))
 		return nil
 	}
 
+	p.logger.Info("Found PR URLs for ticket",
+		zap.String("ticket", ticketKey),
+		zap.Int("pr_count", len(prURLs)),
+		zap.Strings("pr_urls", prURLs))
+
+	// Process each PR for feedback
+	hasAnyRequestChanges := false
+
+	for i, prURL := range prURLs {
+		p.logger.Info("Processing PR feedback",
+			zap.String("ticket", ticketKey),
+			zap.Int("pr_index", i+1),
+			zap.Int("total_prs", len(prURLs)),
+			zap.String("pr_url", prURL))
+
+		// Extract repository owner/name for better identification
+		repoIdentifier := "unknown/unknown"
+		if owner, repo, _, err := p.extractPRInfoFromURL(prURL); err == nil {
+			repoIdentifier = fmt.Sprintf("%s/%s", owner, repo)
+		}
+
+		hasRequestChanges, err := p.processSinglePRFeedback(ticketKey, prURL, ticket, repoIdentifier)
+		if err != nil {
+			p.logger.Error("Failed to process feedback for PR",
+				zap.String("ticket", ticketKey),
+				zap.String("repo_identifier", repoIdentifier),
+				zap.String("pr_url", prURL),
+				zap.Error(err))
+			// Continue processing other PRs even if one fails
+			continue
+		}
+
+		if hasRequestChanges {
+			hasAnyRequestChanges = true
+		}
+	}
+
+	// Log summary of processing
+	if hasAnyRequestChanges {
+		p.logger.Info("Processed feedback for ticket with requested changes",
+			zap.String("ticket", ticketKey),
+			zap.Int("total_prs", len(prURLs)))
+	} else {
+		p.logger.Info("No requested changes found across all PRs",
+			zap.String("ticket", ticketKey),
+			zap.Int("total_prs", len(prURLs)))
+	}
+
+	p.logger.Info("Successfully processed PR review feedback for ticket", zap.String("ticket", ticketKey))
+	return nil
+}
+
+// processSinglePRFeedback processes feedback for a single PR
+func (p *PRReviewProcessorImpl) processSinglePRFeedback(ticketKey, prURL string, ticket *models.JiraTicketResponse, repoIdentifier string) (bool, error) {
 	// Extract PR details from the URL
 	owner, repo, prNumber, err := p.extractPRInfoFromURL(prURL)
 	if err != nil {
-		p.logger.Error("Failed to extract PR info from URL", zap.String("ticket", ticketKey), zap.String("pr_url", prURL), zap.Error(err))
-		return err
+		return false, err
 	}
 
 	// Get detailed PR information including reviews
 	prDetails, err := p.githubService.GetPRDetails(owner, repo, prNumber)
 	if err != nil {
-		p.logger.Error("Failed to get PR details", zap.String("ticket", ticketKey), zap.String("owner", owner), zap.String("repo", repo), zap.Int("pr_number", prNumber), zap.Error(err))
-		return err
+		p.logger.Error("Failed to get PR details",
+			zap.String("ticket", ticketKey),
+			zap.String("owner", owner),
+			zap.String("repo", repo),
+			zap.Int("pr_number", prNumber),
+			zap.Error(err))
+		return false, err
 	}
 
 	// Get the last processing timestamp from PR comments
@@ -95,25 +153,31 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 	// Check if there are any "request changes" reviews in the filtered set
 	hasRequestChanges := p.hasRequestChangesReviews(filteredReviews)
 	if !hasRequestChanges && len(filteredComments) == 0 {
-		p.logger.Info("No new 'request changes' reviews or comments found for PR", zap.String("ticket", ticketKey), zap.Int("pr_number", prNumber), zap.Time("last_processed", lastProcessedTime))
-		return nil
+		p.logger.Info("No new 'request changes' reviews or comments found for PR",
+			zap.String("ticket", ticketKey),
+			zap.Int("pr_number", prNumber),
+			zap.Time("last_processed", lastProcessedTime))
+		return false, nil
 	}
 
-	// 2. Collect all feedback from reviews and comments (including handled ones for context)
+	// Collect all feedback from reviews and comments (including handled ones for context)
 	feedback := p.collectFeedback(prDetails.Reviews, prDetails.Comments, lastProcessedTime)
 
 	// Get the repository URL from the PR details (our fork)
 	repoURL, err := p.getRepositoryURLFromPR(prDetails)
 	if err != nil {
 		p.logger.Error("Failed to get repository URL from PR", zap.String("ticket", ticketKey), zap.Error(err))
-		return err
+		return false, err
 	}
 
-	// Clone the repository and apply fixes
-	err = p.applyFeedbackFixes(ticketKey, repoURL, prDetails, feedback)
+	// Clone the repository and apply fixes - use repo-specific directory with owner/repo format
+	// Replace '/' with '-' to make it filesystem-safe
+	repoSafeName := strings.ReplaceAll(repoIdentifier, "/", "-")
+	feedbackRepoDir := strings.Join([]string{p.config.TempDir, fmt.Sprintf("%s-feedback-%s", ticketKey, repoSafeName)}, "/")
+	err = p.applyFeedbackFixes(ticketKey, repoURL, prDetails, feedback, feedbackRepoDir)
 	if err != nil {
 		p.logger.Error("Failed to apply feedback fixes", zap.String("ticket", ticketKey), zap.Error(err))
-		return err
+		return false, err
 	}
 
 	// Update the processing timestamp in PR comments
@@ -123,60 +187,61 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 		// Continue even if timestamp update fails
 	}
 
-	p.logger.Info("Successfully processed PR review feedback for ticket", zap.String("ticket", ticketKey))
-	return nil
+	return hasRequestChanges, nil
 }
 
-// getPRURLFromTicket extracts the PR URL from the ticket's custom field or comments
-func (p *PRReviewProcessorImpl) getPRURLFromTicket(ticket *models.JiraTicketResponse) (string, error) {
-	var prURL string
+// getPRURLsFromTicket extracts all PR URLs from the ticket's custom field or comments
+func (p *PRReviewProcessorImpl) getPRURLsFromTicket(ticket *models.JiraTicketResponse) ([]string, error) {
+	var prURLs []string
 	var err error
 
 	// Get project configuration for this ticket
 	projectConfig := p.config.GetProjectConfigForTicket(ticket.Key)
 	if projectConfig == nil {
-		return "", fmt.Errorf("no project configuration found for ticket %s", ticket.Key)
+		return nil, fmt.Errorf("no project configuration found for ticket %s", ticket.Key)
 	}
 
-	// First, try to get PR URL from the git custom field if configured for this project
+	// First, try to get PR URLs from the git custom field if configured for this project
 	if projectConfig.GitPullRequestFieldName != "" {
-		prURL, err = p.getPRURLFromGitField(ticket, projectConfig)
+		prURLs, err = p.getPRURLsFromGitField(ticket, projectConfig)
 		if err != nil {
-			p.logger.Debug("Failed to get PR URL from git field, will try comments",
+			p.logger.Debug("Failed to get PR URLs from git field, will try comments",
 				zap.String("ticket", ticket.Key),
 				zap.Error(err))
-		} else if prURL != "" {
-			p.logger.Debug("Found PR URL in git field",
+		} else if len(prURLs) > 0 {
+			p.logger.Debug("Found PR URLs in git field",
 				zap.String("ticket", ticket.Key),
-				zap.String("pr_url", prURL))
-			return prURL, nil
+				zap.Int("count", len(prURLs)),
+				zap.Strings("pr_urls", prURLs))
+			return prURLs, nil
 		}
 	}
 
-	// If no PR URL found in git field (or field not configured), try comments
-	p.logger.Debug("No PR URL found in git field, checking comments", zap.String("ticket", ticket.Key))
-	prURL, err = p.getPRURLFromComments(ticket.Key)
+	// If no PR URLs found in git field (or field not configured), try comments
+	p.logger.Debug("No PR URLs found in git field, checking comments", zap.String("ticket", ticket.Key))
+	prURLs, err = p.getPRURLsFromComments(ticket.Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to get PR URL from comments: %w", err)
+		return nil, fmt.Errorf("failed to get PR URLs from comments: %w", err)
 	}
 
-	if prURL != "" {
-		p.logger.Debug("Found PR URL in comments",
+	if len(prURLs) > 0 {
+		p.logger.Debug("Found PR URLs in comments",
 			zap.String("ticket", ticket.Key),
-			zap.String("pr_url", prURL))
-		return prURL, nil
+			zap.Int("count", len(prURLs)),
+			zap.Strings("pr_urls", prURLs))
+		return prURLs, nil
 	}
 
-	// No PR URL found in either location
-	return "", nil
+	// No PR URLs found in either location
+	return nil, nil
 }
 
-// getPRURLFromGitField extracts the PR URL from the ticket's git custom field
-func (p *PRReviewProcessorImpl) getPRURLFromGitField(ticket *models.JiraTicketResponse, projectConfig *models.ProjectConfig) (string, error) {
+// getPRURLsFromGitField extracts all PR URLs from the ticket's git custom field
+func (p *PRReviewProcessorImpl) getPRURLsFromGitField(ticket *models.JiraTicketResponse, projectConfig *models.ProjectConfig) ([]string, error) {
 	// Get the field ID for the field name
 	fieldID, err := p.jiraService.GetFieldIDByName(projectConfig.GitPullRequestFieldName)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve field name '%s' to ID: %w", projectConfig.GitPullRequestFieldName, err)
+		return nil, fmt.Errorf("failed to resolve field name '%s' to ID: %w", projectConfig.GitPullRequestFieldName, err)
 	}
 	// Log the fieldID for debugging
 	p.logger.Debug("Resolved field name to field ID", zap.String("field_name", projectConfig.GitPullRequestFieldName), zap.String("field_id", fieldID))
@@ -184,71 +249,94 @@ func (p *PRReviewProcessorImpl) getPRURLFromGitField(ticket *models.JiraTicketRe
 	// Get the ticket with expanded fields to access custom fields
 	fields, _, err := p.jiraService.GetTicketWithExpandedFields(ticket.Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to get ticket with expanded fields: %w", err)
+		return nil, fmt.Errorf("failed to get ticket with expanded fields: %w", err)
 	}
+
+	var prURLs []string
+	prURLSet := make(map[string]bool) // To deduplicate URLs
 
 	// Look for the custom field value
 	if prURL, ok := fields[fieldID]; ok {
-		// Handle string type
+		// Handle string type (may contain multiple URLs separated by newlines)
 		if prURLStr, ok := prURL.(string); ok && prURLStr != "" {
-			return prURLStr, nil
+			urls := strings.Split(prURLStr, "\n")
+			for _, url := range urls {
+				url = strings.TrimSpace(url)
+				if url != "" && !prURLSet[url] {
+					prURLSet[url] = true
+					prURLs = append(prURLs, url)
+				}
+			}
 		}
 		// Handle slice/array type (common in JIRA custom fields)
-		if prURLSlice, ok := prURL.([]interface{}); ok && len(prURLSlice) > 0 {
-			if firstURL, ok := prURLSlice[0].(string); ok && firstURL != "" {
-				return firstURL, nil
+		if prURLSlice, ok := prURL.([]interface{}); ok {
+			for _, urlInterface := range prURLSlice {
+				if urlStr, ok := urlInterface.(string); ok && urlStr != "" {
+					if !prURLSet[urlStr] {
+						prURLSet[urlStr] = true
+						prURLs = append(prURLs, urlStr)
+					}
+				}
 			}
 		}
 		// Handle string slice type
-		if prURLSlice, ok := prURL.([]string); ok && len(prURLSlice) > 0 {
-			if prURLSlice[0] != "" {
-				return prURLSlice[0], nil
+		if prURLSlice, ok := prURL.([]string); ok {
+			for _, urlStr := range prURLSlice {
+				if urlStr != "" && !prURLSet[urlStr] {
+					prURLSet[urlStr] = true
+					prURLs = append(prURLs, urlStr)
+				}
 			}
 		}
 	}
 	// Log the full output for debugging
 	p.logger.Debug("Full ticket fields", zap.Any("fields", fields))
 
-	return "", nil
+	return prURLs, nil
 }
 
-// getPRURLFromComments extracts the PR URL from ticket comments
-func (p *PRReviewProcessorImpl) getPRURLFromComments(ticketKey string) (string, error) {
+// getPRURLsFromComments extracts all PR URLs from ticket comments
+func (p *PRReviewProcessorImpl) getPRURLsFromComments(ticketKey string) ([]string, error) {
 	// Get the ticket with comments expanded
 	ticket, err := p.jiraService.GetTicketWithComments(ticketKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to get ticket with comments: %w", err)
+		return nil, fmt.Errorf("failed to get ticket with comments: %w", err)
 	}
 
-	// Structured AI bot PR comment pattern (preferred)
-	structuredPRPattern := regexp.MustCompile(`\[AI-BOT-PR\]\s+(https://github\.com/[^/\s]+/[^/\s]+/pull/\d+)`)
+	// Structured AI bot PR comment pattern: [AI-BOT-PR-1-owner/repo], [AI-BOT-PR-2-owner/repo], etc.
+	numberedPRPattern := regexp.MustCompile(`\[AI-BOT-PR-(\d+)-([^]]+)\]\s+(https://github\.com/[^/\s]+/[^/\s]+/pull/\d+)`)
 
-	// Search through comments for structured PR URLs first
-	// Look through comments in reverse order (newest first) to find the most recent PR URL
+	var prURLs []string
+	prURLSet := make(map[string]bool) // To deduplicate URLs
+
+	// Search through comments for structured PR URLs
+	// Look through comments in chronological order to maintain order
 	// Only check comments made by our bot
-	for i := len(ticket.Fields.Comment.Comments) - 1; i >= 0; i-- {
-		comment := ticket.Fields.Comment.Comments[i]
-
+	for _, comment := range ticket.Fields.Comment.Comments {
 		// Skip comments not made by our bot
 		if comment.Author.Name != p.config.Jira.Username {
 			continue
 		}
 
-		// First, look for structured AI bot PR comments
-		structuredMatches := structuredPRPattern.FindStringSubmatch(comment.Body)
-		if len(structuredMatches) > 1 {
-			prURL := structuredMatches[1]
-			p.logger.Debug("Found structured AI-bot PR URL in comment",
-				zap.String("ticket", ticketKey),
-				zap.String("pr_url", prURL),
-				zap.String("comment_id", comment.ID),
-				zap.String("comment_author", comment.Author.DisplayName))
-			return prURL, nil
+		// Look for numbered AI bot PR comments with owner/repo format
+		numberedMatches := numberedPRPattern.FindStringSubmatch(comment.Body)
+		if len(numberedMatches) > 3 {
+			prURL := numberedMatches[3]
+			if !prURLSet[prURL] {
+				prURLSet[prURL] = true
+				prURLs = append(prURLs, prURL)
+				repoIdentifier := numberedMatches[2] // owner/repo format
+				p.logger.Debug("Found numbered AI-bot PR URL in comment",
+					zap.String("ticket", ticketKey),
+					zap.String("pr_url", prURL),
+					zap.String("pr_number", numberedMatches[1]),
+					zap.String("repo_identifier", repoIdentifier),
+					zap.String("comment_id", comment.ID))
+			}
 		}
 	}
 
-	// No structured PR comment found
-	return "", nil
+	return prURLs, nil
 }
 
 // extractPRInfoFromURL extracts owner, repo, and PR number from a GitHub PR URL
@@ -342,11 +430,10 @@ func (p *PRReviewProcessorImpl) getRepositoryURLFromPR(pr *models.GitHubPRDetail
 }
 
 // applyFeedbackFixes applies the feedback fixes to the code
-func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, feedback string) error {
-	p.logger.Info("Applying feedback fixes for ticket", zap.String("ticket", ticketKey))
+func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, feedback string, repoDir string) error {
+	p.logger.Info("Applying feedback fixes for ticket", zap.String("ticket", ticketKey), zap.String("repo_dir", repoDir))
 
 	// Clone the repository
-	repoDir := fmt.Sprintf("%s/%s-feedback", p.config.TempDir, ticketKey)
 	err := p.githubService.CloneRepository(forkURL, repoDir)
 	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)

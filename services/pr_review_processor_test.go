@@ -7,6 +7,8 @@ import (
 
 	"jira-ai-issue-solver/mocks"
 	"jira-ai-issue-solver/models"
+
+	"go.uber.org/zap"
 )
 
 func TestPRReviewProcessor_ExtractPRInfoFromURL(t *testing.T) {
@@ -59,6 +61,242 @@ func TestPRReviewProcessor_ExtractPRInfoFromURL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPRReviewProcessor_GetPRURLsFromComments_MultipleRepositories(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+		jiraService: &mocks.MockJiraService{
+			GetTicketWithCommentsFunc: func(ticketKey string) (*models.JiraTicketResponse, error) {
+				return &models.JiraTicketResponse{
+					Key: ticketKey,
+					Fields: models.JiraFields{
+						Comment: models.JiraComments{
+							Comments: []models.JiraComment{
+								{
+									ID:   "1",
+									Body: "[AI-BOT-PR-1-example/frontend] https://github.com/example/frontend/pull/101",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "2",
+									Body: "[AI-BOT-PR-2-example/backend] https://github.com/example/backend/pull/102",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "3",
+									Body: "[AI-BOT-PR-3-example/api] https://github.com/example/api/pull/103",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "4",
+									Body: "Regular comment from human",
+									Author: models.JiraUser{
+										Name: "human-user",
+									},
+								},
+							},
+						},
+					},
+				}, nil
+			},
+		},
+		config: &models.Config{
+			Jira: models.JiraConfig{
+				Username: "test-bot",
+			},
+		},
+	}
+
+	prURLs, err := processor.getPRURLsFromComments("TEST-123")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	expectedURLs := []string{
+		"https://github.com/example/frontend/pull/101",
+		"https://github.com/example/backend/pull/102",
+		"https://github.com/example/api/pull/103",
+	}
+
+	if len(prURLs) != len(expectedURLs) {
+		t.Errorf("Expected %d PR URLs, got %d", len(expectedURLs), len(prURLs))
+	}
+
+	for i, expectedURL := range expectedURLs {
+		if i >= len(prURLs) || prURLs[i] != expectedURL {
+			t.Errorf("Expected PR URL %d to be '%s', got '%s'", i+1, expectedURL, prURLs[i])
+		}
+	}
+}
+
+func TestPRReviewProcessor_GetPRURLsFromComments_InvalidFormat(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+		jiraService: &mocks.MockJiraService{
+			GetTicketWithCommentsFunc: func(ticketKey string) (*models.JiraTicketResponse, error) {
+				return &models.JiraTicketResponse{
+					Key: ticketKey,
+					Fields: models.JiraFields{
+						Comment: models.JiraComments{
+							Comments: []models.JiraComment{
+								{
+									ID:   "1",
+									Body: "[AI-BOT-PR] https://github.com/example/frontend/pull/101",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "2",
+									Body: "[AI-BOT-PR-1] https://github.com/example/backend/pull/102",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "3",
+									Body: "Regular comment with GitHub link https://github.com/example/repo/pull/123",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+							},
+						},
+					},
+				}, nil
+			},
+		},
+		config: &models.Config{
+			Jira: models.JiraConfig{
+				Username: "test-bot",
+			},
+		},
+	}
+
+	prURLs, err := processor.getPRURLsFromComments("TEST-123")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Should find no URLs since only the owner/repo format is supported
+	if len(prURLs) != 0 {
+		t.Errorf("Expected 0 PR URLs (only owner/repo format supported), got %d", len(prURLs))
+	}
+}
+
+func TestPRReviewProcessor_GetPRURLsFromComments_ValidOwnerRepoFormat(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+		jiraService: &mocks.MockJiraService{
+			GetTicketWithCommentsFunc: func(ticketKey string) (*models.JiraTicketResponse, error) {
+				return &models.JiraTicketResponse{
+					Key: ticketKey,
+					Fields: models.JiraFields{
+						Comment: models.JiraComments{
+							Comments: []models.JiraComment{
+								{
+									ID:   "1",
+									Body: "[AI-BOT-PR] https://github.com/example/legacy/pull/101",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "2",
+									Body: "[AI-BOT-PR-1-example/frontend] https://github.com/example/frontend/pull/102",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+								{
+									ID:   "3",
+									Body: "[AI-BOT-PR-2-example/backend] https://github.com/example/backend/pull/103",
+									Author: models.JiraUser{
+										Name: "test-bot",
+									},
+								},
+							},
+						},
+					},
+				}, nil
+			},
+		},
+		config: &models.Config{
+			Jira: models.JiraConfig{
+				Username: "test-bot",
+			},
+		},
+	}
+
+	prURLs, err := processor.getPRURLsFromComments("TEST-123")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Should only find valid owner/repo format URLs, other formats ignored
+	expectedURLs := []string{
+		"https://github.com/example/frontend/pull/102",
+		"https://github.com/example/backend/pull/103",
+	}
+
+	if len(prURLs) != len(expectedURLs) {
+		t.Errorf("Expected %d PR URLs, got %d", len(expectedURLs), len(prURLs))
+	}
+
+	for i, expectedURL := range expectedURLs {
+		if i >= len(prURLs) || prURLs[i] != expectedURL {
+			t.Errorf("Expected PR URL %d to be '%s', got '%s'", i+1, expectedURL, prURLs[i])
+		}
+	}
+}
+
+func TestPRReviewProcessor_GetPRURLsFromGitField_MultipleURLs(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+		jiraService: &mocks.MockJiraService{
+			GetFieldIDByNameFunc: func(fieldName string) (string, error) {
+				return "customfield_10001", nil
+			},
+			GetTicketWithExpandedFieldsFunc: func(ticketKey string) (map[string]interface{}, map[string]string, error) {
+				return map[string]interface{}{
+					"customfield_10001": "https://github.com/example/frontend/pull/101\nhttps://github.com/example/backend/pull/102\nhttps://github.com/example/api/pull/103",
+				}, nil, nil
+			},
+		},
+	}
+
+	ticket := &models.JiraTicketResponse{Key: "TEST-123"}
+	projectConfig := &models.ProjectConfig{
+		GitPullRequestFieldName: "Git Pull Request",
+	}
+
+	prURLs, err := processor.getPRURLsFromGitField(ticket, projectConfig)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	expectedURLs := []string{
+		"https://github.com/example/frontend/pull/101",
+		"https://github.com/example/backend/pull/102",
+		"https://github.com/example/api/pull/103",
+	}
+
+	if len(prURLs) != len(expectedURLs) {
+		t.Errorf("Expected %d PR URLs, got %d", len(expectedURLs), len(prURLs))
+	}
+
+	for i, expectedURL := range expectedURLs {
+		if i >= len(prURLs) || prURLs[i] != expectedURL {
+			t.Errorf("Expected PR URL %d to be '%s', got '%s'", i+1, expectedURL, prURLs[i])
+		}
 	}
 }
 

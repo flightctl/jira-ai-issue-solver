@@ -155,11 +155,17 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 							Name: "frontend",
 						},
 					},
+					IssueType: models.JiraIssueType{
+						Name: "default",
+					},
 				},
 			}, nil
 		},
 		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
 			return "customfield_10001", nil
+		},
+		HasSecurityLevelFunc: func(key string) (bool, error) {
+			return false, nil
 		},
 	}
 	mockAI := &mocks.MockClaudeService{}
@@ -172,19 +178,19 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	// Verify that the head parameter was formatted correctly
-	expectedHead := "test-bot:TEST-123"
+	// Verify that the head parameter was formatted correctly (now always includes owner/repo format)
+	expectedHead := "test-bot:TEST-123-example-frontend"
 	if capturedHead != expectedHead {
 		t.Errorf("Expected head to be '%s', got '%s'", expectedHead, capturedHead)
 	}
 
-	// Verify that the commit message was formatted correctly
+	// Verify that the commit message was formatted correctly (clean, no repo info)
 	expectedCommitMessage := "TEST-123: Test ticket"
 	if capturedCommitMessage != expectedCommitMessage {
 		t.Errorf("Expected commit message to be '%s', got '%s'", expectedCommitMessage, capturedCommitMessage)
 	}
 
-	// Verify that the PR title was formatted correctly
+	// Verify that the PR title was formatted correctly (clean, no repo info)
 	expectedPRTitle := "TEST-123: Test ticket"
 	if capturedPRTitle != expectedPRTitle {
 		t.Errorf("Expected PR title to be '%s', got '%s'", expectedPRTitle, capturedPRTitle)
@@ -321,6 +327,9 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 							Name: "frontend",
 						},
 					},
+					IssueType: models.JiraIssueType{
+						Name: "default",
+					},
 				},
 			}, nil
 		},
@@ -330,6 +339,9 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		},
 		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
 			return "customfield_10001", nil
+		},
+		HasSecurityLevelFunc: func(key string) (bool, error) {
+			return false, nil
 		},
 	}
 	mockGitHubService := &mocks.MockGitHubService{
@@ -394,6 +406,394 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		}
 		if capturedStatuses[i] != expectedStatus {
 			t.Errorf("Expected status at index %d to be '%s', got '%s'", i, expectedStatus, capturedStatuses[i])
+		}
+	}
+}
+
+func TestTicketProcessor_ProcessTicket_MultipleRepositories(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Track created PRs
+	var createdPRs []string
+
+	// Create mock services for multi-repo scenario
+	mockJiraService := &mocks.MockJiraService{
+		GetTicketFunc: func(key string) (*models.JiraTicketResponse, error) {
+			return &models.JiraTicketResponse{
+				Key: key,
+				Fields: models.JiraFields{
+					Summary:     "Multi-repo test ticket",
+					Description: "Test description spanning multiple repositories",
+					Components: []models.JiraComponent{
+						{
+							ID:   "1",
+							Name: "frontend",
+						},
+						{
+							ID:   "2",
+							Name: "backend",
+						},
+						{
+							ID:   "3",
+							Name: "api",
+						},
+					},
+					IssueType: models.JiraIssueType{
+						Name: "Bug",
+					},
+				},
+			}, nil
+		},
+		UpdateTicketStatusFunc: func(key, status string) error {
+			return nil
+		},
+		AddCommentFunc: func(key, comment string) error {
+			// Track created PR comments
+			if strings.Contains(comment, "[AI-BOT-PR") {
+				createdPRs = append(createdPRs, comment)
+			}
+			return nil
+		},
+		HasSecurityLevelFunc: func(key string) (bool, error) {
+			return false, nil
+		},
+	}
+
+	mockGitHubService := &mocks.MockGitHubService{
+		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
+			return &models.GitHubCreatePRResponse{
+				ID:      1,
+				Number:  1,
+				State:   "open",
+				Title:   title,
+				Body:    body,
+				HTMLURL: "https://github.com/" + owner + "/" + repo + "/pull/1",
+			}, nil
+		},
+		ForkRepositoryFunc: func(owner, repo string) (string, error) {
+			return "https://github.com/mockuser/" + repo + ".git", nil
+		},
+		CheckForkExistsFunc: func(owner, repo string) (bool, string, error) {
+			return true, "https://github.com/mockuser/" + repo + ".git", nil
+		},
+		CloneRepositoryFunc:      func(repoURL, targetDir string) error { return nil },
+		SwitchToTargetBranchFunc: func(repoDir string) error { return nil },
+		CreateBranchFunc:         func(repoDir, branchName string) error { return nil },
+		CommitChangesFunc:        func(repoDir, message, coAuthorName, coAuthorEmail string) error { return nil },
+		PushChangesFunc:          func(repoDir, branchName string) error { return nil },
+	}
+
+	mockClaudeService := &mocks.MockClaudeService{
+		GenerateCodeFunc: func(prompt, repoDir string) (*models.ClaudeResponse, error) {
+			return &models.ClaudeResponse{
+				Type:    "completion",
+				IsError: false,
+				Result:  "Mock generated code for " + repoDir,
+			}, nil
+		},
+	}
+
+	// Create configuration with multiple component mappings
+	config := &models.Config{}
+	config.TempDir = "/tmp/test"
+	config.Jira.BaseURL = "https://test.atlassian.net"
+	config.Jira.Username = "testuser"
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			ComponentToRepo: models.ComponentToRepoMap{
+				"frontend": "https://github.com/example/frontend.git",
+				"backend":  "https://github.com/example/backend.git",
+				"api":      "https://github.com/example/api.git",
+			},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo:       "To Do",
+					InProgress: "In Progress",
+					InReview:   "In Review",
+				},
+			},
+		},
+	}
+	config.GitHub.BotUsername = "testbot"
+	config.GitHub.TargetBranch = "main"
+	config.AI.GenerateDocumentation = false
+
+	// Create processor
+	processor := NewTicketProcessor(mockJiraService, mockGitHubService, mockClaudeService, config, logger)
+
+	// Process ticket
+	err := processor.ProcessTicket("TEST-123")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify that 3 PR comments were created (one for each repository)
+	if len(createdPRs) != 3 {
+		t.Errorf("Expected 3 PR comments, got %d: %v", len(createdPRs), createdPRs)
+	}
+
+	// Verify that each PR comment has the expected numbered format with owner/repo
+	expectedPrefixes := []string{
+		"[AI-BOT-PR-1-example/frontend]",
+		"[AI-BOT-PR-2-example/backend]",
+		"[AI-BOT-PR-3-example/api]",
+	}
+	for i, comment := range createdPRs {
+		if i < len(expectedPrefixes) {
+			if !strings.Contains(comment, expectedPrefixes[i]) {
+				t.Errorf("Expected PR comment to contain '%s', got '%s'", expectedPrefixes[i], comment)
+			}
+		}
+	}
+}
+
+func TestTicketProcessor_ProcessTicket_SingleRepository_UsesSimplifiedFormat(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Track created PRs
+	var createdPRs []string
+
+	// Create mock services for single-repo scenario
+	mockJiraService := &mocks.MockJiraService{
+		GetTicketFunc: func(key string) (*models.JiraTicketResponse, error) {
+			return &models.JiraTicketResponse{
+				Key: key,
+				Fields: models.JiraFields{
+					Summary:     "Single-repo test ticket",
+					Description: "Test description for single repository",
+					Components: []models.JiraComponent{
+						{
+							ID:   "1",
+							Name: "frontend",
+						},
+					},
+					IssueType: models.JiraIssueType{
+						Name: "Bug",
+					},
+				},
+			}, nil
+		},
+		UpdateTicketStatusFunc: func(key, status string) error {
+			return nil
+		},
+		AddCommentFunc: func(key, comment string) error {
+			// Track created PR comments
+			if strings.Contains(comment, "[AI-BOT-PR") {
+				createdPRs = append(createdPRs, comment)
+			}
+			return nil
+		},
+		HasSecurityLevelFunc: func(key string) (bool, error) {
+			return false, nil
+		},
+	}
+
+	mockGitHubService := &mocks.MockGitHubService{
+		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
+			return &models.GitHubCreatePRResponse{
+				ID:      1,
+				Number:  1,
+				State:   "open",
+				Title:   title,
+				Body:    body,
+				HTMLURL: "https://github.com/" + owner + "/" + repo + "/pull/1",
+			}, nil
+		},
+		ForkRepositoryFunc: func(owner, repo string) (string, error) {
+			return "https://github.com/mockuser/" + repo + ".git", nil
+		},
+		CheckForkExistsFunc: func(owner, repo string) (bool, string, error) {
+			return true, "https://github.com/mockuser/" + repo + ".git", nil
+		},
+		CloneRepositoryFunc:      func(repoURL, targetDir string) error { return nil },
+		SwitchToTargetBranchFunc: func(repoDir string) error { return nil },
+		CreateBranchFunc:         func(repoDir, branchName string) error { return nil },
+		CommitChangesFunc:        func(repoDir, message, coAuthorName, coAuthorEmail string) error { return nil },
+		PushChangesFunc:          func(repoDir, branchName string) error { return nil },
+	}
+
+	mockClaudeService := &mocks.MockClaudeService{
+		GenerateCodeFunc: func(prompt, repoDir string) (*models.ClaudeResponse, error) {
+			return &models.ClaudeResponse{
+				Type:    "completion",
+				IsError: false,
+				Result:  "Mock generated code for " + repoDir,
+			}, nil
+		},
+	}
+
+	// Create configuration with single component mapping
+	config := &models.Config{}
+	config.TempDir = "/tmp/test"
+	config.Jira.BaseURL = "https://test.atlassian.net"
+	config.Jira.Username = "testuser"
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys: models.ProjectKeys{"TEST"},
+			ComponentToRepo: models.ComponentToRepoMap{
+				"frontend": "https://github.com/example/frontend.git",
+			},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"Bug": models.StatusTransitions{
+					Todo:       "To Do",
+					InProgress: "In Progress",
+					InReview:   "In Review",
+				},
+			},
+		},
+	}
+	config.GitHub.BotUsername = "testbot"
+	config.GitHub.TargetBranch = "main"
+	config.AI.GenerateDocumentation = false
+
+	// Create processor
+	processor := NewTicketProcessor(mockJiraService, mockGitHubService, mockClaudeService, config, logger)
+
+	// Process ticket
+	err := processor.ProcessTicket("TEST-123")
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Verify that 1 PR comment was created with numbered format
+	if len(createdPRs) != 1 {
+		t.Errorf("Expected 1 PR comment, got %d: %v", len(createdPRs), createdPRs)
+	}
+
+	// Verify that even single repository uses numbered format with owner/repo
+	if len(createdPRs) > 0 {
+		expectedPrefix := "[AI-BOT-PR-1-example/frontend]"
+		if !strings.Contains(createdPRs[0], expectedPrefix) {
+			t.Errorf("Expected PR comment to contain '%s', got '%s'", expectedPrefix, createdPRs[0])
+		}
+	}
+}
+
+func TestTicketProcessor_GetRepositoryURLs_MultipleComponents(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create configuration
+	config := &models.Config{
+		TempDir: "/tmp/test",
+	}
+
+	// Create processor
+	processor := &TicketProcessorImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test case: Multiple components mapping to different repositories
+	ticket := &models.JiraTicketResponse{
+		Key: "TEST-123",
+		Fields: models.JiraFields{
+			Components: []models.JiraComponent{
+				{ID: "1", Name: "frontend"},
+				{ID: "2", Name: "backend"},
+				{ID: "3", Name: "api"},
+			},
+		},
+	}
+
+	projectConfig := &models.ProjectConfig{
+		ComponentToRepo: models.ComponentToRepoMap{
+			"frontend": "https://github.com/example/frontend.git",
+			"backend":  "https://github.com/example/backend.git",
+			"api":      "https://github.com/example/api.git",
+		},
+	}
+
+	repos, err := processor.getRepositoryURLs(ticket, projectConfig)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	expectedRepos := []string{
+		"https://github.com/example/frontend.git",
+		"https://github.com/example/backend.git",
+		"https://github.com/example/api.git",
+	}
+
+	if len(repos) != len(expectedRepos) {
+		t.Errorf("Expected %d repositories, got %d", len(expectedRepos), len(repos))
+	}
+
+	// Check that all expected repos are present (order may vary due to map iteration)
+	repoSet := make(map[string]bool)
+	for _, repo := range repos {
+		repoSet[repo] = true
+	}
+
+	for _, expectedRepo := range expectedRepos {
+		if !repoSet[expectedRepo] {
+			t.Errorf("Expected repository %s not found in results", expectedRepo)
+		}
+	}
+}
+
+func TestTicketProcessor_GetRepositoryURLs_DeduplicateRepos(t *testing.T) {
+	// Create test logger
+	logger := zap.NewNop()
+
+	// Create configuration
+	config := &models.Config{
+		TempDir: "/tmp/test",
+	}
+
+	// Create processor
+	processor := &TicketProcessorImpl{
+		config: config,
+		logger: logger,
+	}
+
+	// Test case: Multiple components mapping to the same repository (should be deduplicated)
+	ticket := &models.JiraTicketResponse{
+		Key: "TEST-123",
+		Fields: models.JiraFields{
+			Components: []models.JiraComponent{
+				{ID: "1", Name: "frontend"},
+				{ID: "2", Name: "ui-components"},
+				{ID: "3", Name: "backend"},
+			},
+		},
+	}
+
+	projectConfig := &models.ProjectConfig{
+		ComponentToRepo: models.ComponentToRepoMap{
+			"frontend":      "https://github.com/example/frontend.git",
+			"ui-components": "https://github.com/example/frontend.git", // Same repo as frontend
+			"backend":       "https://github.com/example/backend.git",
+		},
+	}
+
+	repos, err := processor.getRepositoryURLs(ticket, projectConfig)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	// Should only have 2 unique repositories
+	if len(repos) != 2 {
+		t.Errorf("Expected 2 unique repositories after deduplication, got %d: %v", len(repos), repos)
+	}
+
+	// Check that both unique repos are present
+	repoSet := make(map[string]bool)
+	for _, repo := range repos {
+		repoSet[repo] = true
+	}
+
+	expectedRepos := []string{
+		"https://github.com/example/frontend.git",
+		"https://github.com/example/backend.git",
+	}
+
+	for _, expectedRepo := range expectedRepos {
+		if !repoSet[expectedRepo] {
+			t.Errorf("Expected repository %s not found in results", expectedRepo)
 		}
 	}
 }

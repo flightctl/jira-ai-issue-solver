@@ -93,16 +93,16 @@ func main() {
 	InitLogger(config)
 	defer Logger.Sync()
 
-	// Validate required configuration
-	hasComponentToRepo := false
+	// Validate required configuration - either component mapping or repo label name
+	hasRepoConfiguration := false
 	for _, project := range config.Jira.Projects {
-		if len(project.ComponentToRepo) > 0 {
-			hasComponentToRepo = true
+		if len(project.ComponentToRepo) > 0 || project.RepoLabelName != "" {
+			hasRepoConfiguration = true
 			break
 		}
 	}
-	if !hasComponentToRepo {
-		Logger.Fatal("At least one component_to_repo mapping is required in project configuration")
+	if !hasRepoConfiguration {
+		Logger.Fatal("At least one project must have either component_to_repo mappings or repo_label_name configured")
 	}
 
 	// Check if Jira configuration is provided

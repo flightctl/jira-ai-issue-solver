@@ -92,55 +92,11 @@ func (f *LogFormat) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// ComponentToRepoMap is a custom type for parsing component_to_repo from environment variables and YAML
+// ComponentToRepoMap is a custom type for parsing component_to_repo from YAML
 type ComponentToRepoMap map[string]string
 
-// UnmarshalText implements encoding.TextUnmarshaler for parsing from environment variables
-func (c *ComponentToRepoMap) UnmarshalText(text []byte) error {
-	if len(text) == 0 {
-		*c = make(map[string]string)
-		return nil
-	}
-
-	str := string(text)
-	pairs := strings.Split(str, ",")
-	result := make(map[string]string)
-
-	for _, pair := range pairs {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			result[parts[0]] = parts[1]
-		}
-	}
-
-	*c = result
-	return nil
-}
-
-// ProjectKeys is a custom type for parsing project_keys from environment variables and YAML
+// ProjectKeys is a custom type for project keys
 type ProjectKeys []string
-
-// UnmarshalText implements encoding.TextUnmarshaler for parsing from environment variables
-func (p *ProjectKeys) UnmarshalText(text []byte) error {
-	if len(text) == 0 {
-		*p = make([]string, 0)
-		return nil
-	}
-
-	str := string(text)
-	keys := strings.Split(str, ",")
-	result := make([]string, 0, len(keys))
-
-	for _, key := range keys {
-		trimmedKey := strings.TrimSpace(key)
-		if trimmedKey != "" {
-			result = append(result, trimmedKey)
-		}
-	}
-
-	*p = result
-	return nil
-}
 
 // UnmarshalYAML implements custom unmarshaling for YAML to preserve case sensitivity
 func (c *ComponentToRepoMap) UnmarshalYAML(value *yaml.Node) error {
@@ -270,6 +226,7 @@ type ProjectConfig struct {
 	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
 	ComponentToRepo         ComponentToRepoMap          `yaml:"component_to_repo" mapstructure:"component_to_repo"`
+	RepoLabelName           string                      `yaml:"repo_label_name" mapstructure:"repo_label_name"`
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
 }
 
@@ -390,55 +347,50 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// Explicit bindings for all environment variables (automatic mapping doesn't work with nested structs)
 	// Jira configuration
-	v.BindEnv("jira.base_url")
-	v.BindEnv("jira.username")
-	v.BindEnv("jira.api_token")
-	v.BindEnv("jira.interval_seconds")
-	v.BindEnv("jira.disable_error_comments")
-	v.BindEnv("jira.git_pull_request_field_name")
-	v.BindEnv("jira.status_transitions")
-	v.BindEnv("jira.project_keys")
+	_ = v.BindEnv("jira.base_url")
+	_ = v.BindEnv("jira.username")
+	_ = v.BindEnv("jira.api_token")
+	_ = v.BindEnv("jira.interval_seconds")
 
 	// GitHub configuration
-	v.BindEnv("github.personal_access_token")
-	v.BindEnv("github.bot_username")
-	v.BindEnv("github.bot_email")
-	v.BindEnv("github.target_branch")
-	v.BindEnv("github.pr_label")
-	v.BindEnv("github.ssh_key_path")
+	_ = v.BindEnv("github.personal_access_token")
+	_ = v.BindEnv("github.bot_username")
+	_ = v.BindEnv("github.bot_email")
+	_ = v.BindEnv("github.target_branch")
+	_ = v.BindEnv("github.pr_label")
+	_ = v.BindEnv("github.ssh_key_path")
 
 	// AI configuration
-	v.BindEnv("ai_provider")
+	_ = v.BindEnv("ai_provider")
 
 	// Claude configuration
-	v.BindEnv("claude.cli_path")
-	v.BindEnv("claude.timeout")
-	v.BindEnv("claude.dangerously_skip_permissions")
-	v.BindEnv("claude.allowed_tools")
-	v.BindEnv("claude.disallowed_tools")
+	_ = v.BindEnv("claude.cli_path")
+	_ = v.BindEnv("claude.timeout")
+	_ = v.BindEnv("claude.dangerously_skip_permissions")
+	_ = v.BindEnv("claude.allowed_tools")
+	_ = v.BindEnv("claude.disallowed_tools")
 
 	// Gemini configuration
-	v.BindEnv("gemini.cli_path")
-	v.BindEnv("gemini.timeout")
-	v.BindEnv("gemini.model")
-	v.BindEnv("gemini.all_files")
-	v.BindEnv("gemini.sandbox")
-	v.BindEnv("gemini.api_key")
+	_ = v.BindEnv("gemini.cli_path")
+	_ = v.BindEnv("gemini.timeout")
+	_ = v.BindEnv("gemini.model")
+	_ = v.BindEnv("gemini.all_files")
+	_ = v.BindEnv("gemini.sandbox")
+	_ = v.BindEnv("gemini.api_key")
 
 	// AI configuration
-	v.BindEnv("ai.generate_documentation")
+	_ = v.BindEnv("ai.generate_documentation")
 
 	// Server configuration
-	v.BindEnv("server.port")
-	v.BindEnv("PORT")
+	_ = v.BindEnv("server.port")
+	_ = v.BindEnv("PORT")
 
 	// Logging configuration
-	v.BindEnv("logging.level")
-	v.BindEnv("logging.format")
+	_ = v.BindEnv("logging.level")
+	_ = v.BindEnv("logging.format")
 
 	// Other configuration
-	v.BindEnv("temp_dir")
-	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
+	_ = v.BindEnv("temp_dir")
 
 	// Load main config file if provided
 	if configPath != "" {
@@ -461,9 +413,8 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.SetConfigName(".env")
 	v.SetConfigType("env")
 	v.AddConfigPath(".")
-	if err := v.ReadInConfig(); err != nil {
-		// It's okay if .env file doesn't exist
-	}
+	// Load .env file if it exists - ignore errors since it's optional
+	_ = v.ReadInConfig()
 
 	// Unmarshal into struct
 	var config Config
@@ -482,117 +433,12 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Fallback to environment variable parsing for projects if still empty
-	if len(config.Jira.Projects) == 0 {
-		// Create a default project from environment variables
-		defaultProject := ProjectConfig{}
-
-		// Handle component_to_repo from environment
-		componentToRepoStr := v.GetString("component_to_repo")
-		if componentToRepoStr != "" {
-			pairs := strings.Split(componentToRepoStr, ",")
-			result := make(map[string]string)
-
-			for _, pair := range pairs {
-				parts := strings.SplitN(pair, "=", 2)
-				if len(parts) == 2 {
-					result[parts[0]] = parts[1]
-				}
-			}
-
-			defaultProject.ComponentToRepo = ComponentToRepoMap(result)
-		}
-
-		// Handle status transitions from environment
-		defaultProject.StatusTransitions = reconstructStatusTransitionsFromEnv(v)
-
-		// Handle project keys from environment (if set)
-		projectKeysStr := v.GetString("jira.project_keys")
-		if projectKeysStr != "" {
-			keys := strings.Split(projectKeysStr, ",")
-			var projectKeys []string
-			for _, key := range keys {
-				if trimmed := strings.TrimSpace(key); trimmed != "" {
-					projectKeys = append(projectKeys, trimmed)
-				}
-			}
-			defaultProject.ProjectKeys = ProjectKeys(projectKeys)
-		}
-
-		// Handle git PR field name from environment
-		gitFieldName := v.GetString("jira.git_pull_request_field_name")
-		if gitFieldName != "" {
-			defaultProject.GitPullRequestFieldName = gitFieldName
-		}
-
-		// Handle disable error comments from environment
-		defaultProject.DisableErrorComments = v.GetBool("jira.disable_error_comments")
-
-		// Only add the default project if it has some configuration
-		if len(defaultProject.ComponentToRepo) > 0 || len(defaultProject.StatusTransitions) > 0 || len(defaultProject.ProjectKeys) > 0 {
-			config.Jira.Projects = []ProjectConfig{defaultProject}
-		}
-	}
-
 	// Validate configuration (after all fallbacks have been applied)
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
 
 	return &config, nil
-}
-
-// reconstructStatusTransitionsFromEnv reconstructs status transitions from individual environment variables
-// This is used as a fallback when the JSON approach doesn't work in deployment
-func reconstructStatusTransitionsFromEnv(v *viper.Viper) TicketTypeStatusTransitions {
-	result := make(TicketTypeStatusTransitions)
-
-	// Check for Bug ticket type
-	bugTransitions := StatusTransitions{}
-	if todo := v.GetString("jira.status_transitions_bug_todo"); todo != "" {
-		bugTransitions.Todo = todo
-	}
-	if inProgress := v.GetString("jira.status_transitions_bug_in_progress"); inProgress != "" {
-		bugTransitions.InProgress = inProgress
-	}
-	if inReview := v.GetString("jira.status_transitions_bug_in_review"); inReview != "" {
-		bugTransitions.InReview = inReview
-	}
-	if bugTransitions.Todo != "" || bugTransitions.InProgress != "" || bugTransitions.InReview != "" {
-		result["Bug"] = bugTransitions
-	}
-
-	// Check for Story ticket type
-	storyTransitions := StatusTransitions{}
-	if todo := v.GetString("jira.status_transitions_story_todo"); todo != "" {
-		storyTransitions.Todo = todo
-	}
-	if inProgress := v.GetString("jira.status_transitions_story_in_progress"); inProgress != "" {
-		storyTransitions.InProgress = inProgress
-	}
-	if inReview := v.GetString("jira.status_transitions_story_in_review"); inReview != "" {
-		storyTransitions.InReview = inReview
-	}
-	if storyTransitions.Todo != "" || storyTransitions.InProgress != "" || storyTransitions.InReview != "" {
-		result["Story"] = storyTransitions
-	}
-
-	// Check for Task ticket type
-	taskTransitions := StatusTransitions{}
-	if todo := v.GetString("jira.status_transitions_task_todo"); todo != "" {
-		taskTransitions.Todo = todo
-	}
-	if inProgress := v.GetString("jira.status_transitions_task_in_progress"); inProgress != "" {
-		taskTransitions.InProgress = inProgress
-	}
-	if inReview := v.GetString("jira.status_transitions_task_in_review"); inReview != "" {
-		taskTransitions.InReview = inReview
-	}
-	if taskTransitions.Todo != "" || taskTransitions.InProgress != "" || taskTransitions.InReview != "" {
-		result["Task"] = taskTransitions
-	}
-
-	return result
 }
 
 // setDefaults sets all configuration defaults
@@ -694,9 +540,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", projectPrefix)
 		}
 
-		// Validate component to repo mapping (required for functionality)
-		if len(project.ComponentToRepo) == 0 {
-			return fmt.Errorf("%s.component_to_repo: at least one component_to_repo mapping is required", projectPrefix)
+		// Validate that either component mapping or repo label name is configured
+		if len(project.ComponentToRepo) == 0 && project.RepoLabelName == "" {
+			return fmt.Errorf("%s: either component_to_repo mappings or repo_label_name must be configured", projectPrefix)
 		}
 	}
 

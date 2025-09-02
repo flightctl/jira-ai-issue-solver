@@ -73,8 +73,7 @@ export GEMINI_TIMEOUT=300
 export GEMINI_MODEL=gemini-2.5-pro
 export GEMINI_API_KEY=your-gemini-api-key
 
-# Component Mapping
-export JIRA_AI_COMPONENT_TO_REPO="component1=repo1,component2=repo2"
+# NOTE: Project configurations must be defined in config.yaml file
 
 go run main.go
 ```
@@ -256,7 +255,7 @@ podman run -d \
   -e AI_PROVIDER=claude \
   -e CLAUDE_CLI_PATH=claude \
   -e CLAUDE_TIMEOUT=300 \
-  -e JIRA_AI_COMPONENT_TO_REPO="component1=repo1,component2=repo2" \
+  -v $(pwd)/config.yaml:/app/config.yaml \
   jira-ai-issue-solver:latest
 
 # Or use make commands
