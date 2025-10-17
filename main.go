@@ -105,32 +105,24 @@ func main() {
 		Logger.Fatal("At least one component_to_repo mapping is required in project configuration")
 	}
 
-	// Check if Jira configuration is provided
-	if config.Jira.BaseURL == "" || config.Jira.Username == "" || config.Jira.APIToken == "" {
-		Logger.Warn("Jira configuration not provided - Jira services will be disabled")
-	}
-
-	// Check if GitHub configuration is provided
-	if config.GitHub.PersonalAccessToken == "" || config.GitHub.BotUsername == "" || config.GitHub.BotEmail == "" {
-		Logger.Warn("GitHub configuration not provided - GitHub services will be disabled")
-	}
-
 	// Create services (only if configuration is provided)
 	var jiraService services.JiraService
 	var githubService services.GitHubService
 
+	// Check if Jira configuration is provided
 	if config.Jira.BaseURL != "" && config.Jira.Username != "" && config.Jira.APIToken != "" {
 		jiraService = services.NewJiraService(config)
 		Logger.Info("Jira service initialized")
 	} else {
-		Logger.Info("Jira service disabled - configuration not provided")
+		Logger.Warn("Jira configuration not provided - Jira services will be disabled")
 	}
 
+	// Check if GitHub configuration is provided
 	if config.GitHub.PersonalAccessToken != "" && config.GitHub.BotUsername != "" && config.GitHub.BotEmail != "" {
 		githubService = services.NewGitHubService(config, Logger)
 		Logger.Info("GitHub service initialized")
 	} else {
-		Logger.Info("GitHub service disabled - configuration not provided")
+		Logger.Warn("GitHub configuration not provided - GitHub services will be disabled")
 	}
 
 	// Create AI service based on provider selection
@@ -151,7 +143,8 @@ func main() {
 	var prFeedbackScannerService services.PRFeedbackScannerService
 
 	if jiraService != nil && githubService != nil {
-		jiraIssueScannerService = services.NewJiraIssueScannerService(jiraService, githubService, aiService, config, Logger)
+		ticketProcessor := services.NewTicketProcessor(jiraService, githubService, aiService, config, Logger)
+		jiraIssueScannerService = services.NewJiraIssueScannerService(jiraService, aiService, ticketProcessor, config, Logger)
 		prFeedbackScannerService = services.NewPRFeedbackScannerService(jiraService, githubService, aiService, config, Logger)
 
 		// Start the Jira issue scanner service for periodic ticket scanning

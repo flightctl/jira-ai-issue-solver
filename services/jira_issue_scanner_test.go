@@ -33,7 +33,8 @@ func TestJiraIssueScannerService_StartStop(t *testing.T) {
 	config.TempDir = "/tmp/test"
 
 	// Create scanner service
-	scanner := NewJiraIssueScannerService(mockJiraService, mockGitHubService, mockClaudeService, config, logger)
+	ticketProcessor := NewTicketProcessor(mockJiraService, mockGitHubService, mockClaudeService, config, logger)
+	scanner := NewJiraIssueScannerService(mockJiraService, mockClaudeService, ticketProcessor, config, logger)
 
 	// Start the scanner
 	scanner.Start()
@@ -83,24 +84,7 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 			return "customfield_10001", nil
 		},
 	}
-	mockGitHubService := &mocks.MockGitHubService{
-		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
-			return &models.GitHubCreatePRResponse{
-				ID:      1,
-				Number:  1,
-				State:   "open",
-				Title:   title,
-				Body:    body,
-				HTMLURL: "https://github.com/example/repo/pull/1",
-			}, nil
-		},
-		ForkRepositoryFunc: func(owner, repo string) (string, error) {
-			return "https://github.com/mockuser/frontend.git", nil
-		},
-		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
-			return true, "https://github.com/mockuser/frontend.git", nil
-		},
-	}
+
 	mockClaudeService := &mocks.MockClaudeService{
 		GenerateCodeFunc: func(prompt string, repoDir string) (*models.ClaudeResponse, error) {
 			return nil, nil
@@ -133,7 +117,6 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 	// Create scanner service with injected mock ticket processor
 	scanner := &JiraIssueScannerServiceImpl{
 		jiraService:     mockJiraService,
-		githubService:   mockGitHubService,
 		aiService:       mockClaudeService,
 		ticketProcessor: mockTicketProcessor,
 		config:          config,
