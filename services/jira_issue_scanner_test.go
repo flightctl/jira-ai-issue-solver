@@ -34,7 +34,7 @@ func TestJiraIssueScannerService_StartStop(t *testing.T) {
 
 	// Create scanner service
 	ticketProcessor := NewTicketProcessor(mockJiraService, mockGitHubService, mockClaudeService, config, logger)
-	scanner := NewJiraIssueScannerService(mockJiraService, mockClaudeService, ticketProcessor, config, logger)
+	scanner := NewJiraIssueScannerService(mockJiraService, ticketProcessor, config, logger)
 
 	// Start the scanner
 	scanner.Start()
@@ -85,12 +85,6 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 		},
 	}
 
-	mockClaudeService := &mocks.MockClaudeService{
-		GenerateCodeFunc: func(prompt string, repoDir string) (*models.ClaudeResponse, error) {
-			return nil, nil
-		},
-	}
-
 	// Create config
 	config := &models.Config{}
 	config.Jira.IntervalSeconds = 300
@@ -117,7 +111,6 @@ func TestJiraIssueScannerService_ScanForTickets(t *testing.T) {
 	// Create scanner service with injected mock ticket processor
 	scanner := &JiraIssueScannerServiceImpl{
 		jiraService:     mockJiraService,
-		aiService:       mockClaudeService,
 		ticketProcessor: mockTicketProcessor,
 		config:          config,
 		logger:          logger,

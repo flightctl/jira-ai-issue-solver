@@ -144,7 +144,7 @@ func main() {
 
 	if jiraService != nil && githubService != nil {
 		ticketProcessor := services.NewTicketProcessor(jiraService, githubService, aiService, config, Logger)
-		jiraIssueScannerService = services.NewJiraIssueScannerService(jiraService, aiService, ticketProcessor, config, Logger)
+		jiraIssueScannerService = services.NewJiraIssueScannerService(jiraService, ticketProcessor, config, Logger)
 		prFeedbackScannerService = services.NewPRFeedbackScannerService(jiraService, githubService, aiService, config, Logger)
 
 		// Start the Jira issue scanner service for periodic ticket scanning

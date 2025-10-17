@@ -22,7 +22,6 @@ type JiraIssueScannerService interface {
 // JiraIssueScannerServiceImpl implements the JiraIssueScannerService interface
 type JiraIssueScannerServiceImpl struct {
 	jiraService       JiraService
-	aiService         AIService
 	ticketProcessor   TicketProcessor
 	config            *models.Config
 	logger            *zap.Logger
@@ -34,14 +33,12 @@ type JiraIssueScannerServiceImpl struct {
 // NewJiraIssueScannerService creates a new JiraIssueScannerService
 func NewJiraIssueScannerService(
 	jiraService JiraService,
-	aiService AIService,
 	ticketProcessor TicketProcessor,
 	config *models.Config,
 	logger *zap.Logger,
 ) JiraIssueScannerService {
 	return &JiraIssueScannerServiceImpl{
 		jiraService:     jiraService,
-		aiService:       aiService,
 		ticketProcessor: ticketProcessor,
 		config:          config,
 		logger:          logger,
