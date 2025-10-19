@@ -224,7 +224,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 // getAuthToken returns the GitHub Personal Access Token for API calls
 func (s *GitHubServiceImpl) getAuthToken() (string, error) {
 	if s.config.GitHub.PersonalAccessToken == "" {
-		return "", fmt.Errorf("Personal Access Token not configured")
+		return "", fmt.Errorf("the Personal Access Token is not configured")
 	}
 	return s.config.GitHub.PersonalAccessToken, nil
 }

@@ -116,7 +116,7 @@ IMPORTANT: Verify that you actually created and wrote GEMINI.md at the root of t
 		zap.Bool("is_error", response.IsError),
 		zap.String("result", response.Result))
 
-	if response != nil && response.Message != nil {
+	if response.Message != nil {
 		s.logger.Debug("Message content", zap.String("content", response.Message.Content))
 	}
 

@@ -399,8 +399,6 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 }
 
 func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
-	logger := zap.NewNop()
-
 	// Test case 1: Documentation generation enabled
 	config1 := &models.Config{
 		AIProvider: "claude",
@@ -413,7 +411,6 @@ func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
 
 	processor1 := &TicketProcessorImpl{
 		config: config1,
-		logger: logger,
 	}
 
 	// Test case 2: Documentation generation disabled
@@ -428,7 +425,6 @@ func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
 
 	processor2 := &TicketProcessorImpl{
 		config: config2,
-		logger: logger,
 	}
 
 	// Verify configurations are set correctly

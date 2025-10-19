@@ -125,10 +125,6 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 	}
 
 	pr := &models.GitHubPRDetails{
-		Number:  123,
-		Title:   "Test PR",
-		Body:    "Test description",
-		HTMLURL: "https://github.com/owner/repo/pull/123",
 		Reviews: []models.GitHubReview{
 			{
 				User: models.GitHubUser{
@@ -146,14 +142,6 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 				Body: "This line needs improvement",
 				Path: "src/main.go",
 				Line: 42,
-			},
-		},
-		Files: []models.GitHubPRFile{
-			{
-				Filename:  "src/main.go",
-				Status:    "modified",
-				Additions: 5,
-				Deletions: 2,
 			},
 		},
 	}
