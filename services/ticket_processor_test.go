@@ -315,6 +315,9 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 				Fields: models.JiraFields{
 					Summary:     "Test ticket",
 					Description: "Test description",
+					IssueType: models.JiraIssueType{
+						Name: "default",
+					},
 					Components: []models.JiraComponent{
 						{
 							ID:   "1",
@@ -330,6 +333,9 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		},
 		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
 			return "customfield_10001", nil
+		},
+		HasSecurityLevelFunc: func(key string) (bool, error) {
+			return false, nil
 		},
 	}
 	mockGitHubService := &mocks.MockGitHubService{
