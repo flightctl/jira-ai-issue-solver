@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"jira-ai-issue-solver/mocks"
 	"jira-ai-issue-solver/models"
-
-	"go.uber.org/zap"
 )
 
 func TestTicketProcessor_ProcessTicket(t *testing.T) {

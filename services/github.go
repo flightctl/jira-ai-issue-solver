@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // GitHubService defines the interface for interacting with GitHub

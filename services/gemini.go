@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // GeminiService interface for code generation using Gemini CLI

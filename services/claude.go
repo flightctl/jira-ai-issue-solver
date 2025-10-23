@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // getContentAsString safely converts content to string, handling both string and array types

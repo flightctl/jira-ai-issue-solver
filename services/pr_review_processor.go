@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // PRReviewProcessor defines the interface for processing PR review feedback

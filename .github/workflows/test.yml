@@ -1,0 +1,67 @@
+name: "Unit Tests"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files_ignore: |
+            README.md
+            docs/**
+            .github/**
+            *.md
+            LICENSE
+
+      - name: Set up Go
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Verify Go version matches tool-versions
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          source .github/tool-versions
+          WORKFLOW_GO_VERSION="1.23"
+          if [ "$GO_VERSION" != "$WORKFLOW_GO_VERSION" ]; then
+            echo "ERROR: Go version mismatch!"
+            echo "  .github/tool-versions specifies: $GO_VERSION"
+            echo "  This workflow uses: $WORKFLOW_GO_VERSION"
+            echo "  Please update the go-version in .github/workflows/test.yml"
+            exit 1
+          fi
+          echo "✓ Go version $GO_VERSION matches workflow configuration"
+
+      - name: Download dependencies
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: go mod download
+
+      - name: Run tests with race detector
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: make unit-test
+
+      - name: Build
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: go build -o /dev/null .

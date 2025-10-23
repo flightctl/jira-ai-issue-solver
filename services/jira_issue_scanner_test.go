@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+
 	"jira-ai-issue-solver/mocks"
 	"jira-ai-issue-solver/models"
-
-	"go.uber.org/zap"
 )
 
 func TestJiraIssueScannerService_StartStop(t *testing.T) {

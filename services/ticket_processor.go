@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // TicketProcessor defines the interface for processing Jira tickets

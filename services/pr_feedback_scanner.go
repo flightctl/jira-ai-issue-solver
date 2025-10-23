@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // PRFeedbackScannerService defines the interface for scanning tickets in "In Review" status

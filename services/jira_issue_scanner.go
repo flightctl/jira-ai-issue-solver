@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // JiraIssueScannerService defines the interface for the Jira issue scanner

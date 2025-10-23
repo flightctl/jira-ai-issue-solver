@@ -388,56 +388,64 @@ func LoadConfig(configPath string) (*Config, error) {
 	// - JIRA_AI_JIRA_GIT_PULL_REQUEST_FIELD_NAME → jira.git_pull_request_field_name
 	// - JIRA_AI_GITHUB_PERSONAL_ACCESS_TOKEN → github.personal_access_token
 
+	// Helper function to bind environment variables with error checking
+	// Panics on error since all keys are static strings and should never fail
+	bindEnv := func(key string) {
+		if err := v.BindEnv(key); err != nil {
+			panic(fmt.Sprintf("failed to bind environment variable %s: %v", key, err))
+		}
+	}
+
 	// Explicit bindings for all environment variables (automatic mapping doesn't work with nested structs)
 	// Jira configuration
-	v.BindEnv("jira.base_url")
-	v.BindEnv("jira.username")
-	v.BindEnv("jira.api_token")
-	v.BindEnv("jira.interval_seconds")
-	v.BindEnv("jira.disable_error_comments")
-	v.BindEnv("jira.git_pull_request_field_name")
-	v.BindEnv("jira.status_transitions")
-	v.BindEnv("jira.project_keys")
+	bindEnv("jira.base_url")
+	bindEnv("jira.username")
+	bindEnv("jira.api_token")
+	bindEnv("jira.interval_seconds")
+	bindEnv("jira.disable_error_comments")
+	bindEnv("jira.git_pull_request_field_name")
+	bindEnv("jira.status_transitions")
+	bindEnv("jira.project_keys")
 
 	// GitHub configuration
-	v.BindEnv("github.personal_access_token")
-	v.BindEnv("github.bot_username")
-	v.BindEnv("github.bot_email")
-	v.BindEnv("github.target_branch")
-	v.BindEnv("github.pr_label")
-	v.BindEnv("github.ssh_key_path")
+	bindEnv("github.personal_access_token")
+	bindEnv("github.bot_username")
+	bindEnv("github.bot_email")
+	bindEnv("github.target_branch")
+	bindEnv("github.pr_label")
+	bindEnv("github.ssh_key_path")
 
 	// AI configuration
-	v.BindEnv("ai_provider")
+	bindEnv("ai_provider")
 
 	// Claude configuration
-	v.BindEnv("claude.cli_path")
-	v.BindEnv("claude.timeout")
-	v.BindEnv("claude.dangerously_skip_permissions")
-	v.BindEnv("claude.allowed_tools")
-	v.BindEnv("claude.disallowed_tools")
+	bindEnv("claude.cli_path")
+	bindEnv("claude.timeout")
+	bindEnv("claude.dangerously_skip_permissions")
+	bindEnv("claude.allowed_tools")
+	bindEnv("claude.disallowed_tools")
 
 	// Gemini configuration
-	v.BindEnv("gemini.cli_path")
-	v.BindEnv("gemini.timeout")
-	v.BindEnv("gemini.model")
-	v.BindEnv("gemini.all_files")
-	v.BindEnv("gemini.sandbox")
-	v.BindEnv("gemini.api_key")
+	bindEnv("gemini.cli_path")
+	bindEnv("gemini.timeout")
+	bindEnv("gemini.model")
+	bindEnv("gemini.all_files")
+	bindEnv("gemini.sandbox")
+	bindEnv("gemini.api_key")
 
 	// AI configuration
-	v.BindEnv("ai.generate_documentation")
+	bindEnv("ai.generate_documentation")
 
 	// Server configuration
-	v.BindEnv("server.port")
-	v.BindEnv("PORT")
+	bindEnv("server.port")
+	bindEnv("PORT")
 
 	// Logging configuration
-	v.BindEnv("logging.level")
-	v.BindEnv("logging.format")
+	bindEnv("logging.level")
+	bindEnv("logging.format")
 
 	// Other configuration
-	v.BindEnv("temp_dir")
+	bindEnv("temp_dir")
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
 	// Load main config file if provided
@@ -463,6 +471,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.AddConfigPath(".")
 	if err := v.ReadInConfig(); err != nil {
 		// It's okay if .env file doesn't exist
+		_ = err
 	}
 
 	// Unmarshal into struct

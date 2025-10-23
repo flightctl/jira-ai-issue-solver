@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"jira-ai-issue-solver/models"
-	"jira-ai-issue-solver/services"
-
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"jira-ai-issue-solver/models"
+	"jira-ai-issue-solver/services"
 )
 
 var Logger *zap.Logger
@@ -91,7 +91,7 @@ func main() {
 
 	// Initialize logger
 	InitLogger(config)
-	defer Logger.Sync()
+	defer func() { _ = Logger.Sync() }()
 
 	// Validate required configuration
 	hasComponentToRepo := false
@@ -180,8 +180,9 @@ func main() {
 
 	// Create server
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start the server in a goroutine

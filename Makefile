@@ -1,5 +1,15 @@
 # Makefile for jira-ai-issue-solver container operations
 
+# Source tool versions from single source of truth
+include .github/tool-versions
+
+# Detect container runtime (podman preferred, fallback to docker)
+CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+
+# Lint container configuration
+LINT_IMAGE := jira-ai-issue-solver-lint:latest
+LINT_CONTAINER := $(CONTAINER_RUNTIME) run --rm -v $(shell pwd):/app:z -w /app $(LINT_IMAGE)
+
 # Configuration - these can be overridden by the caller
 PROJECT_ID ?= $(error PROJECT_ID is required. Usage: make deploy PROJECT_ID=your-project-id REGION=your-region SERVICE_NAME=your-service-name)
 REGION ?= $(error REGION is required. Usage: make deploy PROJECT_ID=your-project-id REGION=your-region SERVICE_NAME=your-service-name)
@@ -7,7 +17,7 @@ SERVICE_NAME ?= $(error SERVICE_NAME is required. Usage: make deploy PROJECT_ID=
 
 
 
-.PHONY: build push clean test run stop logs help debug debug-tests deploy
+.PHONY: build push clean run stop logs help debug debug-tests deploy lint lint-image tidy unit-test
 
 # Default target
 help:
@@ -15,7 +25,9 @@ help:
 	@echo "  build       - Build the container image"
 	@echo "  push        - Build and push the container to Google Container Registry"
 	@echo "  deploy      - Deploy the container to Cloud Run (includes push)"
-	@echo "  test        - Test the container"
+	@echo "  unit-test   - Run unit tests with race detector"
+	@echo "  lint        - Run golangci-lint"
+	@echo "  tidy        - Run go mod tidy"
 	@echo "  run         - Run the container"
 	@echo "  stop        - Stop the container"
 	@echo "  logs        - Show container logs"
@@ -55,11 +67,6 @@ deploy: push
 	@echo "Region: $(REGION)"
 	@echo "Service Name: $(SERVICE_NAME)"
 	PROJECT_ID="$(PROJECT_ID)" REGION="$(REGION)" SERVICE_NAME="$(SERVICE_NAME)" ./deploy.sh $(ARGS)
-
-# Test the container
-test:
-	@echo "Testing jira-ai-issue-solver container..."
-	./test-container.sh
 
 # Run the container
 run:
@@ -113,4 +120,26 @@ debug:
 # Debug tests
 debug-tests:
 	@echo "Starting debug session for tests..."
-	$(HOME)/go/bin/dlv test ./... -- -v 
+	$(HOME)/go/bin/dlv test ./... -- -v
+
+# Run unit tests with race detector
+unit-test:
+	@echo "Running unit tests with race detector..."
+	go test -v -race ./...
+
+# Build the golangci-lint container image
+lint-image:
+	@echo "Building golangci-lint container image (version: $(GOLANGCI_LINT_VERSION))..."
+	$(CONTAINER_RUNTIME) build -f Containerfile.lint \
+		--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
+		-t $(LINT_IMAGE) .
+
+# Run golangci-lint in container (same approach as flightctl)
+lint: lint-image
+	@echo "Running golangci-lint in container..."
+	$(LINT_CONTAINER) golangci-lint run ./...
+
+# Run go mod tidy
+tidy:
+	@echo "Running go mod tidy..."
+	go mod tidy

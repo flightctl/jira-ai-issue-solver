@@ -1,0 +1,65 @@
+name: "Code Quality"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          since_last_remote_commit: 'true'
+          files_ignore: |
+            README.md
+            docs/**
+            .github/**
+            *.md
+            LICENSE
+
+      - name: Set up Go
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Verify Go version matches tool-versions
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          source .github/tool-versions
+          WORKFLOW_GO_VERSION="1.23"
+          if [ "$GO_VERSION" != "$WORKFLOW_GO_VERSION" ]; then
+            echo "ERROR: Go version mismatch!"
+            echo "  .github/tool-versions specifies: $GO_VERSION"
+            echo "  This workflow uses: $WORKFLOW_GO_VERSION"
+            echo "  Please update the go-version in .github/workflows/lint.yml"
+            exit 1
+          fi
+          echo "✓ Go version $GO_VERSION matches workflow configuration"
+
+      - name: Running Linter
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: make lint
+
+      - name: Check that generated files have been updated and that go.mod is tidy
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          make tidy
+          git diff --exit-code go.mod go.sum

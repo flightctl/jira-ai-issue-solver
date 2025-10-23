@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // execCommand is a variable that holds the exec.Command function
