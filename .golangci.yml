@@ -1,41 +1,20 @@
 # golangci-lint configuration for jira-ai-issue-solver
 
-# Configuration version
 version: "2"
 
-# options for analysis running
 run:
-  # timeout for analysis, e.g. 30s, 5m, default is 1m
   timeout: 5m
-
-  # exit code when at least one issue was found, default is 1
   issues-exit-code: 1
-
-  # include test files or not, default is true
   tests: true
 
-# output configuration options
 output:
   formats:
-    # Text format with colors, line numbers, and linter names
     text:
       print-issued-lines: true
       print-linter-name: true
-      colors: true
 
 issues:
-  # make issues output unique by line, default is true
   uniq-by-line: true
-
-  # List of regexps of issue texts to exclude.
-  exclude:
-    - 'declaration of "err" shadows declaration at'
-
-  exclusions:
-    # Which file paths to exclude: they will be analyzed, but issues from them won't be reported.
-    paths:
-      - "bin/.*"
-      - "mocks/.*"
 
 formatters:
   enable:
@@ -53,6 +32,7 @@ formatters:
 linters:
   disable:
     - asciicheck     # Disabled due to dependency issues
+
   enable:
     - copyloopvar    # Detects places where loop variables are copied incorrectly
     - errcheck       # Checks for unchecked errors
@@ -87,3 +67,14 @@ linters:
       excludes:
         - G204 # Subprocess launched with variable - acceptable for CLI wrappers
         - G306 # File permissions - acceptable for test files
+
+  # v2 exclusions configuration
+  exclusions:
+    # Which dirs to exclude: issues from them won't be reported
+    paths:
+      - bin
+
+    # Exclude specific issue texts
+    rules:
+      - path: '(.+)\.go$'
+        text: 'declaration of "err" shadows declaration at'

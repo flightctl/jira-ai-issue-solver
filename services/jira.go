@@ -292,7 +292,7 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 		} `json:"transitions"`
 	}
 
-	if err = json.NewDecoder(resp.Body).Decode(&transitions); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&transitions); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 

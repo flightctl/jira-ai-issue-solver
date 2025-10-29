@@ -303,14 +303,14 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to init git repository: %v", err)
 	}
 
 	// Create initial commit
 	cmd = exec.Command("git", "commit", "--allow-empty", "-m", "Initial commit")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to create initial commit: %v", err)
 	}
 
@@ -340,26 +340,26 @@ func TestGitHubService_CommitChanges_WithCoAuthor(t *testing.T) {
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to init git repository: %v", err)
 	}
 
 	// Configure git user
 	cmd = exec.Command("git", "config", "user.name", "Test User")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git user name: %v", err)
 	}
 
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git user email: %v", err)
 	}
 
 	// Create a test file
 	testFile := filepath.Join(tempDir, "test.txt")
-	if err = os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
@@ -410,26 +410,26 @@ func TestGitHubService_CommitChanges_WithoutCoAuthor(t *testing.T) {
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to init git repository: %v", err)
 	}
 
 	// Configure git user
 	cmd = exec.Command("git", "config", "user.name", "Test User")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git user name: %v", err)
 	}
 
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git user email: %v", err)
 	}
 
 	// Create a test file
 	testFile := filepath.Join(tempDir, "test.txt")
-	if err = os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
@@ -478,26 +478,26 @@ func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to init git repository: %v", err)
 	}
 
 	// Configure git user
 	cmd = exec.Command("git", "config", "user.name", "Test User")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git user name: %v", err)
 	}
 
 	cmd = exec.Command("git", "config", "user.email", "test@example.com")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git user email: %v", err)
 	}
 
 	// Create a test file
 	testFile := filepath.Join(tempDir, "test.txt")
-	if err = os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
@@ -513,19 +513,19 @@ func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
 	// Configure SSH signing manually (simulating what CloneRepository does)
 	cmd = exec.Command("git", "config", "gpg.format", "ssh")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git gpg format: %v", err)
 	}
 
 	cmd = exec.Command("git", "config", "user.signingkey", config.GitHub.SSHKeyPath)
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to configure git ssh signing key: %v", err)
 	}
 
 	cmd = exec.Command("git", "config", "commit.gpgsign", "true")
 	cmd.Dir = tempDir
-	if err = cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to enable git commit signing: %v", err)
 	}
 

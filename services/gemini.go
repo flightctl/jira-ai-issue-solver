@@ -203,7 +203,7 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	}
 
 	// Start the command
-	if err = cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start Gemini CLI: %w", err)
 	}
 

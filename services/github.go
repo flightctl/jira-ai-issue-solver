@@ -644,7 +644,7 @@ func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 		} `json:"source"`
 	}
 
-	if err = json.NewDecoder(resp.Body).Decode(&forkDetails); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&forkDetails); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -909,7 +909,7 @@ func (s *GitHubServiceImpl) GetPRDetails(owner, repo string, prNumber int) (*mod
 	}
 
 	var prDetails models.GitHubPRDetails
-	if err = json.NewDecoder(resp.Body).Decode(&prDetails); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&prDetails); err != nil {
 		return nil, fmt.Errorf("failed to decode PR details: %w", err)
 	}
 
