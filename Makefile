@@ -1,14 +1,7 @@
 # Makefile for jira-ai-issue-solver container operations
 
-# Source tool versions from single source of truth
-include .github/tool-versions
-
 # Detect container runtime (podman preferred, fallback to docker)
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
-
-# Lint container configuration
-LINT_IMAGE := jira-ai-issue-solver-lint:latest
-LINT_CONTAINER := $(CONTAINER_RUNTIME) run --rm -v $(shell pwd):/app:z -w /app $(LINT_IMAGE)
 
 # Configuration - these can be overridden by the caller
 PROJECT_ID ?= $(error PROJECT_ID is required. Usage: make deploy PROJECT_ID=your-project-id REGION=your-region SERVICE_NAME=your-service-name)
@@ -17,7 +10,7 @@ SERVICE_NAME ?= $(error SERVICE_NAME is required. Usage: make deploy PROJECT_ID=
 
 
 
-.PHONY: build push clean run stop logs help debug debug-tests deploy lint lint-image tidy unit-test
+.PHONY: build push clean run stop logs help debug debug-tests deploy lint tidy unit-test
 
 # Default target
 help:
@@ -127,17 +120,10 @@ unit-test:
 	@echo "Running unit tests with race detector..."
 	go test -v -race ./...
 
-# Build the golangci-lint container image
-lint-image:
-	@echo "Building golangci-lint container image (version: $(GOLANGCI_LINT_VERSION))..."
-	$(CONTAINER_RUNTIME) build -f Containerfile.lint \
-		--build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
-		-t $(LINT_IMAGE) .
-
-# Run golangci-lint in container (same approach as flightctl)
-lint: lint-image
-	@echo "Running golangci-lint in container..."
-	$(LINT_CONTAINER) golangci-lint run ./...
+# Run golangci-lint
+lint:
+	@echo "Running golangci-lint..."
+	golangci-lint run ./...
 
 # Run go mod tidy
 tidy:

@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 func TestGeminiService_GenerateDocumentation(t *testing.T) {
@@ -16,7 +16,7 @@ func TestGeminiService_GenerateDocumentation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Create a test README.md file
 	readmeContent := `# Test Project
@@ -36,13 +36,13 @@ go run main.go
 Please read CONTRIBUTING.md for details.
 `
 	readmePath := filepath.Join(tempDir, "README.md")
-	if err := os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
+	if err = os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
 		t.Fatalf("Failed to create README.md: %v", err)
 	}
 
 	// Test that GEMINI.md doesn't exist initially
 	geminiPath := filepath.Join(tempDir, "GEMINI.md")
-	if _, err := os.Stat(geminiPath); err == nil {
+	if _, err = os.Stat(geminiPath); err == nil {
 		t.Fatal("GEMINI.md should not exist initially")
 	}
 
@@ -50,19 +50,17 @@ Please read CONTRIBUTING.md for details.
 	mockService := &mockGeminiServiceForTest{}
 
 	// Generate documentation
-	err = mockService.GenerateDocumentation(tempDir)
-	if err != nil {
+	if err = mockService.GenerateDocumentation(tempDir); err != nil {
 		t.Fatalf("GenerateDocumentation failed: %v", err)
 	}
 
 	// Test that GEMINI.md exists after generation
-	if _, err := os.Stat(geminiPath); err != nil {
+	if _, err = os.Stat(geminiPath); err != nil {
 		t.Fatal("GEMINI.md should exist after generation")
 	}
 
 	// Test that calling GenerateDocumentation again doesn't fail (should skip)
-	err = mockService.GenerateDocumentation(tempDir)
-	if err != nil {
+	if err = mockService.GenerateDocumentation(tempDir); err != nil {
 		t.Fatalf("Second call to GenerateDocumentation failed: %v", err)
 	}
 }
@@ -76,7 +74,7 @@ func TestGeminiService_GenerateDocumentation_RealCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Create a test README.md file
 	readmeContent := `# Test Project
@@ -96,7 +94,7 @@ go run main.go
 Please read CONTRIBUTING.md for details.
 `
 	readmePath := filepath.Join(tempDir, "README.md")
-	if err := os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
+	if err = os.WriteFile(readmePath, []byte(readmeContent), 0644); err != nil {
 		t.Fatalf("Failed to create README.md: %v", err)
 	}
 
@@ -111,7 +109,7 @@ Please read CONTRIBUTING.md for details.
 
 	// Test that GEMINI.md doesn't exist initially
 	geminiPath := filepath.Join(tempDir, "GEMINI.md")
-	if _, err := os.Stat(geminiPath); err == nil {
+	if _, err = os.Stat(geminiPath); err == nil {
 		t.Fatal("GEMINI.md should not exist initially")
 	}
 

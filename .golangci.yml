@@ -1,5 +1,8 @@
 # golangci-lint configuration for jira-ai-issue-solver
 
+# Configuration version
+version: "2"
+
 # options for analysis running
 run:
   # timeout for analysis, e.g. 30s, 5m, default is 1m
@@ -13,41 +16,48 @@ run:
 
 # output configuration options
 output:
-  # colored-line-number|line-number|json|tab|checkstyle|code-climate
   formats:
-  - format: colored-line-number
+    # Text format with colors, line numbers, and linter names
+    text:
+      print-issued-lines: true
+      print-linter-name: true
+      colors: true
 
-  # print lines of code with issue, default is true
-  print-issued-lines: true
-
-  # print linter name in the end of issue text, default is true
-  print-linter-name: true
-
+issues:
   # make issues output unique by line, default is true
   uniq-by-line: true
 
-issues:
   # List of regexps of issue texts to exclude.
   exclude:
     - 'declaration of "err" shadows declaration at'
 
-  # Which dirs to exclude: issues from them won't be reported.
-  exclude-dirs:
-    - bin
-    - mocks
+  exclusions:
+    # Which file paths to exclude: they will be analyzed, but issues from them won't be reported.
+    paths:
+      - "bin/.*"
+      - "mocks/.*"
+
+formatters:
+  enable:
+    - gci            # Import order and grouping
+    - gofmt          # Checks whether code was gofmt-ed
+    - goimports      # Checks import statements are formatted according to the 'goimport' command
+
+  settings:
+    gci:
+      sections:
+        - standard                               # Standard library packages
+        - default                                # All other packages
+        - prefix(jira-ai-issue-solver)          # Local packages
 
 linters:
   disable:
     - asciicheck     # Disabled due to dependency issues
   enable:
-    - gci            # Import order and grouping
     - copyloopvar    # Detects places where loop variables are copied incorrectly
     - errcheck       # Checks for unchecked errors
     - gocyclo        # Computes and checks the cyclomatic complexity of functions
-    - gofmt          # Checks whether code was gofmt-ed
-    - goimports      # Checks import statements are formatted according to the 'goimport' command
     - gosec          # Inspects source code for security problems
-    - gosimple       # Specializes in simplifying code
     - govet          # Reports suspicious constructs
     - ineffassign    # Detects when assignments to existing variables are not used
     - misspell       # Finds commonly misspelled English words in comments
@@ -56,30 +66,24 @@ linters:
     - unconvert      # Removes unnecessary type conversions
     - unused         # Checks for unused constants, variables, functions and types
 
-linters-settings:
-  gci:
-    sections:
-      - standard                               # Standard library packages
-      - default                                # All other packages
-      - prefix(jira-ai-issue-solver)          # Local packages
+  settings:
+    govet:
+      enable:
+        - shadow       # Report shadowed variables
+      settings:
+        printf:
+          funcs:
+            - (go.uber.org/zap.SugaredLogger).Infof
+            - (go.uber.org/zap.SugaredLogger).Warnf
+            - (go.uber.org/zap.SugaredLogger).Errorf
+            - (go.uber.org/zap.SugaredLogger).Fatalf
 
-  govet:
-    enable:
-      - shadow       # Report shadowed variables
-    settings:
-      printf:
-        funcs:
-          - (go.uber.org/zap.SugaredLogger).Infof
-          - (go.uber.org/zap.SugaredLogger).Warnf
-          - (go.uber.org/zap.SugaredLogger).Errorf
-          - (go.uber.org/zap.SugaredLogger).Fatalf
+    gocyclo:
+      # Minimal code complexity to report
+      min-complexity: 35
 
-  gocyclo:
-    # Minimal code complexity to report
-    min-complexity: 35
-
-  gosec:
-    # Exclude specific checks
-    excludes:
-      - G204 # Subprocess launched with variable - acceptable for CLI wrappers
-      - G306 # File permissions - acceptable for test files
+    gosec:
+      # Exclude specific checks
+      excludes:
+        - G204 # Subprocess launched with variable - acceptable for CLI wrappers
+        - G306 # File permissions - acceptable for test files

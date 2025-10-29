@@ -40,23 +40,11 @@ jobs:
           go-version: '1.23'
           cache: true
 
-      - name: Verify Go version matches tool-versions
-        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
-        run: |
-          source .github/tool-versions
-          WORKFLOW_GO_VERSION="1.23"
-          if [ "$GO_VERSION" != "$WORKFLOW_GO_VERSION" ]; then
-            echo "ERROR: Go version mismatch!"
-            echo "  .github/tool-versions specifies: $GO_VERSION"
-            echo "  This workflow uses: $WORKFLOW_GO_VERSION"
-            echo "  Please update the go-version in .github/workflows/lint.yml"
-            exit 1
-          fi
-          echo "✓ Go version $GO_VERSION matches workflow configuration"
-
       - name: Running Linter
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
-        run: make lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1.0
 
       - name: Check that generated files have been updated and that go.mod is tidy
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}

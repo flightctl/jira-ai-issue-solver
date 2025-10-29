@@ -111,7 +111,7 @@ func main() {
 
 	// Check if Jira configuration is provided
 	if config.Jira.BaseURL != "" && config.Jira.Username != "" && config.Jira.APIToken != "" {
-		jiraService = services.NewJiraService(config)
+		jiraService = services.NewJiraService(config, Logger)
 		Logger.Info("Jira service initialized")
 	} else {
 		Logger.Warn("Jira configuration not provided - Jira services will be disabled")

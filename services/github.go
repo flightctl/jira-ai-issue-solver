@@ -90,7 +90,7 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 // CloneRepository clones a repository to a local directory
 func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 	// Ensure the directory exists
-	if err := os.MkdirAll(directory, 0755); err != nil {
+	if err := os.MkdirAll(directory, 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -405,7 +405,11 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "CreatePullRequest"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -444,7 +448,11 @@ func (s *GitHubServiceImpl) CheckForkExists(owner, repo string) (exists bool, cl
 	if err != nil {
 		return false, "", fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "CheckForkExists"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -490,7 +498,7 @@ func (s *GitHubServiceImpl) CheckForkExists(owner, repo string) (exists bool, cl
 // ResetFork resets a fork to match the original repository and sets up upstream
 func (s *GitHubServiceImpl) ResetFork(forkCloneURL, directory string) error {
 	// Ensure the directory exists
-	if err := os.MkdirAll(directory, 0755); err != nil {
+	if err := os.MkdirAll(directory, 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -570,7 +578,11 @@ func (s *GitHubServiceImpl) ForkRepository(owner, repo string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "ForkRepository"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -612,7 +624,11 @@ func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "SyncForkWithUpstream-GetForkDetails"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -628,7 +644,7 @@ func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 		} `json:"source"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&forkDetails); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&forkDetails); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -656,7 +672,11 @@ func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send sync request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "SyncForkWithUpstream-MergeUpstream"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
@@ -777,7 +797,11 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "AddPRComment"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -807,7 +831,11 @@ func (s *GitHubServiceImpl) ListPRComments(owner, repo string, prNumber int) ([]
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "ListPRComments"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -869,7 +897,11 @@ func (s *GitHubServiceImpl) GetPRDetails(owner, repo string, prNumber int) (*mod
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "GetPRDetails"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -877,7 +909,7 @@ func (s *GitHubServiceImpl) GetPRDetails(owner, repo string, prNumber int) (*mod
 	}
 
 	var prDetails models.GitHubPRDetails
-	if err := json.NewDecoder(resp.Body).Decode(&prDetails); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&prDetails); err != nil {
 		return nil, fmt.Errorf("failed to decode PR details: %w", err)
 	}
 
@@ -918,7 +950,11 @@ func (s *GitHubServiceImpl) ListPRReviews(owner, repo string, prNumber int) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "ListPRReviews"))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

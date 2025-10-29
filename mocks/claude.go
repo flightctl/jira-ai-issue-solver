@@ -2,10 +2,11 @@ package mocks
 
 import (
 	"fmt"
-	"jira-ai-issue-solver/models"
 	"os"
 	"path/filepath"
 	"time"
+
+	"jira-ai-issue-solver/models"
 )
 
 // MockClaudeService is a mock implementation of the ClaudeService interface
@@ -92,7 +93,7 @@ When processing tickets, Claude will automatically generate or update this file 
 func (m *MockClaudeService) createFakeFiles(repoDir string) error {
 	// Create a source file
 	srcDir := filepath.Join(repoDir, "src")
-	if err := os.MkdirAll(srcDir, 0755); err != nil {
+	if err := os.MkdirAll(srcDir, 0750); err != nil {
 		return fmt.Errorf("failed to create src directory: %w", err)
 	}
 
@@ -129,7 +130,7 @@ func main() {
 
 	// Create a test file
 	testDir := filepath.Join(repoDir, "tests")
-	if err := os.MkdirAll(testDir, 0755); err != nil {
+	if err := os.MkdirAll(testDir, 0750); err != nil {
 		return fmt.Errorf("failed to create tests directory: %w", err)
 	}
 

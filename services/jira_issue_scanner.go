@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -26,7 +27,7 @@ type JiraIssueScannerServiceImpl struct {
 	config            *models.Config
 	logger            *zap.Logger
 	stopChan          chan struct{}
-	isRunning         bool
+	isRunning         atomic.Bool
 	processingTickets sync.Map // map[string]bool to track tickets currently being processed
 }
 
@@ -43,18 +44,16 @@ func NewJiraIssueScannerService(
 		config:          config,
 		logger:          logger,
 		stopChan:        make(chan struct{}),
-		isRunning:       false,
 	}
 }
 
 // Start starts the periodic scanning
 func (s *JiraIssueScannerServiceImpl) Start() {
-	if s.isRunning {
+	if !s.isRunning.CompareAndSwap(false, true) {
 		s.logger.Info("Jira issue scanner is already running")
 		return
 	}
 
-	s.isRunning = true
 	s.logger.Info("Starting Jira issue scanner...")
 
 	go func() {
@@ -78,11 +77,10 @@ func (s *JiraIssueScannerServiceImpl) Start() {
 
 // Stop stops the periodic scanning
 func (s *JiraIssueScannerServiceImpl) Stop() {
-	if !s.isRunning {
+	if !s.isRunning.CompareAndSwap(true, false) {
 		return
 	}
 
-	s.isRunning = false
 	close(s.stopChan)
 
 	// Clear any remaining processing tickets to prevent memory leaks
