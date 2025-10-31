@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // execCommand is a variable that holds the exec.Command function
@@ -245,7 +245,7 @@ func TestSwitchToBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Track the commands that would be executed
 	var executedCommands []string
@@ -298,7 +298,7 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
@@ -335,7 +335,7 @@ func TestGitHubService_CommitChanges_WithCoAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
@@ -405,7 +405,7 @@ func TestGitHubService_CommitChanges_WithoutCoAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
@@ -473,7 +473,7 @@ func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Initialize git repository
 	cmd := exec.Command("git", "init")

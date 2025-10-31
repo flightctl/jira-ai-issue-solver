@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 // getContentAsString safely converts content to string, handling both string and array types
@@ -256,8 +256,8 @@ func (s *ClaudeServiceImpl) GenerateCodeClaude(prompt string, repoDir string) (*
 			}
 
 			var response models.ClaudeResponse
-			if err := json.Unmarshal([]byte(line), &response); err != nil {
-				s.logger.Error("Failed to parse JSON line", zap.String("line", line), zap.Error(err))
+			if localErr := json.Unmarshal([]byte(line), &response); localErr != nil {
+				s.logger.Error("Failed to parse JSON line", zap.String("line", line), zap.Error(localErr))
 				continue
 			}
 
@@ -311,8 +311,8 @@ func (s *ClaudeServiceImpl) GenerateCodeClaude(prompt string, repoDir string) (*
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
-			errorChan <- fmt.Errorf("error reading stream-json output: %w", err)
+		if localErr := scanner.Err(); localErr != nil {
+			errorChan <- fmt.Errorf("error reading stream-json output: %w", localErr)
 			return
 		}
 

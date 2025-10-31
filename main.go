@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"jira-ai-issue-solver/models"
-	"jira-ai-issue-solver/services"
-
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"jira-ai-issue-solver/models"
+	"jira-ai-issue-solver/services"
 )
 
 var Logger *zap.Logger
@@ -91,7 +91,7 @@ func main() {
 
 	// Initialize logger
 	InitLogger(config)
-	defer Logger.Sync()
+	defer func() { _ = Logger.Sync() }()
 
 	// Validate required configuration
 	hasComponentToRepo := false
@@ -111,7 +111,7 @@ func main() {
 
 	// Check if Jira configuration is provided
 	if config.Jira.BaseURL != "" && config.Jira.Username != "" && config.Jira.APIToken != "" {
-		jiraService = services.NewJiraService(config)
+		jiraService = services.NewJiraService(config, Logger)
 		Logger.Info("Jira service initialized")
 	} else {
 		Logger.Warn("Jira configuration not provided - Jira services will be disabled")
@@ -180,8 +180,9 @@ func main() {
 
 	// Create server
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start the server in a goroutine

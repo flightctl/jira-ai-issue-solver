@@ -1,0 +1,80 @@
+# golangci-lint configuration for jira-ai-issue-solver
+
+version: "2"
+
+run:
+  timeout: 5m
+  issues-exit-code: 1
+  tests: true
+
+output:
+  formats:
+    text:
+      print-issued-lines: true
+      print-linter-name: true
+
+issues:
+  uniq-by-line: true
+
+formatters:
+  enable:
+    - gci            # Import order and grouping
+    - gofmt          # Checks whether code was gofmt-ed
+    - goimports      # Checks import statements are formatted according to the 'goimport' command
+
+  settings:
+    gci:
+      sections:
+        - standard                               # Standard library packages
+        - default                                # All other packages
+        - prefix(jira-ai-issue-solver)          # Local packages
+
+linters:
+  disable:
+    - asciicheck     # Disabled due to dependency issues
+
+  enable:
+    - copyloopvar    # Detects places where loop variables are copied incorrectly
+    - errcheck       # Checks for unchecked errors
+    - gocyclo        # Computes and checks the cyclomatic complexity of functions
+    - gosec          # Inspects source code for security problems
+    - govet          # Reports suspicious constructs
+    - ineffassign    # Detects when assignments to existing variables are not used
+    - misspell       # Finds commonly misspelled English words in comments
+    - nolintlint     # Reports ill-formed or insufficient nolint directives
+    - staticcheck    # Go static analysis, detecting bugs, performance issues, and more
+    - unconvert      # Removes unnecessary type conversions
+    - unused         # Checks for unused constants, variables, functions and types
+
+  settings:
+    govet:
+      enable:
+        - shadow       # Report shadowed variables
+      settings:
+        printf:
+          funcs:
+            - (go.uber.org/zap.SugaredLogger).Infof
+            - (go.uber.org/zap.SugaredLogger).Warnf
+            - (go.uber.org/zap.SugaredLogger).Errorf
+            - (go.uber.org/zap.SugaredLogger).Fatalf
+
+    gocyclo:
+      # Minimal code complexity to report
+      min-complexity: 35
+
+    gosec:
+      # Exclude specific checks
+      excludes:
+        - G204 # Subprocess launched with variable - acceptable for CLI wrappers
+        - G306 # File permissions - acceptable for test files
+
+  # v2 exclusions configuration
+  exclusions:
+    # Which dirs to exclude: issues from them won't be reported
+    paths:
+      - bin
+
+    # Exclude specific issue texts
+    rules:
+      - path: '(.+)\.go$'
+        text: 'declaration of "err" shadows declaration at'

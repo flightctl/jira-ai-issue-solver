@@ -232,7 +232,7 @@ github:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ jira:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ jira:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -410,7 +410,7 @@ github:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
 		t.Fatal(err)
@@ -564,12 +564,12 @@ jira:
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tempFile.Name())
+	defer func() { _ = os.Remove(tempFile.Name()) }()
 
 	if _, err := tempFile.WriteString(configContent); err != nil {
 		t.Fatalf("Failed to write config content: %v", err)
 	}
-	tempFile.Close()
+	_ = tempFile.Close()
 
 	// Load the config
 	config, err := LoadConfig(tempFile.Name())

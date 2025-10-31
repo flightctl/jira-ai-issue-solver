@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"jira-ai-issue-solver/models"
-
 	"go.uber.org/zap"
+
+	"jira-ai-issue-solver/models"
 )
 
 func TestGeminiService_GenerateDocumentation(t *testing.T) {
@@ -16,7 +16,7 @@ func TestGeminiService_GenerateDocumentation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Create a test README.md file
 	readmeContent := `# Test Project
@@ -76,7 +76,7 @@ func TestGeminiService_GenerateDocumentation_RealCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Create a test README.md file
 	readmeContent := `# Test Project

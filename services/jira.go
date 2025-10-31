@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"jira-ai-issue-solver/models"
 )
 
@@ -56,10 +58,11 @@ type JiraServiceImpl struct {
 	config   *models.Config
 	client   *http.Client
 	executor models.CommandExecutor
+	logger   *zap.Logger
 }
 
 // NewJiraService creates a new JiraService
-func NewJiraService(config *models.Config, executor ...models.CommandExecutor) JiraService {
+func NewJiraService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) JiraService {
 	commandExecutor := exec.Command
 	if len(executor) > 0 {
 		commandExecutor = executor[0]
@@ -68,6 +71,7 @@ func NewJiraService(config *models.Config, executor ...models.CommandExecutor) J
 		config:   config,
 		client:   &http.Client{},
 		executor: commandExecutor,
+		logger:   logger,
 	}
 }
 
@@ -87,7 +91,11 @@ func (s *JiraServiceImpl) GetTicket(key string) (*models.JiraTicketResponse, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -118,7 +126,11 @@ func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]in
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -153,7 +165,11 @@ func (s *JiraServiceImpl) GetTicketWithComments(key string) (*models.JiraTicketR
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -224,7 +240,11 @@ func (s *JiraServiceImpl) UpdateTicketLabels(key string, addLabels, removeLabels
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -251,7 +271,11 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -309,7 +333,11 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -344,7 +372,11 @@ func (s *JiraServiceImpl) AddComment(key string, comment string) error {
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -381,7 +413,11 @@ func (s *JiraServiceImpl) UpdateTicketField(key string, fieldID string, value in
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -416,7 +452,11 @@ func (s *JiraServiceImpl) GetFieldIDByName(fieldName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -470,7 +510,11 @@ func (s *JiraServiceImpl) SearchTickets(jql string) (*models.JiraSearchResponse,
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr))
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
