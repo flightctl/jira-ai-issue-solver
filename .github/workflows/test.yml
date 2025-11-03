@@ -43,6 +43,12 @@ jobs:
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         run: go mod download
 
+      - name: Configure git
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
+        run: |
+          git config --global user.name "Test User"
+          git config --global user.email "test@example.com"
+
       - name: Run tests with race detector
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         run: make unit-test

@@ -307,19 +307,6 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 		t.Fatalf("Failed to init git repository: %v", err)
 	}
 
-	// Configure git user (repository-local only, not global)
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user email: %v", err)
-	}
-
 	// Create initial commit
 	cmd = exec.Command("git", "commit", "--allow-empty", "-m", "Initial commit")
 	cmd.Dir = tempDir
