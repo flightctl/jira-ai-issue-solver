@@ -95,24 +95,6 @@ func NewJiraServiceForTest(config *models.Config, logger *zap.Logger, sleepFn fu
 	}
 }
 
-// truncateForLogging truncates response body for debug logging
-func truncateForLogging(body []byte, maxLen int) string {
-	bodyStr := string(body)
-	if len(bodyStr) > maxLen {
-		return bodyStr[:maxLen] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
-	}
-	return bodyStr
-}
-
-// truncateForError truncates response body for error messages
-func truncateForError(body []byte) string {
-	bodyStr := string(body)
-	if len(bodyStr) > maxBodyErrorLength {
-		return bodyStr[:maxBodyErrorLength] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
-	}
-	return bodyStr
-}
-
 func (s *JiraServiceImpl) doOperation(
 	operation string,
 	url string,
@@ -221,6 +203,24 @@ func (s *JiraServiceImpl) doOperation(
 	return nil, fmt.Errorf("failed to %s %s after %d retries", operation, url, maxRetries)
 }
 
+// truncateForLogging truncates response body for debug logging
+func truncateForLogging(body []byte, maxLen int) string {
+	bodyStr := string(body)
+	if len(bodyStr) > maxLen {
+		return bodyStr[:maxLen] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
+	}
+	return bodyStr
+}
+
+// truncateForError truncates response body for error messages
+func truncateForError(body []byte) string {
+	bodyStr := string(body)
+	if len(bodyStr) > maxBodyErrorLength {
+		return bodyStr[:maxBodyErrorLength] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
+	}
+	return bodyStr
+}
+
 // doGet is a helper function to make a GET request to Jira and process any rate limiting errors
 func (s *JiraServiceImpl) doGet(url string) ([]byte, error) {
 	return s.doOperation("GET", url, nil, http.StatusOK)
@@ -231,41 +231,22 @@ func (s *JiraServiceImpl) doPut(url string, bodyReader io.Reader) ([]byte, error
 }
 
 func (s *JiraServiceImpl) doPost(url string, bodyReader io.Reader) ([]byte, error) {
-	return s.doOperation("POST", url, bodyReader, http.StatusCreated, http.StatusNoContent, http.StatusOK)
+	return s.doOperation("POST", url, bodyReader, http.StatusNoContent, http.StatusCreated, http.StatusOK)
 }
 
 // GetTicket fetches a ticket from Jira
 func (s *JiraServiceImpl) GetTicket(key string) (*models.JiraTicketResponse, error) {
 	url := fmt.Sprintf("%s/rest/api/2/issue/%s", s.config.Jira.BaseURL, key)
 
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := s.doGet(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get ticket: %s, status code: %d", string(body), resp.StatusCode)
+		return nil, fmt.Errorf("failed to get ticket, err: %w", err)
 	}
 
 	var ticket models.JiraTicketResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ticket); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&ticket); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-
 	return &ticket, nil
 }
 
@@ -273,27 +254,9 @@ func (s *JiraServiceImpl) GetTicket(key string) (*models.JiraTicketResponse, err
 func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]interface{}, map[string]string, error) {
 	url := fmt.Sprintf("%s/rest/api/2/issue/%s?expand=names", s.config.Jira.BaseURL, key)
 
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := s.doGet(url)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, nil, fmt.Errorf("failed to get ticket with expanded fields: %s, status code: %d", string(body), resp.StatusCode)
+		return nil, nil, fmt.Errorf("failed to get ticket with expanded fields, err: %w", err)
 	}
 
 	var ticketWithFields struct {
@@ -301,7 +264,7 @@ func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]in
 		Names  map[string]string      `json:"names"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&ticketWithFields); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&ticketWithFields); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -312,31 +275,13 @@ func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]in
 func (s *JiraServiceImpl) GetTicketWithComments(key string) (*models.JiraTicketResponse, error) {
 	url := fmt.Sprintf("%s/rest/api/2/issue/%s?expand=comment", s.config.Jira.BaseURL, key)
 
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := s.doGet(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get ticket with comments: %s, status code: %d", string(body), resp.StatusCode)
+		return nil, fmt.Errorf("failed to get ticket with comments, err: %w", err)
 	}
 
 	var ticket models.JiraTicketResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ticket); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&ticket); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -387,27 +332,8 @@ func (s *JiraServiceImpl) UpdateTicketLabels(key string, addLabels, removeLabels
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update ticket labels: %s, status code: %d", string(body), resp.StatusCode)
+	if _, err := s.doPut(url, bytes.NewReader(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to update ticket labels: %w", err)
 	}
 
 	return nil
@@ -418,27 +344,9 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 	// Get available transitions
 	url := fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", s.config.Jira.BaseURL, key)
 
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := s.doGet(url)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to get transitions: %s, status code: %d", string(body), resp.StatusCode)
+		return fmt.Errorf("failed to get transitions, err: %w", err)
 	}
 
 	var transitions struct {
@@ -451,7 +359,7 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 		} `json:"transitions"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&transitions); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&transitions); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -480,27 +388,8 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	req, err = http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err = s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update ticket status: %s, status code: %d", string(body), resp.StatusCode)
+	if _, err := s.doPost(url, bytes.NewReader(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to update ticket status: %w", err)
 	}
 
 	return nil
@@ -516,30 +405,11 @@ func (s *JiraServiceImpl) AddComment(key string, comment string) error {
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return fmt.Errorf("failed to marshal add comment payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to add comment: %s, status code: %d", string(body), resp.StatusCode)
+	if _, err := s.doPost(url, bytes.NewReader(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to add comment: %w", err)
 	}
 
 	return nil
@@ -560,27 +430,8 @@ func (s *JiraServiceImpl) UpdateTicketField(key string, fieldID string, value in
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update ticket field %s: %s, status code: %d", fieldID, string(body), resp.StatusCode)
+	if _, err := s.doPut(url, bytes.NewBuffer(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to update ticket field: %w", err)
 	}
 
 	return nil
@@ -599,27 +450,9 @@ func (s *JiraServiceImpl) UpdateTicketFieldByName(key string, fieldName string, 
 func (s *JiraServiceImpl) GetFieldIDByName(fieldName string) (string, error) {
 	url := fmt.Sprintf("%s/rest/api/2/field", s.config.Jira.BaseURL)
 
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := s.doGet(url)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to get fields: %s, status code: %d", string(body), resp.StatusCode)
+		return "", fmt.Errorf("failed to get fields, err: %w", err)
 	}
 
 	var fields []struct {
@@ -627,7 +460,7 @@ func (s *JiraServiceImpl) GetFieldIDByName(fieldName string) (string, error) {
 		Name string `json:"name"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&fields); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&fields); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -657,31 +490,13 @@ func (s *JiraServiceImpl) SearchTickets(jql string) (*models.JiraSearchResponse,
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	body, err := s.doPost(url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to search tickets: %s, status code: %d", string(body), resp.StatusCode)
+		return nil, fmt.Errorf("failed to search tickets: %w", err)
 	}
 
 	var searchResponse models.JiraSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResponse); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&searchResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -694,6 +509,7 @@ func (s *JiraServiceImpl) HasSecurityLevel(key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
 	// Consider ticket secure if security level exists and is not "None" or empty
 	return security != nil && security.Name != "" && strings.ToLower(security.Name) != "none", nil
 }
