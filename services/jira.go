@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,6 +111,127 @@ func truncateForError(body []byte) string {
 		return bodyStr[:maxBodyErrorLength] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
 	}
 	return bodyStr
+}
+
+func (s *JiraServiceImpl) doOperation(
+	operation string,
+	url string,
+	bodyReader io.Reader,
+	okStatusCodes ...int,
+) ([]byte, error) {
+	s.logger.Debug("Doing operation", zap.String("operation", operation), zap.String("url", url))
+
+	// Buffer the request body once so it can be retried
+	var requestBody []byte
+	if bodyReader != nil {
+		var err error
+		requestBody, err = io.ReadAll(bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+	}
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Create fresh reader for each attempt
+		var bodyForRequest io.Reader
+		if requestBody != nil {
+			bodyForRequest = bytes.NewReader(requestBody)
+		}
+
+		req, err := http.NewRequest(operation, url, bodyForRequest)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create %s request: %w", operation, err)
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send %s request: %w", operation, err)
+		}
+
+		// Read the body and close immediately so we can retry if needed
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", operation), zap.String("url", url))
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", readErr)
+		}
+
+		for _, okStatusCode := range okStatusCodes {
+			// Success case
+			if resp.StatusCode == okStatusCode {
+				s.logger.Debug("Operation successful", zap.String("operation", operation), zap.String("url", url), zap.Int("status_code", resp.StatusCode))
+				s.logger.Debug("Response body", zap.String("body", truncateForLogging(body, maxBodyLogLength)))
+				return body, nil
+			}
+		}
+
+		// Handle rate limiting with retry
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
+			// Default wait time if no header or unparseable
+			retrySeconds := defaultRetryWaitSeconds
+
+			if retryAfterHeader := resp.Header.Get("Retry-After"); retryAfterHeader != "" {
+				// Parse Retry-After header (Jira returns it as seconds)
+				if parsed, err := strconv.Atoi(retryAfterHeader); err == nil {
+					// Cap the retry wait time to prevent excessive delays
+					if parsed > maxRetryWaitSeconds {
+						s.logger.Warn("Retry-After exceeds maximum, capping to max",
+							zap.Int("requested_seconds", parsed),
+							zap.Int("capped_to_seconds", maxRetryWaitSeconds))
+						retrySeconds = maxRetryWaitSeconds
+					} else {
+						retrySeconds = parsed
+					}
+				} else {
+					s.logger.Warn("Failed to parse Retry-After header, using default wait time",
+						zap.String("retry_after", retryAfterHeader),
+						zap.Error(err),
+						zap.Int("default_seconds", defaultRetryWaitSeconds))
+				}
+			} else {
+				s.logger.Warn("Rate limited without Retry-After header, using default wait time",
+					zap.Int("default_seconds", defaultRetryWaitSeconds))
+			}
+
+			waitDuration := time.Duration(retrySeconds) * time.Second
+
+			s.logger.Info("Rate limited by Jira, retrying after delay",
+				zap.String("operation", operation),
+				zap.String("url", url),
+				zap.Int("attempt", attempt),
+				zap.Duration("wait_duration", waitDuration))
+
+			// Wait using channel-based approach (compatible with future context support)
+			// When adding context: wrap in select with case <-ctx.Done()
+			<-s.sleepFn(waitDuration)
+
+			continue // Retry the request
+		}
+
+		// All other error cases - truncate body to avoid huge error messages
+		return nil, fmt.Errorf("failed to %s %s: status_code=%d, body=%s",
+			operation, url, resp.StatusCode, truncateForError(body))
+	}
+
+	return nil, fmt.Errorf("failed to %s %s after %d retries", operation, url, maxRetries)
+}
+
+// doGet is a helper function to make a GET request to Jira and process any rate limiting errors
+func (s *JiraServiceImpl) doGet(url string) ([]byte, error) {
+	return s.doOperation("GET", url, nil, http.StatusOK)
+}
+
+func (s *JiraServiceImpl) doPut(url string, bodyReader io.Reader) ([]byte, error) {
+	return s.doOperation("PUT", url, bodyReader, http.StatusNoContent, http.StatusOK)
+}
+
+func (s *JiraServiceImpl) doPost(url string, bodyReader io.Reader) ([]byte, error) {
+	return s.doOperation("POST", url, bodyReader, http.StatusCreated, http.StatusNoContent, http.StatusOK)
 }
 
 // GetTicket fetches a ticket from Jira
