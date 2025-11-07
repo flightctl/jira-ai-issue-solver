@@ -8,10 +8,22 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
+)
+
+const (
+	// Retry configuration constants
+	maxRetries              = 2
+	defaultRetryWaitSeconds = 5
+	maxRetryWaitSeconds     = 60 // Cap at 1 minute to prevent excessive waits
+
+	// Response body truncation for logging and errors
+	maxBodyLogLength   = 500 // Max chars to log in debug
+	maxBodyErrorLength = 200 // Max chars to include in error messages
 )
 
 // JiraService defines the interface for interacting with Jira
@@ -59,10 +71,16 @@ type JiraServiceImpl struct {
 	client   *http.Client
 	executor models.CommandExecutor
 	logger   *zap.Logger
+	sleepFn  func(time.Duration) <-chan time.Time // Returns a channel for select-based waiting
 }
 
-// NewJiraService creates a new JiraService
+// NewJiraService creates a new JiraService with production defaults
 func NewJiraService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) JiraService {
+	return NewJiraServiceForTest(config, logger, time.After, executor...)
+}
+
+// NewJiraServiceForTest creates a new JiraService with a custom sleep function for testing
+func NewJiraServiceForTest(config *models.Config, logger *zap.Logger, sleepFn func(time.Duration) <-chan time.Time, executor ...models.CommandExecutor) *JiraServiceImpl {
 	commandExecutor := exec.Command
 	if len(executor) > 0 {
 		commandExecutor = executor[0]
@@ -72,6 +90,7 @@ func NewJiraService(config *models.Config, logger *zap.Logger, executor ...model
 		client:   &http.Client{},
 		executor: commandExecutor,
 		logger:   logger,
+		sleepFn:  sleepFn,
 	}
 }
 

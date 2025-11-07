@@ -5,6 +5,9 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
+
+	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
 )
@@ -22,6 +25,13 @@ func NewTestClient(fn RoundTripFunc) *http.Client {
 	return &http.Client{
 		Transport: fn,
 	}
+}
+
+// instantSleep returns a closed channel immediately, simulating instant sleep for tests
+func instantSleep(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time)
+	close(ch)
+	return ch
 }
 
 // TestGetTicket tests the GetTicket method
@@ -116,11 +126,10 @@ func TestGetTicket(t *testing.T) {
 			config.Jira.Username = "test-user"
 			config.Jira.APIToken = "test-token"
 
-			service := &JiraServiceImpl{
-				config:   config,
-				client:   mockClient,
-				executor: execCommand,
-			}
+		logger := zap.NewNop()
+
+		service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
+		service.client = mockClient
 
 			// Call the method being tested
 			ticket, err := service.GetTicket(tc.key)
@@ -247,11 +256,10 @@ func TestUpdateTicketLabels(t *testing.T) {
 			config.Jira.Username = "test-user"
 			config.Jira.APIToken = "test-token"
 
-			service := &JiraServiceImpl{
-				config:   config,
-				client:   mockClient,
-				executor: execCommand,
-			}
+		logger := zap.NewNop()
+
+		service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
+		service.client = mockClient
 
 			// Call the method being tested
 			err := service.UpdateTicketLabels(tc.key, tc.addLabels, tc.removeLabels)
