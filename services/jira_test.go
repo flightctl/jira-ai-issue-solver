@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -270,6 +271,92 @@ func TestUpdateTicketLabels(t *testing.T) {
 			}
 			if !tc.expectedError && err != nil {
 				t.Errorf("Expected no error but got: %v", err)
+			}
+		})
+	}
+}
+
+// TestTruncateForError tests the truncateForError helper function
+func TestTruncateForError(t *testing.T) {
+	testCases := []struct {
+		name          string
+		input         []byte
+		expectedLen   int
+		shouldContain string
+	}{
+		{
+			name:          "Short body not truncated",
+			input:         []byte("Short error message"),
+			expectedLen:   19,
+			shouldContain: "Short error message",
+		},
+		{
+			name:          "Long body truncated",
+			input:         []byte(strings.Repeat("A", 500)),
+			expectedLen:   240, // 200 chars + "... (truncated, total: 500 chars)"
+			shouldContain: "truncated",
+		},
+		{
+			name:          "Exactly at limit not truncated",
+			input:         []byte(strings.Repeat("B", 200)),
+			expectedLen:   200,
+			shouldContain: strings.Repeat("B", 200),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := truncateForError(tc.input)
+			if len(result) > tc.expectedLen+10 { // Allow small variance for formatting
+				t.Errorf("Expected length around %d but got %d", tc.expectedLen, len(result))
+			}
+			if !strings.Contains(result, tc.shouldContain) {
+				t.Errorf("Expected result to contain '%s'", tc.shouldContain)
+			}
+		})
+	}
+}
+
+// TestTruncateForLogging tests the truncateForLogging helper function
+func TestTruncateForLogging(t *testing.T) {
+	testCases := []struct {
+		name          string
+		input         []byte
+		maxLen        int
+		expectedLen   int
+		shouldContain string
+	}{
+		{
+			name:          "Short body not truncated",
+			input:         []byte("Short log message"),
+			maxLen:        100,
+			expectedLen:   17,
+			shouldContain: "Short log message",
+		},
+		{
+			name:          "Long body truncated",
+			input:         []byte(strings.Repeat("X", 1000)),
+			maxLen:        500,
+			expectedLen:   540, // 500 chars + "... (truncated, total: 1000 chars)"
+			shouldContain: "truncated",
+		},
+		{
+			name:          "Exactly at limit not truncated",
+			input:         []byte(strings.Repeat("Y", 500)),
+			maxLen:        500,
+			expectedLen:   500,
+			shouldContain: strings.Repeat("Y", 500),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := truncateForLogging(tc.input, tc.maxLen)
+			if len(result) > tc.expectedLen+10 { // Allow small variance for formatting
+				t.Errorf("Expected length around %d but got %d", tc.expectedLen, len(result))
+			}
+			if !strings.Contains(result, tc.shouldContain) {
+				t.Errorf("Expected result to contain '%s'", tc.shouldContain)
 			}
 		})
 	}

@@ -94,6 +94,24 @@ func NewJiraServiceForTest(config *models.Config, logger *zap.Logger, sleepFn fu
 	}
 }
 
+// truncateForLogging truncates response body for debug logging
+func truncateForLogging(body []byte, maxLen int) string {
+	bodyStr := string(body)
+	if len(bodyStr) > maxLen {
+		return bodyStr[:maxLen] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
+	}
+	return bodyStr
+}
+
+// truncateForError truncates response body for error messages
+func truncateForError(body []byte) string {
+	bodyStr := string(body)
+	if len(bodyStr) > maxBodyErrorLength {
+		return bodyStr[:maxBodyErrorLength] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
+	}
+	return bodyStr
+}
+
 // GetTicket fetches a ticket from Jira
 func (s *JiraServiceImpl) GetTicket(key string) (*models.JiraTicketResponse, error) {
 	url := fmt.Sprintf("%s/rest/api/2/issue/%s", s.config.Jira.BaseURL, key)
