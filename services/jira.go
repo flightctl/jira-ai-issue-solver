@@ -2,6 +2,8 @@ package services
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +23,11 @@ const (
 	maxRetries              = 2
 	defaultRetryWaitSeconds = 5
 	maxRetryWaitSeconds     = 60 // Cap at 1 minute to prevent excessive waits
+
+	// Exponential backoff configuration (used when Retry-After is 0 or missing)
+	initialBackoffSeconds = 1   // Initial backoff duration
+	maxBackoffSeconds     = 16  // Maximum backoff before jitter
+	maxJitterSeconds      = 1.0 // Maximum jitter to add (in seconds)
 
 	// Response body truncation for logging and errors
 	maxBodyLogLength   = 500 // Max chars to log in debug
@@ -83,6 +90,21 @@ func truncateForLogging(body []byte) string {
 // truncateForError truncates response body for error messages
 func truncateForError(body []byte) string {
 	return truncate(body, maxBodyErrorLength)
+}
+
+// randomJitter generates a random jitter value between 0 and maxSeconds
+func randomJitter(maxSeconds float64) (float64, error) {
+	var randomBytes [8]byte
+
+	_, err := rand.Read(randomBytes[:])
+	if err != nil {
+		return 0, fmt.Errorf("failed to generate random jitter: %w", err)
+	}
+	// Convert random bytes to uint64, then normalize to [0, 1) range
+	randomUint64 := binary.BigEndian.Uint64(randomBytes[:])
+	normalized := float64(randomUint64) / float64(^uint64(0))
+
+	return normalized * maxSeconds, nil
 }
 
 // JiraServiceImpl implements the JiraService interface
@@ -175,33 +197,70 @@ func (s *JiraServiceImpl) doOperation(
 
 		// Handle rate limiting with retry
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
-			// Default wait time if no header or unparseable
-			retrySeconds := defaultRetryWaitSeconds
+			s.logger.Debug("Response headers:")
+			for key, values := range resp.Header {
+				s.logger.Debug("Header", zap.String("key", key), zap.Strings("values", values))
+			}
+
+			var waitDuration time.Duration
+			useExponentialBackoff := false
 
 			if retryAfterHeader := resp.Header.Get("Retry-After"); retryAfterHeader != "" {
 				// Parse Retry-After header (Jira returns it as seconds)
-				if parsed, err := strconv.Atoi(retryAfterHeader); err == nil {
+				if parsed, err := strconv.Atoi(retryAfterHeader); err == nil && parsed > 0 {
 					// Cap the retry wait time to prevent excessive delays
+					retrySeconds := parsed
 					if parsed > maxRetryWaitSeconds {
 						s.logger.Warn("Retry-After exceeds maximum, capping to max",
 							zap.Int("requested_seconds", parsed),
 							zap.Int("capped_to_seconds", maxRetryWaitSeconds))
 						retrySeconds = maxRetryWaitSeconds
-					} else {
-						retrySeconds = parsed
 					}
+					waitDuration = time.Duration(retrySeconds) * time.Second
+					s.logger.Info("Rate limited by Jira, using Retry-After header",
+						zap.Int("retry_after_seconds", retrySeconds))
 				} else {
-					s.logger.Warn("Failed to parse Retry-After header, using default wait time",
-						zap.String("retry_after", retryAfterHeader),
-						zap.Error(err),
-						zap.Int("default_seconds", defaultRetryWaitSeconds))
+					// Retry-After is 0, unparseable, or invalid - use exponential backoff
+					useExponentialBackoff = true
+					if err != nil {
+						s.logger.Warn("Failed to parse Retry-After header, using exponential backoff",
+							zap.String("retry_after", retryAfterHeader),
+							zap.Error(err))
+					} else {
+						s.logger.Info("Retry-After is zero, using exponential backoff instead",
+							zap.String("retry_after", retryAfterHeader))
+					}
 				}
 			} else {
-				s.logger.Warn("Rate limited without Retry-After header, using default wait time",
-					zap.Int("default_seconds", defaultRetryWaitSeconds))
+				// No Retry-After header - use exponential backoff
+				useExponentialBackoff = true
+				s.logger.Info("Rate limited without Retry-After header, using exponential backoff")
 			}
 
-			waitDuration := time.Duration(retrySeconds) * time.Second
+			if useExponentialBackoff {
+				// Calculate exponential backoff: initialBackoff * 2^(attempt-1)
+				// attempt starts at 1, so for first retry (attempt=1): 1 * 2^0 = 1 second
+				backoffSeconds := initialBackoffSeconds * (1 << (attempt - 1))
+				if backoffSeconds > maxBackoffSeconds {
+					backoffSeconds = maxBackoffSeconds
+				}
+
+				// Add jitter: random value between 0 and maxJitterSeconds
+				jitter, err := randomJitter(maxJitterSeconds)
+				if err != nil {
+					s.logger.Warn("Failed to generate secure jitter, using 0",
+						zap.Error(err))
+					jitter = 0
+				}
+				totalSeconds := float64(backoffSeconds) + jitter
+
+				waitDuration = time.Duration(totalSeconds * float64(time.Second))
+				s.logger.Info("Calculated exponential backoff with jitter",
+					zap.Int("attempt", attempt),
+					zap.Int("backoff_seconds", backoffSeconds),
+					zap.Float64("jitter_seconds", jitter),
+					zap.Duration("total_wait", waitDuration))
+			}
 
 			s.logger.Info("Rate limited by Jira, retrying after delay",
 				zap.String("operation", operation),
