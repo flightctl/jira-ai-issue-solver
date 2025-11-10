@@ -66,6 +66,25 @@ type JiraService interface {
 	GetTicketSecurityLevel(key string) (*models.JiraSecurity, error)
 }
 
+// truncate truncates a string to a maximum length
+func truncate(body []byte, maxLen int) string {
+	bodyStr := string(body)
+	if len(bodyStr) > maxLen {
+		return bodyStr[:maxLen] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
+	}
+	return bodyStr
+}
+
+// truncateForLogging truncates response body for debug logging
+func truncateForLogging(body []byte) string {
+	return truncate(body, maxBodyLogLength)
+}
+
+// truncateForError truncates response body for error messages
+func truncateForError(body []byte) string {
+	return truncate(body, maxBodyErrorLength)
+}
+
 // JiraServiceImpl implements the JiraService interface
 type JiraServiceImpl struct {
 	config   *models.Config
@@ -77,24 +96,26 @@ type JiraServiceImpl struct {
 
 // NewJiraService creates a new JiraService with production defaults
 func NewJiraService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) JiraService {
-	return NewJiraServiceForTest(config, logger, time.After, executor...)
+	return NewJiraServiceForTest(config, &http.Client{}, logger, time.After, executor...)
 }
 
 // NewJiraServiceForTest creates a new JiraService with a custom sleep function for testing
-func NewJiraServiceForTest(config *models.Config, logger *zap.Logger, sleepFn func(time.Duration) <-chan time.Time, executor ...models.CommandExecutor) *JiraServiceImpl {
+func NewJiraServiceForTest(config *models.Config, client *http.Client, logger *zap.Logger, sleepFn func(time.Duration) <-chan time.Time, executor ...models.CommandExecutor) *JiraServiceImpl {
 	commandExecutor := exec.Command
 	if len(executor) > 0 {
 		commandExecutor = executor[0]
 	}
 	return &JiraServiceImpl{
 		config:   config,
-		client:   &http.Client{},
+		client:   client,
 		executor: commandExecutor,
 		logger:   logger,
 		sleepFn:  sleepFn,
 	}
 }
 
+// doOperation makes a request to Jira and handles rate limiting errors.
+// It returns the response body or an error on failure.
 func (s *JiraServiceImpl) doOperation(
 	operation string,
 	url string,
@@ -147,7 +168,7 @@ func (s *JiraServiceImpl) doOperation(
 			// Success case
 			if resp.StatusCode == okStatusCode {
 				s.logger.Debug("Operation successful", zap.String("operation", operation), zap.String("url", url), zap.Int("status_code", resp.StatusCode))
-				s.logger.Debug("Response body", zap.String("body", truncateForLogging(body, maxBodyLogLength)))
+				s.logger.Debug("Response body", zap.String("body", truncateForLogging(body)))
 				return body, nil
 			}
 		}
@@ -201,24 +222,6 @@ func (s *JiraServiceImpl) doOperation(
 	}
 
 	return nil, fmt.Errorf("failed to %s %s after %d retries", operation, url, maxRetries)
-}
-
-// truncateForLogging truncates response body for debug logging
-func truncateForLogging(body []byte, maxLen int) string {
-	bodyStr := string(body)
-	if len(bodyStr) > maxLen {
-		return bodyStr[:maxLen] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
-	}
-	return bodyStr
-}
-
-// truncateForError truncates response body for error messages
-func truncateForError(body []byte) string {
-	bodyStr := string(body)
-	if len(bodyStr) > maxBodyErrorLength {
-		return bodyStr[:maxBodyErrorLength] + fmt.Sprintf("... (truncated, total: %d chars)", len(bodyStr))
-	}
-	return bodyStr
 }
 
 // doGet is a helper function to make a GET request to Jira and process any rate limiting errors

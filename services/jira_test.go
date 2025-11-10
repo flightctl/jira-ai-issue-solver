@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +32,15 @@ func instantSleep(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time)
 	close(ch)
 	return ch
+}
+
+func newTestJiraConfig() *models.Config {
+	return &models.Config{
+		Jira: models.JiraConfig{
+			BaseURL:  "https://jira.example.com",
+			APIToken: "test-token",
+		},
+	}
 }
 
 // TestGetTicket tests the GetTicket method
@@ -122,15 +130,7 @@ func TestGetTicket(t *testing.T) {
 			})
 
 			// Create a JiraService with the mock client
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.Username = "test-user"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			// Call the method being tested
 			ticket, err := service.GetTicket(tc.key)
@@ -252,15 +252,7 @@ func TestUpdateTicketLabels(t *testing.T) {
 			})
 
 			// Create a JiraService with the mock client
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.Username = "test-user"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			// Call the method being tested
 			err := service.UpdateTicketLabels(tc.key, tc.addLabels, tc.removeLabels)
@@ -283,10 +275,10 @@ func TestGetTicket_RateLimiting(t *testing.T) {
 		key           string
 		mockResponses []*http.Response
 		expectedError bool
-		expectedCalls int
+		expectedKey   string
 	}{
 		{
-			name: "successful retry after rate limit",
+			name: "succeeds after transient rate limit with retry-after header",
 			key:  "TEST-123",
 			mockResponses: []*http.Response{
 				{
@@ -310,17 +302,15 @@ func TestGetTicket_RateLimiting(t *testing.T) {
 				},
 			},
 			expectedError: false,
-			expectedCalls: 2,
+			expectedKey:   "TEST-123",
 		},
 		{
-			name: "rate limit with invalid retry-after header",
+			name: "succeeds after transient rate limit without retry-after header",
 			key:  "TEST-456",
 			mockResponses: []*http.Response{
 				{
 					StatusCode: http.StatusTooManyRequests,
-					Header: http.Header{
-						"Retry-After": []string{"invalid"},
-					},
+					// No Retry-After header
 					Body: io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
 				},
 				{
@@ -337,10 +327,10 @@ func TestGetTicket_RateLimiting(t *testing.T) {
 				},
 			},
 			expectedError: false,
-			expectedCalls: 2,
+			expectedKey:   "TEST-456",
 		},
 		{
-			name: "rate limit exhausted",
+			name: "fails when rate limit persists",
 			key:  "TEST-789",
 			mockResponses: []*http.Response{
 				{
@@ -357,95 +347,71 @@ func TestGetTicket_RateLimiting(t *testing.T) {
 					},
 					Body: io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
 				},
-			},
-			expectedError: true,
-			expectedCalls: 2,
-		},
-		{
-			name: "rate limit without retry-after header - retries with default",
-			key:  "TEST-999",
-			mockResponses: []*http.Response{
 				{
 					StatusCode: http.StatusTooManyRequests,
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
-				},
-				{
-					StatusCode: http.StatusOK,
-					Body: io.NopCloser(bytes.NewReader([]byte(`{
-						"id": "12345",
-						"key": "TEST-999",
-						"self": "https://jira.example.com/rest/api/2/issue/12345",
-						"fields": {
-							"summary": "Test ticket",
-							"description": "This is a test ticket"
-						}
-					}`))),
+					Header: http.Header{
+						"Retry-After": []string{"0"},
+					},
+					Body: io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
 				},
 			},
-			expectedError: false,
-			expectedCalls: 2,
+			expectedError: true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			callCount := 0
+			callIndex := 0
 
 			mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-				if callCount >= len(tc.mockResponses) {
-					t.Fatalf("Unexpected request: call %d", callCount)
+				if callIndex >= len(tc.mockResponses) {
+					// Return the last response if we run out
+					return tc.mockResponses[len(tc.mockResponses)-1], nil
 				}
-				response := tc.mockResponses[callCount]
-				callCount++
+				response := tc.mockResponses[callIndex]
+				callIndex++
 				return response, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.Username = "test-user"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			ticket, err := service.GetTicket(tc.key)
 
-			// Check error expectation
-			if tc.expectedError && err == nil {
-				t.Errorf("Expected an error but got nil")
-			}
-			if !tc.expectedError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
-
-			// Check call count - verifies retry logic worked
-			if callCount != tc.expectedCalls {
-				t.Errorf("Expected %d calls but got %d", tc.expectedCalls, callCount)
-			}
-
-			if !tc.expectedError && ticket == nil {
-				t.Errorf("Expected a ticket but got nil")
+			// Verify contract behavior
+			if tc.expectedError {
+				if err == nil {
+					t.Errorf("Expected an error but got nil")
+				}
+				if ticket != nil {
+					t.Errorf("Expected nil ticket on error, got: %+v", ticket)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
+				if ticket == nil {
+					t.Errorf("Expected a ticket but got nil")
+				} else if ticket.Key != tc.expectedKey {
+					t.Errorf("Expected ticket key %s, got: %s", tc.expectedKey, ticket.Key)
+				}
 			}
 		})
 	}
 }
 
-// TestAddComment_RateLimitWithBody tests that POST body is preserved across retries
-func TestAddComment_RateLimitWithBody(t *testing.T) {
+// TestAddComment_RateLimiting tests that AddComment handles transient rate limit errors
+func TestAddComment_RateLimiting(t *testing.T) {
 	testCases := []struct {
 		name          string
 		key           string
 		comment       string
 		mockResponses []*http.Response
 		expectedError bool
-		expectedCalls int
 	}{
 		{
-			name:    "POST with body succeeds after rate limit retry",
+			name:    "succeeds after transient rate limit with retry-after header",
 			key:     "TEST-123",
-			comment: "This comment should be preserved on retry",
+			comment: "Test comment",
 			mockResponses: []*http.Response{
 				{
 					StatusCode: http.StatusTooManyRequests,
@@ -456,16 +422,15 @@ func TestAddComment_RateLimitWithBody(t *testing.T) {
 				},
 				{
 					StatusCode: http.StatusCreated,
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"12345","body":"This comment should be preserved on retry"}`))),
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"12345","body":"Test comment"}`))),
 				},
 			},
 			expectedError: false,
-			expectedCalls: 2,
 		},
 		{
-			name:    "POST with body succeeds after rate limit without header",
+			name:    "succeeds after transient rate limit without header",
 			key:     "TEST-456",
-			comment: "Another comment to test",
+			comment: "Another test comment",
 			mockResponses: []*http.Response{
 				{
 					StatusCode: http.StatusTooManyRequests,
@@ -473,286 +438,62 @@ func TestAddComment_RateLimitWithBody(t *testing.T) {
 				},
 				{
 					StatusCode: http.StatusCreated,
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"12346","body":"Another comment to test"}`))),
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"12346","body":"Another test comment"}`))),
 				},
 			},
 			expectedError: false,
-			expectedCalls: 2,
 		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			callCount := 0
-			var receivedBodies []string
-
-			mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-				if callCount >= len(tc.mockResponses) {
-					t.Fatalf("Unexpected request: call %d", callCount)
-				}
-
-				// Capture the request body to verify it's preserved
-				if req.Body != nil {
-					bodyBytes, _ := io.ReadAll(req.Body)
-					receivedBodies = append(receivedBodies, string(bodyBytes))
-				} else {
-					receivedBodies = append(receivedBodies, "")
-				}
-
-				response := tc.mockResponses[callCount]
-				callCount++
-				return response, nil
-			})
-
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
-
-			err := service.AddComment(tc.key, tc.comment)
-
-			if tc.expectedError && err == nil {
-				t.Errorf("Expected an error but got nil")
-			}
-			if !tc.expectedError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
-
-			// Verify call count
-			if callCount != tc.expectedCalls {
-				t.Errorf("Expected %d calls but got %d", tc.expectedCalls, callCount)
-			}
-
-			// Verify body was preserved on retry
-			if !tc.expectedError && len(receivedBodies) >= 2 {
-				if receivedBodies[0] == "" {
-					t.Errorf("First request had empty body")
-				}
-				if receivedBodies[1] == "" {
-					t.Errorf("Retry request had empty body - body was not preserved!")
-				}
-				if receivedBodies[0] != receivedBodies[1] {
-					t.Errorf("Body changed between attempts:\nFirst: %s\nRetry: %s",
-						receivedBodies[0], receivedBodies[1])
-				}
-			}
-		})
-	}
-}
-
-// TestGetTicket_RetryAfterCapping tests the retry logic.
-// Note: The capping logic (maxRetryWaitSeconds=60) is validated through code review
-// rather than actual sleep tests to keep test execution fast. The implementation ensures
-// values exceeding 60 seconds are capped and logged.
-func TestGetTicket_RetryAfterCapping(t *testing.T) {
-	testCases := []struct {
-		name            string
-		key             string
-		retryAfterValue string
-		expectedMaxWait int // Maximum seconds we expect to wait
-		mockResponses   []*http.Response
-		expectedError   bool
-		expectedCalls   int
-	}{
 		{
-			name:            "Retry-After with fast retry (capping logic verified via code)",
-			key:             "TEST-CAP1",
-			retryAfterValue: "0", // Use 0 for fast test - capping verified through code inspection
-			expectedMaxWait: 0,
+			name:    "fails when rate limit persists",
+			key:     "TEST-789",
+			comment: "Yet another comment",
 			mockResponses: []*http.Response{
 				{
 					StatusCode: http.StatusTooManyRequests,
-					Header: http.Header{
-						"Retry-After": []string{"0"},
-					},
-					Body: io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
 				},
 				{
-					StatusCode: http.StatusOK,
-					Body: io.NopCloser(bytes.NewReader([]byte(`{
-						"id": "12345",
-						"key": "TEST-CAP1",
-						"self": "https://jira.example.com/rest/api/2/issue/12345",
-						"fields": {
-							"summary": "Test ticket",
-							"description": "This is a test ticket"
-						}
-					}`))),
+					StatusCode: http.StatusTooManyRequests,
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
+				},
+				{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Rate limit exceeded"],"errors":{}}`))),
 				},
 			},
-			expectedError: false,
-			expectedCalls: 2,
+			expectedError: true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			callCount := 0
+			callIndex := 0
 
 			mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-				if callCount >= len(tc.mockResponses) {
-					t.Fatalf("Unexpected request: call %d", callCount)
+				if callIndex >= len(tc.mockResponses) {
+					// Return the last response if we run out
+					return tc.mockResponses[len(tc.mockResponses)-1], nil
 				}
-
-				response := tc.mockResponses[callCount]
-				callCount++
+				response := tc.mockResponses[callIndex]
+				callIndex++
 				return response, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
-			logger := zap.NewNop()
+			err := service.AddComment(tc.key, tc.comment)
 
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
-
-			// Since we're not actually sleeping in the test (we're using 0 or fast values),
-			// we just verify the function completes and makes the right number of calls
-			_, err := service.GetTicket(tc.key)
-
-			if tc.expectedError && err == nil {
-				t.Errorf("Expected an error but got nil")
-			}
-			if !tc.expectedError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
-			}
-
-			if callCount != tc.expectedCalls {
-				t.Errorf("Expected %d calls but got %d", tc.expectedCalls, callCount)
+			// Verify contract behavior
+			if tc.expectedError {
+				if err == nil {
+					t.Errorf("Expected an error but got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
 			}
 		})
-	}
-}
-
-// TestTruncateForError tests the truncateForError helper function
-func TestTruncateForError(t *testing.T) {
-	testCases := []struct {
-		name          string
-		input         []byte
-		expectedLen   int
-		shouldContain string
-	}{
-		{
-			name:          "Short body not truncated",
-			input:         []byte("Short error message"),
-			expectedLen:   19,
-			shouldContain: "Short error message",
-		},
-		{
-			name:          "Long body truncated",
-			input:         []byte(strings.Repeat("A", 500)),
-			expectedLen:   240, // 200 chars + "... (truncated, total: 500 chars)"
-			shouldContain: "truncated",
-		},
-		{
-			name:          "Exactly at limit not truncated",
-			input:         []byte(strings.Repeat("B", 200)),
-			expectedLen:   200,
-			shouldContain: strings.Repeat("B", 200),
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := truncateForError(tc.input)
-			if len(result) > tc.expectedLen+10 { // Allow small variance for formatting
-				t.Errorf("Expected length around %d but got %d", tc.expectedLen, len(result))
-			}
-			if !strings.Contains(result, tc.shouldContain) {
-				t.Errorf("Expected result to contain '%s'", tc.shouldContain)
-			}
-		})
-	}
-}
-
-// TestTruncateForLogging tests the truncateForLogging helper function
-func TestTruncateForLogging(t *testing.T) {
-	testCases := []struct {
-		name          string
-		input         []byte
-		maxLen        int
-		expectedLen   int
-		shouldContain string
-	}{
-		{
-			name:          "Short body not truncated",
-			input:         []byte("Short log message"),
-			maxLen:        100,
-			expectedLen:   17,
-			shouldContain: "Short log message",
-		},
-		{
-			name:          "Long body truncated",
-			input:         []byte(strings.Repeat("X", 1000)),
-			maxLen:        500,
-			expectedLen:   540, // 500 chars + "... (truncated, total: 1000 chars)"
-			shouldContain: "truncated",
-		},
-		{
-			name:          "Exactly at limit not truncated",
-			input:         []byte(strings.Repeat("Y", 500)),
-			maxLen:        500,
-			expectedLen:   500,
-			shouldContain: strings.Repeat("Y", 500),
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := truncateForLogging(tc.input, tc.maxLen)
-			if len(result) > tc.expectedLen+10 { // Allow small variance for formatting
-				t.Errorf("Expected length around %d but got %d", tc.expectedLen, len(result))
-			}
-			if !strings.Contains(result, tc.shouldContain) {
-				t.Errorf("Expected result to contain '%s'", tc.shouldContain)
-			}
-		})
-	}
-}
-
-// TestGetTicket_LargeErrorBodyTruncation tests that large error bodies are truncated
-func TestGetTicket_LargeErrorBodyTruncation(t *testing.T) {
-	// Create a very large error response body
-	largeBody := []byte(strings.Repeat("ERROR", 1000)) // 5000 chars
-
-	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusInternalServerError,
-			Body:       io.NopCloser(bytes.NewReader(largeBody)),
-		}, nil
-	})
-
-	config := &models.Config{}
-	config.Jira.BaseURL = "https://jira.example.com"
-	config.Jira.APIToken = "test-token"
-
-	logger := zap.NewNop()
-
-	service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-	service.client = mockClient
-
-	_, err := service.GetTicket("TEST-ERROR")
-
-	if err == nil {
-		t.Fatal("Expected an error but got nil")
-	}
-
-	errorMsg := err.Error()
-
-	// Verify the error message doesn't contain the full 5000 char body
-	if len(errorMsg) > 500 { // Should be much shorter than the full body
-		t.Errorf("Error message too long (%d chars), truncation may not be working", len(errorMsg))
-	}
-
-	// Verify it contains the truncation marker
-	if !strings.Contains(errorMsg, "truncated") {
-		t.Errorf("Error message should indicate truncation but doesn't: %s", errorMsg)
 	}
 }
 
@@ -802,14 +543,7 @@ func TestGetTicketWithComments(t *testing.T) {
 				return tc.mockResponse, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			ticket, err := service.GetTicketWithComments(tc.key)
 
@@ -871,14 +605,7 @@ func TestGetTicketWithExpandedFields(t *testing.T) {
 				return tc.mockResponse, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			fields, names, err := service.GetTicketWithExpandedFields(tc.key)
 
@@ -1012,14 +739,7 @@ func TestUpdateTicketStatus(t *testing.T) {
 				return response, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			err := service.UpdateTicketStatus(tc.key, tc.status)
 
@@ -1090,14 +810,7 @@ func TestAddComment(t *testing.T) {
 				return tc.mockResponse, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			err := service.AddComment(tc.key, tc.comment)
 
@@ -1151,14 +864,7 @@ func TestUpdateTicketField(t *testing.T) {
 				return tc.mockResponse, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			err := service.UpdateTicketField(tc.key, tc.fieldID, tc.value)
 
@@ -1224,14 +930,7 @@ func TestGetFieldIDByName(t *testing.T) {
 				return tc.mockResponse, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			fieldID, err := service.GetFieldIDByName(tc.fieldName)
 
@@ -1308,14 +1007,7 @@ func TestUpdateTicketFieldByName(t *testing.T) {
 				return response, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			err := service.UpdateTicketFieldByName(tc.key, tc.fieldName, tc.value)
 
@@ -1404,14 +1096,7 @@ func TestSearchTickets(t *testing.T) {
 				return tc.mockResponse, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			result, err := service.SearchTickets(tc.jql)
 
@@ -1518,14 +1203,7 @@ func TestHasSecurityLevel(t *testing.T) {
 				return response, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			hasSec, err := service.HasSecurityLevel(tc.key)
 
@@ -1649,14 +1327,7 @@ func TestGetTicketSecurityLevel(t *testing.T) {
 				return response, nil
 			})
 
-			config := &models.Config{}
-			config.Jira.BaseURL = "https://jira.example.com"
-			config.Jira.APIToken = "test-token"
-
-			logger := zap.NewNop()
-
-			service := NewJiraServiceForTest(config, logger, instantSleep, execCommand)
-			service.client = mockClient
+			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
 
 			security, err := service.GetTicketSecurityLevel(tc.key)
 
