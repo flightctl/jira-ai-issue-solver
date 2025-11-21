@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"jira-ai-issue-solver/models"
 )
@@ -64,12 +66,97 @@ type GitHubService interface {
 	ListPRReviews(owner, repo string, prNumber int) ([]models.GitHubReview, error)
 }
 
+// fileExists returns true if the file exists, false if it does not exist,
+// and an error if the existence check failed for reasons other than the file not existing.
+func fileExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, err
+}
+
 // GitHubServiceImpl implements the GitHubService interface
 type GitHubServiceImpl struct {
 	config   *models.Config
 	client   *http.Client
 	executor models.CommandExecutor
 	logger   *zap.Logger
+}
+
+// gitCommand encapsulates a git command execution with optional stdout/stderr capture.
+// Buffers are allocated only when enabled, optimizing memory usage while maintaining
+// clean error reporting and debug logging capabilities.
+type gitCommand struct {
+	cmd    *exec.Cmd
+	stdout *bytes.Buffer
+	stderr *bytes.Buffer
+}
+
+// newGitCommand creates a new gitCommand that executes the given command in the specified directory.
+// Stdout and stderr are captured only when their respective flags are enabled, minimizing memory allocation.
+// The returned gitCommand provides safe access to command output even when capture is disabled.
+func newGitCommand(cmd *exec.Cmd, directory string, captureStdout, captureStderr bool) *gitCommand {
+	f := func(used bool) *bytes.Buffer {
+		if used {
+			return bytes.NewBuffer(nil)
+		}
+		return nil
+	}
+
+	cmd.Dir = directory
+
+	gitCmd := &gitCommand{
+		cmd:    cmd,
+		stdout: f(captureStdout),
+		stderr: f(captureStderr),
+	}
+
+	if gitCmd.stdout != nil {
+		cmd.Stdout = gitCmd.stdout
+	}
+	if gitCmd.stderr != nil {
+		cmd.Stderr = gitCmd.stderr
+	}
+
+	return gitCmd
+}
+
+// hasStdout returns true if stdout was captured and contains data.
+// Returns false if stdout capture was disabled or if no output was produced.
+func (g *gitCommand) hasStdout() bool {
+	return g.stdout != nil && g.stdout.Len() > 0
+}
+
+// getStdout returns the captured stdout as a string.
+// Returns an empty string if stdout capture was disabled or if the buffer is nil.
+// Safe to call even when stdout was not enabled.
+func (g *gitCommand) getStdout() string {
+	if g.stdout == nil {
+		return ""
+	}
+	return g.stdout.String()
+}
+
+// getStderr returns the captured stderr as a string.
+// Returns an empty string if stderr capture was disabled or if the buffer is nil.
+// Safe to call even when stderr was not enabled.
+func (g *gitCommand) getStderr() string {
+	if g.stderr == nil {
+		return ""
+	}
+	return g.stderr.String()
+}
+
+// run executes the git command and returns any error that occurred.
+// Stdout and stderr are captured to their respective buffers if enabled during construction.
+func (g *gitCommand) run() error {
+	return g.cmd.Run()
 }
 
 // NewGitHubService creates a new GitHubService
@@ -94,107 +181,122 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "CloneRepository")
+
 	// Check if the directory is already a git repository
 	if _, err := os.Stat(filepath.Join(directory, ".git")); err == nil {
 		// Directory is already a git repository, fetch the latest changes
-		cmd := s.executor("git", "fetch", "origin")
-		cmd.Dir = directory
+		cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to fetch repository: %w, stderr: %s", err, stderr.String())
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to fetch repository: %w, stderr: %s", err, cmd.getStderr())
 		}
 
+		s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
 		// Reset to origin/main or origin/master to ensure we're up to date
-		cmd = s.executor("git", "reset", "--hard", "origin/main")
-		cmd.Dir = directory
+		cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/main"), directory, debugEnabled, true)
 
-		stderr.Reset()
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
+		if err := cmd.run(); err != nil {
 			// Try with master branch
-			cmd = s.executor("git", "reset", "--hard", "origin/master")
-			cmd.Dir = directory
+			cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/master"), directory, debugEnabled, true)
 
-			stderr.Reset()
-			cmd.Stderr = &stderr
-
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to reset to origin/main or origin/master: %w, stderr: %s", err, stderr.String())
+			if err := cmd.run(); err != nil {
+				return fmt.Errorf("failed to reset to origin/main or origin/master: %w, stderr: %s", err, cmd.getStderr())
 			}
+			s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/master"), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+		} else {
+			s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/main"), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 		}
 
 		// Clean the repository
-		cmd = s.executor("git", "clean", "-fdx")
-		cmd.Dir = directory
+		cmd = newGitCommand(s.executor("git", "clean", "-fdx"), directory, debugEnabled, true)
 
-		stderr.Reset()
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to clean repository: %w, stderr: %s", err, stderr.String())
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to clean repository: %w, stderr: %s", err, cmd.getStderr())
 		}
+
+		s.logger.Debug("git clean -fdx", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
 	} else {
 		// Clone the repository
-		cmd := s.executor("git", "clone", repoURL, directory)
+		cmd := newGitCommand(s.executor("git", "clone", repoURL, directory), directory, debugEnabled, true)
 
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to clone repository: %w, stderr: %s", err, stderr.String())
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to clone repository: %w, stderr: %s", err, cmd.getStderr())
 		}
+
+		s.logger.Debug("git clone", fn, zap.String("url", repoURL), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 	}
 
 	// Configure git user for GitHub App
-	cmd := s.executor("git", "config", "user.name", s.config.GitHub.BotUsername)
-	cmd.Dir = directory
+	cmd := newGitCommand(s.executor("git", "config", "user.name", s.config.GitHub.BotUsername), directory, debugEnabled, true)
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to configure git user name: %w", err)
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to configure git user name: %w, stderr: %s", err, cmd.getStderr())
+	}
+	s.logger.Debug("git config user.name", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
+	cmd = newGitCommand(s.executor("git", "config", "user.email", s.config.GitHub.BotEmail), directory, debugEnabled, true)
+
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to configure git user email: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	cmd = s.executor("git", "config", "user.email", s.config.GitHub.BotEmail)
-	cmd.Dir = directory
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to configure git user email: %w", err)
-	}
+	s.logger.Debug("git config user.email", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Configure SSH signing if a key is specified
+	exists := false
 	if s.config.GitHub.SSHKeyPath != "" {
-		cmd = s.executor("git", "config", "gpg.format", "ssh")
-		cmd.Dir = directory
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to configure git gpg format: %w", err)
+		var err error
+
+		exists, err = fileExists(s.config.GitHub.SSHKeyPath)
+		if err != nil {
+			return fmt.Errorf("failed to check if SSH key file exists: %w", err)
 		}
 
-		cmd = s.executor("git", "config", "user.signingkey", s.config.GitHub.SSHKeyPath)
-		cmd.Dir = directory
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to configure git ssh signing key: %w", err)
+		s.logger.Debug("SSH key file exists", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath), zap.Bool("exists", exists))
+	}
+
+	if exists {
+		cmd = newGitCommand(s.executor("git", "config", "gpg.format", "ssh"), directory, debugEnabled, true)
+
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to configure git gpg format: %w, stderr: %s", err, cmd.getStderr())
+		}
+		s.logger.Debug("git config gpg.format", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
+		cmd = newGitCommand(s.executor("git", "config", "user.signingkey", s.config.GitHub.SSHKeyPath), directory, debugEnabled, true)
+
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to configure git ssh signing key: %w, stderr: %s", err, cmd.getStderr())
 		}
 
-		cmd = s.executor("git", "config", "commit.gpgsign", "true")
-		cmd.Dir = directory
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to enable git commit signing: %w", err)
+		s.logger.Debug("git config user.signingkey", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
+		cmd = newGitCommand(s.executor("git", "config", "commit.gpgsign", "true"), directory, debugEnabled, true)
+
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to enable git commit signing: %w, stderr: %s", err, cmd.getStderr())
 		}
+
+		s.logger.Debug("git config commit.gpgsign", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 		s.logger.Info("Configured SSH signing for repository", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
+	} else {
+		s.logger.Info("SSH signing not configured for repository")
 	}
 
 	// Configure git to use the GitHub token for authentication
 	// This prevents credential prompts during push operations
-	cmd = s.executor("git", "config", "credential.helper", "store")
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "config", "credential.helper", "store"), directory, debugEnabled, true)
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to configure git credential helper: %w", err)
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to configure git credential helper: %w, stderr: %s", err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git config credential.helper", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Set up the credential URL with token
 	token, err := s.getAuthToken()
@@ -211,10 +313,10 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 
 	// Set the remote URL with embedded token
 	authURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
-	cmd = s.executor("git", "remote", "set-url", "origin", authURL)
-	cmd.Dir = directory
+	// Don't log stdout/stderr for this command since it contains the token
+	cmd = newGitCommand(s.executor("git", "remote", "set-url", "origin", authURL), directory, false, false)
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.run(); err != nil {
 		return fmt.Errorf("failed to set remote URL with token: %w", err)
 	}
 
@@ -231,97 +333,87 @@ func (s *GitHubServiceImpl) getAuthToken() (string, error) {
 
 // CreateBranch creates a new branch in a local repository based on the latest target branch
 func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "CreateBranch")
+
 	// Fetch the latest changes from origin
-	cmd := s.executor("git", "fetch", "origin")
-	cmd.Dir = directory
+	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Checkout the target branch
-	cmd = s.executor("git", "checkout", s.config.GitHub.TargetBranch)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "checkout", s.config.GitHub.TargetBranch), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git checkout", fn, zap.String("branch", s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Reset to the latest commit on the target branch to ensure we're up to date
-	cmd = s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
 	}
+	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Check if the branch already exists locally
-	cmd = s.executor("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName), directory, debugEnabled, true)
 
-	if err := cmd.Run(); err == nil {
+	if err := cmd.run(); err == nil {
 		// Branch exists locally, delete it first
-		s.logger.Info("Branch %s already exists locally, deleting it", zap.String("branchName", branchName))
-		cmd = s.executor("git", "branch", "-D", branchName)
-		cmd.Dir = directory
+		s.logger.Info("Branch already exists locally, deleting it", zap.String("branchName", branchName))
+		cmd = newGitCommand(s.executor("git", "branch", "-D", branchName), directory, debugEnabled, true)
 
-		stderr.Reset()
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to delete existing branch %s: %w, stderr: %s", branchName, err, stderr.String())
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to delete existing branch %s: %w, stderr: %s", branchName, err, cmd.getStderr())
 		}
+
+		s.logger.Debug("git branch -D", fn, zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 	}
 
 	// Create a new branch from the current state
-	cmd = s.executor("git", "checkout", "-b", branchName)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "checkout", "-b", branchName), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create branch: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to create branch: %w, stderr: %s", err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git checkout", fn, zap.String("operation", "-b"), zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	return nil
 }
 
 // CommitChanges commits changes to a local repository
 func (s *GitHubServiceImpl) CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error {
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "CommitChanges")
+
 	// Add all changes
-	cmd := s.executor("git", "add", ".")
-	cmd.Dir = directory
+	cmd := newGitCommand(s.executor("git", "add", "."), directory, debugEnabled, true)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add changes: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to add changes: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	// Check if there are changes to commit
-	cmd = s.executor("git", "status", "--porcelain")
-	cmd.Dir = directory
+	s.logger.Debug("git add .", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	// Check if there are changes to commit (stdout always enabled to read status)
+	cmd = newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to check status: %w", err)
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to check status: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	if stdout.Len() == 0 {
-		// No changes to commit
+	s.logger.Debug("git status --porcelain", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
+	if !cmd.hasStdout() {
+		s.logger.Info("No changes made to repository; nothing to commit to git.")
 		return nil
 	}
 
@@ -332,39 +424,39 @@ func (s *GitHubServiceImpl) CommitChanges(directory, message string, coAuthorNam
 	}
 
 	// Commit changes (SSH signing is handled by git config)
-	cmd = s.executor("git", "commit", "-m", commitMessage)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "commit", "-m", commitMessage), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to commit changes: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to commit changes: %w, stderr: %s", err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git commit", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	return nil
 }
 
 // PushChanges pushes changes to a remote repository
 func (s *GitHubServiceImpl) PushChanges(directory, branchName string) error {
-	// Ensure git is configured to not prompt for credentials
-	cmd := s.executor("git", "config", "credential.helper", "store")
-	cmd.Dir = directory
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "PushChanges")
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to configure git credential helper: %w", err)
+	// Ensure git is configured to not prompt for credentials
+	cmd := newGitCommand(s.executor("git", "config", "credential.helper", "store"), directory, debugEnabled, true)
+
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to configure git credential helper: %w, stderr: %s", err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git config credential.helper", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Push the changes
-	cmd = s.executor("git", "push", "-u", "origin", branchName)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "push", "-u", "origin", branchName), directory, debugEnabled, true)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to push changes: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to push changes: %w, stderr: %s", err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git push", fn, zap.String("flags", "-u"), zap.String("remote", "origin"), zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	return nil
 }
@@ -504,51 +596,47 @@ func (s *GitHubServiceImpl) ResetFork(forkCloneURL, directory string) error {
 
 	// Check if the directory is already a git repository
 	if _, err := os.Stat(filepath.Join(directory, ".git")); err == nil {
+		debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+		fn := zap.String("function", "ResetFork")
+
 		// Directory is already a git repository, fetch and reset
 		// Fetch the upstream repository
-		cmd := s.executor("git", "fetch", "origin")
-		cmd.Dir = directory
+		cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, stderr.String())
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, cmd.getStderr())
 		}
+		s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 		// Reset to origin/main or origin/master
-		cmd = s.executor("git", "reset", "--hard", "origin/main")
-		cmd.Dir = directory
+		cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/main"), directory, debugEnabled, true)
 
-		stderr.Reset()
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
+		if err := cmd.run(); err != nil {
 			// Try with master branch
-			cmd = s.executor("git", "reset", "--hard", "origin/master")
-			cmd.Dir = directory
+			cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/master"), directory, debugEnabled, true)
 
-			stderr.Reset()
-			cmd.Stderr = &stderr
-
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to reset to origin/main or origin/master: %w, stderr: %s", err, stderr.String())
+			if err := cmd.run(); err != nil {
+				return fmt.Errorf("failed to reset to origin/main or origin/master: %w, stderr: %s", err, cmd.getStderr())
 			}
+
+			s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/master"), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+		} else {
+			s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/main"), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 		}
 
 		// Clean the repository
-		cmd = s.executor("git", "clean", "-fdx")
-		cmd.Dir = directory
+		cmd = newGitCommand(s.executor("git", "clean", "-fdx"), directory, debugEnabled, true)
 
-		stderr.Reset()
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to clean repository: %w, stderr: %s", err, stderr.String())
+		if err := cmd.run(); err != nil {
+			return fmt.Errorf("failed to clean repository: %w, stderr: %s", err, cmd.getStderr())
 		}
+
+		s.logger.Debug("git clean -fdx", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 		return nil
 	}
+
+	s.logger.Debug("Directory is not a git repository, cloning repository", zap.String("forkCloneURL", forkCloneURL), zap.String("directory", directory))
 
 	// Clone the repository
 	return s.CloneRepository(forkCloneURL, directory)
@@ -688,81 +776,75 @@ func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 
 // SwitchToTargetBranch switches to the configured target branch after cloning
 func (s *GitHubServiceImpl) SwitchToTargetBranch(directory string) error {
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "SwitchToTargetBranch")
+
 	// Fetch the latest changes from origin
-	cmd := s.executor("git", "fetch", "origin")
-	cmd.Dir = directory
+	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, cmd.getStderr())
 	}
 
+	s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+
 	// Checkout the target branch
-	cmd = s.executor("git", "checkout", s.config.GitHub.TargetBranch)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "checkout", s.config.GitHub.TargetBranch), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
 	}
 
 	// Reset to the latest commit on the target branch to ensure we're up to date
-	cmd = s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	return nil
 }
 
 // SwitchToBranch switches to a specific branch
 func (s *GitHubServiceImpl) SwitchToBranch(directory, branchName string) error {
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "SwitchToBranch")
+
 	// Fetch the latest changes from origin
-	cmd := s.executor("git", "fetch", "origin")
-	cmd.Dir = directory
+	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, cmd.getStderr())
 	}
+	s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Checkout the specified branch
-	cmd = s.executor("git", "checkout", branchName)
-	cmd.Dir = directory
+	cmd = newGitCommand(s.executor("git", "checkout", branchName), directory, debugEnabled, true)
 
-	stderr.Reset()
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to checkout branch %s: %w, stderr: %s", branchName, err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to checkout branch %s: %w, stderr: %s", branchName, err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git checkout", fn, zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	return nil
 }
 
 // PullChanges pulls the latest changes from the remote branch
 func (s *GitHubServiceImpl) PullChanges(directory, branchName string) error {
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "PullChanges")
+
 	// Pull the latest changes from the remote branch
-	cmd := s.executor("git", "pull", "origin", branchName)
-	cmd.Dir = directory
+	cmd := newGitCommand(s.executor("git", "pull", "origin", branchName), directory, debugEnabled, true)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to pull changes from origin/%s: %w, stderr: %s", branchName, err, stderr.String())
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("failed to pull changes from origin/%s: %w, stderr: %s", branchName, err, cmd.getStderr())
 	}
+
+	s.logger.Debug("git pull", fn, zap.String("remote", "origin"), zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	return nil
 }
