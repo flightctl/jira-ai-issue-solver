@@ -249,12 +249,10 @@ github:
 
 	// Verify status transitions
 	projectConfig := config.GetProjectConfigForTicket("PROJ1-123")
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil after this check
-	if projectConfig == nil {
+	if projectConfig == nil { //nolint:staticcheck // t.Fatal() terminates execution
 		t.Fatal("Project config not found")
 	}
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil
-	bugTransitions := projectConfig.StatusTransitions.GetStatusTransitions("bug")
+	bugTransitions := projectConfig.StatusTransitions.GetStatusTransitions("bug") //nolint:staticcheck // t.Fatal() terminates execution
 	if bugTransitions.Todo != "To Do" {
 		t.Errorf("Expected todo status 'To Do', got '%s'", bugTransitions.Todo)
 	}
@@ -364,14 +362,12 @@ jira:
 
 	// Get project config for testing
 	projectConfig := config.GetProjectConfigForTicket("PROJ1-123")
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil after this check
-	if projectConfig == nil {
+	if projectConfig == nil { //nolint:staticcheck // t.Fatal() terminates execution
 		t.Fatal("Project config not found")
 	}
 
 	// Verify component mappings (keys converted to lowercase by Viper)
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil
-	if projectConfig.ComponentToRepo["flightctl"] != "https://github.com/your-org/flightctl.git" {
+	if projectConfig.ComponentToRepo["flightctl"] != "https://github.com/your-org/flightctl.git" { //nolint:staticcheck // t.Fatal() terminates execution
 		t.Errorf("Expected flightctl to map to flightctl.git, got '%s'", projectConfig.ComponentToRepo["flightctl"])
 	}
 	if projectConfig.ComponentToRepo["backend"] != "https://github.com/your-org/backend.git" {
@@ -431,12 +427,10 @@ github:
 
 	// Verify bug-specific status transitions
 	projectConfig := config.GetProjectConfigForTicket("PROJ1-123")
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil after this check
-	if projectConfig == nil {
+	if projectConfig == nil { //nolint:staticcheck // t.Fatal() terminates execution
 		t.Fatal("Project config not found")
 	}
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil
-	bugTransitions := projectConfig.StatusTransitions.GetStatusTransitions("bug")
+	bugTransitions := projectConfig.StatusTransitions.GetStatusTransitions("bug") //nolint:staticcheck // t.Fatal() terminates execution
 	if bugTransitions.Todo != "Open" {
 		t.Errorf("Expected bug todo status 'Open', got '%s'", bugTransitions.Todo)
 	}
@@ -448,8 +442,7 @@ github:
 	}
 
 	// Verify story-specific status transitions
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil
-	storyTransitions := projectConfig.StatusTransitions.GetStatusTransitions("story")
+	storyTransitions := projectConfig.StatusTransitions.GetStatusTransitions("story") //nolint:staticcheck // t.Fatal() terminates execution
 	if storyTransitions.Todo != "Backlog" {
 		t.Errorf("Expected story todo status 'Backlog', got '%s'", storyTransitions.Todo)
 	}
@@ -461,8 +454,7 @@ github:
 	}
 
 	// Verify that unknown ticket type returns empty transitions (no fallback)
-	//nolint:staticcheck // t.Fatal() terminates execution, so projectConfig is guaranteed non-nil
-	unknownTransitions := projectConfig.StatusTransitions.GetStatusTransitions("unknown")
+	unknownTransitions := projectConfig.StatusTransitions.GetStatusTransitions("unknown") //nolint:staticcheck // t.Fatal() terminates execution
 	if unknownTransitions.Todo != "" {
 		t.Errorf("Expected unknown ticket type to return empty todo, got '%s'", unknownTransitions.Todo)
 	}
