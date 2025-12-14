@@ -59,6 +59,9 @@ type GitHubService interface {
 	AddPRComment(owner, repo string, prNumber int, body string) error
 	ListPRComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error)
 
+	// ReplyToPRComment replies to a specific PR comment (for line-based review comments)
+	ReplyToPRComment(owner, repo string, prNumber int, commentID int64, body string) error
+
 	// GetPRDetails gets detailed PR information including reviews, comments, and files
 	GetPRDetails(owner, repo string, prNumber int) (*models.GitHubPRDetails, error)
 
@@ -889,6 +892,58 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("failed to add PR comment: %s, status: %d", string(body), resp.StatusCode)
 	}
+
+	return nil
+}
+
+// ReplyToPRComment replies to a specific PR review comment
+// For line-based review comments, this creates a threaded reply
+func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, commentID int64, body string) error {
+	commentRequest := struct {
+		Body string `json:"body"`
+	}{Body: body}
+
+	jsonPayload, err := json.Marshal(commentRequest)
+	if err != nil {
+		return fmt.Errorf("failed to marshal comment request: %w", err)
+	}
+
+	// Use the pulls comments endpoint for threaded replies
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, prNumber, commentID)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	token, err := s.getAuthToken()
+	if err != nil {
+		return fmt.Errorf("failed to get auth token: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "ReplyToPRComment"))
+		}
+	}()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to reply to PR comment: %s, status: %d", string(body), resp.StatusCode)
+	}
+
+	s.logger.Debug("Replied to PR comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int("pr_number", prNumber),
+		zap.Int64("comment_id", commentID))
 
 	return nil
 }

@@ -43,6 +43,14 @@ func NewPRReviewProcessor(
 	}
 }
 
+// FeedbackData holds structured feedback information
+type FeedbackData struct {
+	Summary          string                             // Summary of previously addressed items
+	NewFeedback      string                             // Formatted NEW feedback with comment IDs
+	CommentMap       map[string]*models.GitHubPRComment // Map of comment IDs to comment objects
+	ReviewCommentMap map[string]*models.GitHubReview    // Map of review IDs to review objects
+}
+
 // ProcessPRReviewFeedback processes feedback for a ticket that has PR review feedback
 func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error {
 	p.logger.Info("Processing PR review feedback for ticket", zap.String("ticket", ticketKey))
@@ -99,8 +107,8 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 		return nil
 	}
 
-	// 2. Collect all feedback from reviews and comments (including handled ones for context)
-	feedback := p.collectFeedback(prDetails.Reviews, prDetails.Comments, lastProcessedTime)
+	// 2. Collect all feedback from reviews and comments (only NEW items, with summary of handled)
+	feedbackData := p.collectFeedback(prDetails.Reviews, prDetails.Comments, lastProcessedTime)
 
 	// Get the repository URL from the PR details (our fork)
 	repoURL, err := p.getRepositoryURLFromPR(prDetails)
@@ -110,7 +118,7 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 	}
 
 	// Clone the repository and apply fixes
-	err = p.applyFeedbackFixes(ticketKey, repoURL, prDetails, feedback)
+	err = p.applyFeedbackFixes(ticketKey, repoURL, prDetails, feedbackData, owner, repo, prNumber)
 	if err != nil {
 		p.logger.Error("Failed to apply feedback fixes", zap.String("ticket", ticketKey), zap.Error(err))
 		return err
@@ -280,85 +288,145 @@ func (p *PRReviewProcessorImpl) hasRequestChangesReviews(reviews []models.GitHub
 	return false
 }
 
-// collectFeedback collects all feedback from reviews and comments, marking them as handled or new
-func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) string {
-	var feedback strings.Builder
+// collectFeedback collects feedback, separating NEW items from HANDLED items
+// Returns a FeedbackData struct with summary of old items and detailed NEW items with IDs
+func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) *FeedbackData {
+	var summary strings.Builder
+	var newFeedback strings.Builder
+	commentMap := make(map[string]*models.GitHubPRComment)
+	reviewMap := make(map[string]*models.GitHubReview)
 
-	feedback.WriteString("## PR Review Feedback\n\n")
+	commentIDCounter := 1
+	reviewIDCounter := 1
 
-	// Add review feedback
-	if len(reviews) > 0 {
-		feedback.WriteString("### Reviews\n\n")
-		for _, review := range reviews {
-			// Skip reviews from our bot
-			if review.User.Login == p.config.GitHub.BotUsername {
-				continue
+	// Build summary of HANDLED items
+	var handledItems []string
+
+	for _, review := range reviews {
+		if review.User.Login == p.config.GitHub.BotUsername {
+			continue
+		}
+		if !review.SubmittedAt.After(lastProcessedTime) {
+			// This is a HANDLED review
+			if review.Body != "" {
+				handledItems = append(handledItems, fmt.Sprintf("%s (review)", truncateString(review.Body, 80)))
 			}
-
-			status := "🔄 NEW"
-			if !review.SubmittedAt.After(lastProcessedTime) {
-				status = "✅ HANDLED"
-			}
-
-			feedback.WriteString(fmt.Sprintf("**Review by %s (%s) - %s:**\n", review.User.Login, review.State, status))
-			feedback.WriteString(review.Body)
-			feedback.WriteString("\n\n")
 		}
 	}
 
-	// Add comment feedback
-	if len(comments) > 0 {
-		p.logger.Debug("Collecting PR comments",
-			zap.Int("total_comments", len(comments)))
-
-		feedback.WriteString("### Comments\n\n")
-		for _, comment := range comments {
-			// Skip comments from our bot
-			if comment.User.Login == p.config.GitHub.BotUsername {
-				continue
+	for _, comment := range comments {
+		if comment.User.Login == p.config.GitHub.BotUsername {
+			continue
+		}
+		if !comment.CreatedAt.After(lastProcessedTime) {
+			// This is a HANDLED comment
+			if comment.Body != "" {
+				handledItems = append(handledItems, truncateString(comment.Body, 80))
 			}
+		}
+	}
 
-			status := "🔄 NEW"
-			if !comment.CreatedAt.After(lastProcessedTime) {
-				status = "✅ HANDLED"
-			}
+	if len(handledItems) > 0 {
+		summary.WriteString("Previously addressed (for context only - do not re-fix):\n")
+		for _, item := range handledItems {
+			summary.WriteString(fmt.Sprintf("- %s\n", item))
+		}
+	}
 
-			// Format comment header based on whether it's line-based or general
-			var commentHeader string
+	// Build NEW feedback with IDs
+	newFeedback.WriteString("## NEW Review Feedback (Action Required)\n\n")
+
+	// Process NEW reviews
+	hasNewReviews := false
+	for i := range reviews {
+		review := &reviews[i]
+		if review.User.Login == p.config.GitHub.BotUsername {
+			continue
+		}
+		if review.SubmittedAt.After(lastProcessedTime) {
+			hasNewReviews = true
+			reviewID := fmt.Sprintf("REVIEW_%d", reviewIDCounter)
+			reviewIDCounter++
+			reviewMap[reviewID] = review
+
+			newFeedback.WriteString(fmt.Sprintf("### %s\n", reviewID))
+			newFeedback.WriteString(fmt.Sprintf("**Review by %s (%s):**\n", review.User.Login, review.State))
+			newFeedback.WriteString(review.Body)
+			newFeedback.WriteString("\n\n")
+		}
+	}
+
+	// Process NEW comments
+	hasNewComments := false
+	for i := range comments {
+		comment := &comments[i]
+		if comment.User.Login == p.config.GitHub.BotUsername {
+			continue
+		}
+		if comment.CreatedAt.After(lastProcessedTime) {
+			hasNewComments = true
+			commentID := fmt.Sprintf("COMMENT_%d", commentIDCounter)
+			commentIDCounter++
+			commentMap[commentID] = comment
+
+			// Format comment location
+			var location string
 			if comment.Path == "" || comment.Line == 0 {
-				// General conversation comment (no specific file/line)
-				commentHeader = fmt.Sprintf("**Comment by %s - %s:**\n", comment.User.Login, status)
-				p.logger.Debug("General conversation comment",
+				location = "General comment"
+				p.logger.Debug("New general conversation comment",
 					zap.String("user", comment.User.Login),
-					zap.String("status", status))
+					zap.String("id", commentID))
 			} else if comment.StartLine > 0 && comment.StartLine != comment.Line {
-				// Multi-line comment (line range)
-				commentHeader = fmt.Sprintf("**Comment by %s on %s:%d-%d - %s:**\n",
-					comment.User.Login, comment.Path, comment.StartLine, comment.Line, status)
-				p.logger.Debug("Multi-line review comment",
+				location = fmt.Sprintf("on %s:%d-%d", comment.Path, comment.StartLine, comment.Line)
+				p.logger.Debug("New multi-line review comment",
 					zap.String("user", comment.User.Login),
 					zap.String("path", comment.Path),
 					zap.Int("start_line", comment.StartLine),
 					zap.Int("end_line", comment.Line),
-					zap.String("status", status))
+					zap.String("id", commentID))
 			} else {
-				// Single-line comment
-				commentHeader = fmt.Sprintf("**Comment by %s on %s:%d - %s:**\n",
-					comment.User.Login, comment.Path, comment.Line, status)
-				p.logger.Debug("Single-line review comment",
+				location = fmt.Sprintf("on %s:%d", comment.Path, comment.Line)
+				p.logger.Debug("New single-line review comment",
 					zap.String("user", comment.User.Login),
 					zap.String("path", comment.Path),
 					zap.Int("line", comment.Line),
-					zap.String("status", status))
+					zap.String("id", commentID))
 			}
 
-			feedback.WriteString(commentHeader)
-			feedback.WriteString(comment.Body)
-			feedback.WriteString("\n\n")
+			newFeedback.WriteString(fmt.Sprintf("### %s\n", commentID))
+			newFeedback.WriteString(fmt.Sprintf("**Comment by %s %s:**\n", comment.User.Login, location))
+			newFeedback.WriteString(comment.Body)
+			newFeedback.WriteString("\n\n")
 		}
 	}
 
-	return feedback.String()
+	if !hasNewReviews && !hasNewComments {
+		newFeedback.WriteString("No new feedback.\n")
+	}
+
+	p.logger.Info("Collected feedback",
+		zap.Int("new_reviews", len(reviewMap)),
+		zap.Int("new_comments", len(commentMap)),
+		zap.Int("handled_items", len(handledItems)))
+
+	return &FeedbackData{
+		Summary:          summary.String(),
+		NewFeedback:      newFeedback.String(),
+		CommentMap:       commentMap,
+		ReviewCommentMap: reviewMap,
+	}
+}
+
+// truncateString truncates a string to maxLen characters, adding "..." if truncated
+func truncateString(s string, maxLen int) string {
+	// Remove newlines for summary
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // getRepositoryURLFromPR gets the repository URL from the PR details (our fork)
@@ -374,7 +442,7 @@ func (p *PRReviewProcessorImpl) getRepositoryURLFromPR(pr *models.GitHubPRDetail
 }
 
 // applyFeedbackFixes applies the feedback fixes to the code
-func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, feedback string) error {
+func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, feedbackData *FeedbackData, owner, repo string, prNumber int) error {
 	p.logger.Info("Applying feedback fixes for ticket", zap.String("ticket", ticketKey))
 
 	// Clone the repository
@@ -398,13 +466,20 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	}
 
 	// Generate a prompt for the AI service to fix the code based on feedback
-	prompt := p.generateFeedbackPrompt(pr, feedback)
+	prompt := p.generateFeedbackPrompt(pr, feedbackData)
 
-	// Run AI service to generate code fixes
-	_, err = p.aiService.GenerateCode(prompt, repoDir)
+	// Run AI service to generate code fixes and get the AI output
+	aiOutput, err := p.aiService.GenerateCode(prompt, repoDir)
 	if err != nil {
 		return fmt.Errorf("failed to generate code fixes: %w", err)
 	}
+
+	// Parse individual responses from AI output
+	aiOutputStr, ok := aiOutput.(string)
+	if !ok {
+		return fmt.Errorf("AI output is not a string")
+	}
+	responses := p.parseCommentResponses(aiOutputStr)
 
 	// Get ticket details to get assignee info for co-author
 	ticket, err := p.jiraService.GetTicket(ticketKey)
@@ -427,15 +502,93 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 		return fmt.Errorf("failed to push changes: %w", err)
 	}
 
-	p.logger.Info("Successfully updated PR #%d with feedback fixes for ticket %s", zap.Int("pr_number", pr.Number), zap.String("ticket", ticketKey))
+	// Post individual replies to comments/reviews
+	p.postIndividualReplies(owner, repo, prNumber, feedbackData, responses)
+
+	p.logger.Info("Successfully updated PR with feedback fixes and posted replies",
+		zap.Int("pr_number", pr.Number),
+		zap.String("ticket", ticketKey),
+		zap.Int("replies_posted", len(responses)))
 	return nil
 }
 
+// postIndividualReplies posts individual replies to comments and reviews
+func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumber int, feedbackData *FeedbackData, responses map[string]string) {
+	// Reply to comments
+	for commentID, comment := range feedbackData.CommentMap {
+		response, ok := responses[commentID]
+		if !ok {
+			p.logger.Warn("No AI response found for comment",
+				zap.String("comment_id", commentID),
+				zap.String("user", comment.User.Login))
+			continue
+		}
+
+		// Format response with bot marker
+		replyBody := fmt.Sprintf("🤖 %s", response)
+
+		// For line-based review comments (have Path), use threaded reply
+		if comment.Path != "" && comment.Line > 0 {
+			err := p.githubService.ReplyToPRComment(owner, repo, prNumber, comment.ID, replyBody)
+			if err != nil {
+				p.logger.Error("Failed to reply to line-based comment",
+					zap.String("comment_id", commentID),
+					zap.Int64("github_comment_id", comment.ID),
+					zap.Error(err))
+			} else {
+				p.logger.Info("Posted reply to line-based comment",
+					zap.String("comment_id", commentID),
+					zap.String("path", comment.Path),
+					zap.Int("line", comment.Line))
+			}
+		} else {
+			// For general conversation comments, post a regular comment with mention
+			mentionBody := fmt.Sprintf("@%s %s", comment.User.Login, replyBody)
+			err := p.githubService.AddPRComment(owner, repo, prNumber, mentionBody)
+			if err != nil {
+				p.logger.Error("Failed to post reply to general comment",
+					zap.String("comment_id", commentID),
+					zap.Error(err))
+			} else {
+				p.logger.Info("Posted reply to general comment",
+					zap.String("comment_id", commentID),
+					zap.String("user", comment.User.Login))
+			}
+		}
+	}
+
+	// Reply to reviews (always posted as general comments with mention)
+	for reviewID, review := range feedbackData.ReviewCommentMap {
+		response, ok := responses[reviewID]
+		if !ok {
+			p.logger.Warn("No AI response found for review",
+				zap.String("review_id", reviewID),
+				zap.String("user", review.User.Login))
+			continue
+		}
+
+		// Format response with bot marker and mention
+		replyBody := fmt.Sprintf("@%s 🤖 %s", review.User.Login, response)
+
+		err := p.githubService.AddPRComment(owner, repo, prNumber, replyBody)
+		if err != nil {
+			p.logger.Error("Failed to post reply to review",
+				zap.String("review_id", reviewID),
+				zap.Error(err))
+		} else {
+			p.logger.Info("Posted reply to review",
+				zap.String("review_id", reviewID),
+				zap.String("user", review.User.Login))
+		}
+	}
+}
+
 // generateFeedbackPrompt generates a prompt for the AI service to fix code based on feedback
-func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedback string) string {
+func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedbackData *FeedbackData) string {
 	var prompt strings.Builder
 
-	prompt.WriteString("You are a code reviewer and developer. You need to fix the code based on the following PR review feedback.\n\n")
+	prompt.WriteString("You are a code reviewer and developer. You need to fix the code based on NEW PR review feedback and provide individual responses.\n\n")
+
 	prompt.WriteString("## Original PR Information\n")
 	prompt.WriteString(fmt.Sprintf("**Title:** %s\n", pr.Title))
 	prompt.WriteString(fmt.Sprintf("**Description:** %s\n", pr.Body))
@@ -452,21 +605,67 @@ func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetail
 	}
 	prompt.WriteString("\n")
 
-	prompt.WriteString("## Review Feedback\n")
-	prompt.WriteString(feedback)
+	// Include summary of previously addressed items if available
+	if feedbackData.Summary != "" {
+		prompt.WriteString("## ")
+		prompt.WriteString(feedbackData.Summary)
+		prompt.WriteString("\n")
+	}
+
+	// Include NEW feedback with IDs
+	prompt.WriteString(feedbackData.NewFeedback)
 	prompt.WriteString("\n")
 
 	prompt.WriteString("## Instructions\n")
-	prompt.WriteString("1. Analyze the feedback carefully\n")
-	prompt.WriteString("2. Understand what changes are being requested\n")
-	prompt.WriteString("3. Apply the necessary fixes to the code\n")
-	prompt.WriteString("4. Ensure the code quality is improved based on the feedback\n")
-	prompt.WriteString("5. Make sure all requested changes are addressed\n")
-	prompt.WriteString("6. Test your changes to ensure they work correctly\n\n")
+	prompt.WriteString("1. Analyze the NEW feedback carefully (marked with COMMENT_X or REVIEW_X IDs)\n")
+	prompt.WriteString("2. Apply the necessary fixes to address each piece of feedback\n")
+	prompt.WriteString("3. After fixing, provide a brief response (1-3 sentences) for EACH comment/review explaining what you changed\n\n")
 
-	prompt.WriteString("Please apply the feedback and fix the code accordingly.")
+	prompt.WriteString("## Response Format\n")
+	prompt.WriteString("IMPORTANT: After making your code changes, provide individual responses in this exact format:\n\n")
+	prompt.WriteString("For each COMMENT_X or REVIEW_X, include a section like:\n")
+	prompt.WriteString("```\n")
+	prompt.WriteString("COMMENT_1_RESPONSE:\n")
+	prompt.WriteString("Brief 1-3 sentence explanation of what you changed to address this comment.\n\n")
+	prompt.WriteString("COMMENT_2_RESPONSE:\n")
+	prompt.WriteString("Brief 1-3 sentence explanation of what you changed.\n")
+	prompt.WriteString("```\n\n")
+
+	prompt.WriteString("Now please:\n")
+	prompt.WriteString("1. Apply all the fixes to the code\n")
+	prompt.WriteString("2. Provide individual responses in the format shown above\n")
 
 	return prompt.String()
+}
+
+// parseCommentResponses extracts individual comment responses from AI output
+// Looks for patterns like "COMMENT_1_RESPONSE:" or "REVIEW_1_RESPONSE:" followed by the response text
+func (p *PRReviewProcessorImpl) parseCommentResponses(aiOutput string) map[string]string {
+	responses := make(map[string]string)
+
+	// Pattern to match COMMENT_X_RESPONSE: or REVIEW_X_RESPONSE: followed by the response
+	pattern := regexp.MustCompile(`(?m)^((?:COMMENT|REVIEW)_\d+)_RESPONSE:\s*\n((?:.*\n)*?)(?:(?:COMMENT|REVIEW)_\d+_RESPONSE:|$)`)
+
+	matches := pattern.FindAllStringSubmatch(aiOutput, -1)
+
+	for _, match := range matches {
+		if len(match) >= 3 {
+			id := match[1] // e.g., "COMMENT_1" or "REVIEW_2"
+			response := strings.TrimSpace(match[2])
+
+			if response != "" {
+				responses[id] = response
+				p.logger.Debug("Parsed AI response",
+					zap.String("id", id),
+					zap.String("response_preview", truncateString(response, 100)))
+			}
+		}
+	}
+
+	p.logger.Info("Parsed AI responses",
+		zap.Int("count", len(responses)))
+
+	return responses
 }
 
 // getLastProcessingTimestamp retrieves the last processing timestamp from PR comments

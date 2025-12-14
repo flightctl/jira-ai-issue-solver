@@ -20,6 +20,7 @@ type MockGitHubService struct {
 	PullChangesFunc          func(directory, branchName string) error
 	AddPRCommentFunc         func(owner, repo string, prNumber int, body string) error
 	ListPRCommentsFunc       func(owner, repo string, prNumber int) ([]models.GitHubPRComment, error)
+	ReplyToPRCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
 	GetPRDetailsFunc         func(owner, repo string, prNumber int) (*models.GitHubPRDetails, error)
 	ListPRReviewsFunc        func(owner, repo string, prNumber int) ([]models.GitHubReview, error)
 }
@@ -150,4 +151,12 @@ func (m *MockGitHubService) ListPRComments(owner, repo string, prNumber int) ([]
 		return m.ListPRCommentsFunc(owner, repo, prNumber)
 	}
 	return nil, nil
+}
+
+// ReplyToPRComment is the mock implementation of GitHubService's ReplyToPRComment method
+func (m *MockGitHubService) ReplyToPRComment(owner, repo string, prNumber int, commentID int64, body string) error {
+	if m.ReplyToPRCommentFunc != nil {
+		return m.ReplyToPRCommentFunc(owner, repo, prNumber, commentID, body)
+	}
+	return nil
 }

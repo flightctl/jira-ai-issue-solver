@@ -127,62 +127,93 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 		logger: zap.NewNop(),
 	}
 
-	pr := &models.GitHubPRDetails{
-		Reviews: []models.GitHubReview{
-			{
-				User: models.GitHubUser{
-					Login: "reviewer1",
-				},
-				Body:  "Please fix the formatting",
-				State: "CHANGES_REQUESTED",
+	reviews := []models.GitHubReview{
+		{
+			User: models.GitHubUser{
+				Login: "reviewer1",
 			},
-		},
-		Comments: []models.GitHubPRComment{
-			{
-				User: models.GitHubUser{
-					Login: "commenter1",
-				},
-				Body: "This line needs improvement",
-				Path: "src/main.go",
-				Line: 42,
-			},
-			{
-				User: models.GitHubUser{
-					Login: "commenter2",
-				},
-				Body: "Please add more tests",
-				Path: "",
-				Line: 0,
-			},
+			Body:        "Please fix the formatting",
+			State:       "CHANGES_REQUESTED",
+			SubmittedAt: time.Now(),
 		},
 	}
 
-	feedback := processor.collectFeedback(pr.Reviews, pr.Comments, time.Time{})
+	comments := []models.GitHubPRComment{
+		{
+			User: models.GitHubUser{
+				Login: "commenter1",
+			},
+			Body:      "This line needs improvement",
+			Path:      "src/main.go",
+			Line:      42,
+			CreatedAt: time.Now(),
+		},
+		{
+			User: models.GitHubUser{
+				Login: "commenter2",
+			},
+			Body:      "Please add more tests",
+			Path:      "",
+			Line:      0,
+			CreatedAt: time.Now(),
+		},
+	}
 
-	// Check that feedback contains expected content
-	if !strings.Contains(feedback, "PR Review Feedback") {
-		t.Error("Feedback should contain 'PR Review Feedback'")
+	feedbackData := processor.collectFeedback(reviews, comments, time.Time{})
+
+	// Check that feedbackData structure is correct
+	if feedbackData == nil {
+		t.Fatal("feedbackData should not be nil")
 	}
-	if !strings.Contains(feedback, "reviewer1") {
-		t.Error("Feedback should contain reviewer name")
+
+	// Check NewFeedback contains expected content
+	if !strings.Contains(feedbackData.NewFeedback, "NEW Review Feedback") {
+		t.Error("NewFeedback should contain 'NEW Review Feedback'")
 	}
-	if !strings.Contains(feedback, "commenter1") {
-		t.Error("Feedback should contain commenter name")
+	if !strings.Contains(feedbackData.NewFeedback, "reviewer1") {
+		t.Error("NewFeedback should contain reviewer name")
 	}
-	if !strings.Contains(feedback, "src/main.go") {
-		t.Error("Feedback should contain file name")
+	if !strings.Contains(feedbackData.NewFeedback, "commenter1") {
+		t.Error("NewFeedback should contain commenter name")
 	}
-	if !strings.Contains(feedback, "Please fix the formatting") {
-		t.Error("Feedback should contain review body")
+	if !strings.Contains(feedbackData.NewFeedback, "src/main.go") {
+		t.Error("NewFeedback should contain file name")
 	}
-	if !strings.Contains(feedback, "This line needs improvement") {
-		t.Error("Feedback should contain line-based comment body")
+	if !strings.Contains(feedbackData.NewFeedback, "Please fix the formatting") {
+		t.Error("NewFeedback should contain review body")
 	}
-	if !strings.Contains(feedback, "Please add more tests") {
-		t.Error("Feedback should contain general comment body")
+	if !strings.Contains(feedbackData.NewFeedback, "This line needs improvement") {
+		t.Error("NewFeedback should contain line-based comment body")
 	}
-	if !strings.Contains(feedback, "commenter2") {
-		t.Error("Feedback should contain second commenter name")
+	if !strings.Contains(feedbackData.NewFeedback, "Please add more tests") {
+		t.Error("NewFeedback should contain general comment body")
+	}
+	if !strings.Contains(feedbackData.NewFeedback, "commenter2") {
+		t.Error("NewFeedback should contain second commenter name")
+	}
+
+	// Check that comment/review IDs are present
+	if !strings.Contains(feedbackData.NewFeedback, "REVIEW_1") {
+		t.Error("NewFeedback should contain REVIEW_1 ID")
+	}
+	if !strings.Contains(feedbackData.NewFeedback, "COMMENT_1") {
+		t.Error("NewFeedback should contain COMMENT_1 ID")
+	}
+	if !strings.Contains(feedbackData.NewFeedback, "COMMENT_2") {
+		t.Error("NewFeedback should contain COMMENT_2 ID")
+	}
+
+	// Check that maps are populated
+	if len(feedbackData.CommentMap) != 2 {
+		t.Errorf("Expected 2 comments in CommentMap, got %d", len(feedbackData.CommentMap))
+	}
+	if len(feedbackData.ReviewCommentMap) != 1 {
+		t.Errorf("Expected 1 review in ReviewCommentMap, got %d", len(feedbackData.ReviewCommentMap))
+	}
+
+	// Check that Summary is empty (no old items)
+	if feedbackData.Summary != "" {
+		t.Error("Summary should be empty when there are no old items")
 	}
 }
 
@@ -221,29 +252,29 @@ func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
 		},
 	}
 
-	feedback := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
+	feedbackData := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
 
 	// Test single-line comment formatting
-	expectedSingleLine := "**Comment by reviewer1 on src/main.go:42 - 🔄 NEW:**"
-	if !strings.Contains(feedback, expectedSingleLine) {
-		t.Errorf("Single-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedSingleLine, feedback)
+	expectedSingleLine := "**Comment by reviewer1 on src/main.go:42:**"
+	if !strings.Contains(feedbackData.NewFeedback, expectedSingleLine) {
+		t.Errorf("Single-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedSingleLine, feedbackData.NewFeedback)
 	}
 
 	// Test multi-line comment formatting
-	expectedMultiLine := "**Comment by reviewer2 on src/util.go:95-100 - 🔄 NEW:**"
-	if !strings.Contains(feedback, expectedMultiLine) {
-		t.Errorf("Multi-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedMultiLine, feedback)
+	expectedMultiLine := "**Comment by reviewer2 on src/util.go:95-100:**"
+	if !strings.Contains(feedbackData.NewFeedback, expectedMultiLine) {
+		t.Errorf("Multi-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedMultiLine, feedbackData.NewFeedback)
 	}
 
-	// Test general conversation comment formatting (no ":0")
-	expectedGeneral := "**Comment by reviewer3 - 🔄 NEW:**"
-	if !strings.Contains(feedback, expectedGeneral) {
-		t.Errorf("General comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedGeneral, feedback)
+	// Test general conversation comment formatting (no path/line)
+	expectedGeneral := "**Comment by reviewer3 General comment:**"
+	if !strings.Contains(feedbackData.NewFeedback, expectedGeneral) {
+		t.Errorf("General comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedGeneral, feedbackData.NewFeedback)
 	}
 
 	// Verify we don't have ":0" anywhere in general comment
-	if strings.Contains(feedback, "reviewer3 on :0") || strings.Contains(feedback, "reviewer3 on 0") {
-		t.Error("General comment should not contain ':0' or path/line references")
+	if strings.Contains(feedbackData.NewFeedback, "reviewer3 on :0") || strings.Contains(feedbackData.NewFeedback, "reviewer3 on 0") {
+		t.Error("General comment should not contain ':0' or spurious path/line references")
 	}
 }
 
@@ -270,9 +301,14 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 		},
 	}
 
-	feedback := "Please fix the formatting"
+	feedbackData := &FeedbackData{
+		Summary:          "Previously addressed (for context only - do not re-fix):\n- Old issue was fixed\n",
+		NewFeedback:      "## NEW Review Feedback (Action Required)\n\n### COMMENT_1\n**Comment by reviewer on src/main.go:42:**\nPlease fix the formatting\n\n",
+		CommentMap:       make(map[string]*models.GitHubPRComment),
+		ReviewCommentMap: make(map[string]*models.GitHubReview),
+	}
 
-	prompt := processor.generateFeedbackPrompt(pr, feedback)
+	prompt := processor.generateFeedbackPrompt(pr, feedbackData)
 
 	// Check that prompt contains expected content
 	if !strings.Contains(prompt, "Test PR") {
@@ -289,6 +325,15 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Apply the necessary fixes") {
 		t.Error("Prompt should contain instructions")
+	}
+	if !strings.Contains(prompt, "Previously addressed") {
+		t.Error("Prompt should contain summary of previously addressed items")
+	}
+	if !strings.Contains(prompt, "NEW Review Feedback") {
+		t.Error("Prompt should contain NEW feedback section")
+	}
+	if !strings.Contains(prompt, "COMMENT_1_RESPONSE:") {
+		t.Error("Prompt should contain instructions for structured response format")
 	}
 }
 
@@ -442,6 +487,105 @@ func TestPRReviewProcessor_UpdateProcessingTimestamp(t *testing.T) {
 	}
 }
 
+func TestPRReviewProcessor_ParseCommentResponses(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+	}
+
+	// Test AI output with multiple comment responses
+	aiOutput := `I've made the following changes to address the feedback:
+
+COMMENT_1_RESPONSE:
+I fixed the formatting issue by adding proper indentation to the function. The code now follows the project's style guide.
+
+COMMENT_2_RESPONSE:
+Added comprehensive unit tests for the new feature in test/feature_test.go. Coverage is now at 95%.
+
+REVIEW_1_RESPONSE:
+Updated the error handling as suggested. Now using structured errors with proper context wrapping.
+
+Some other text here that should be ignored.
+
+COMMENT_3_RESPONSE:
+Refactored the logic to use a more efficient algorithm. Time complexity is now O(n) instead of O(n²).
+`
+
+	responses := processor.parseCommentResponses(aiOutput)
+
+	// Check that all responses were parsed
+	if len(responses) != 4 {
+		t.Errorf("Expected 4 responses, got %d", len(responses))
+	}
+
+	// Check COMMENT_1
+	if response, ok := responses["COMMENT_1"]; ok {
+		expected := "I fixed the formatting issue by adding proper indentation to the function. The code now follows the project's style guide."
+		if response != expected {
+			t.Errorf("COMMENT_1 response mismatch.\nExpected: %s\nGot: %s", expected, response)
+		}
+	} else {
+		t.Error("COMMENT_1 response not found")
+	}
+
+	// Check COMMENT_2
+	if response, ok := responses["COMMENT_2"]; ok {
+		expected := "Added comprehensive unit tests for the new feature in test/feature_test.go. Coverage is now at 95%."
+		if response != expected {
+			t.Errorf("COMMENT_2 response mismatch.\nExpected: %s\nGot: %s", expected, response)
+		}
+	} else {
+		t.Error("COMMENT_2 response not found")
+	}
+
+	// Check REVIEW_1
+	if response, ok := responses["REVIEW_1"]; ok {
+		expected := "Updated the error handling as suggested. Now using structured errors with proper context wrapping."
+		if response != expected {
+			t.Errorf("REVIEW_1 response mismatch.\nExpected: %s\nGot: %s", expected, response)
+		}
+	} else {
+		t.Error("REVIEW_1 response not found")
+	}
+
+	// Check COMMENT_3
+	if response, ok := responses["COMMENT_3"]; ok {
+		expected := "Refactored the logic to use a more efficient algorithm. Time complexity is now O(n) instead of O(n²)."
+		if response != expected {
+			t.Errorf("COMMENT_3 response mismatch.\nExpected: %s\nGot: %s", expected, response)
+		}
+	} else {
+		t.Error("COMMENT_3 response not found")
+	}
+}
+
+func TestPRReviewProcessor_ParseCommentResponses_EmptyOutput(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+	}
+
+	responses := processor.parseCommentResponses("")
+
+	if len(responses) != 0 {
+		t.Errorf("Expected 0 responses for empty output, got %d", len(responses))
+	}
+}
+
+func TestPRReviewProcessor_ParseCommentResponses_NoValidResponses(t *testing.T) {
+	processor := &PRReviewProcessorImpl{
+		logger: zap.NewNop(),
+	}
+
+	aiOutput := `Some text without any valid response markers.
+This should not match the pattern.
+Even if it has COMMENT or REVIEW in it.`
+
+	responses := processor.parseCommentResponses(aiOutput)
+
+	if len(responses) != 0 {
+		t.Errorf("Expected 0 responses for output without valid markers, got %d", len(responses))
+	}
+}
+
 func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
@@ -506,31 +650,60 @@ func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
 		},
 	}
 
-	feedback := processor.collectFeedback(reviews, comments, baseTime)
+	feedbackData := processor.collectFeedback(reviews, comments, baseTime)
 
-	// Check that feedback contains handling status
-	if !strings.Contains(feedback, "✅ HANDLED") {
-		t.Error("Feedback should contain '✅ HANDLED' for old items")
+	// Check that Summary contains old items (truncated)
+	if !strings.Contains(feedbackData.Summary, "Previously addressed") {
+		t.Error("Summary should contain 'Previously addressed' header")
 	}
-	if !strings.Contains(feedback, "🔄 NEW") {
-		t.Error("Feedback should contain '🔄 NEW' for new items")
+	if !strings.Contains(feedbackData.Summary, "Old review") {
+		t.Error("Summary should contain old review content (truncated)")
 	}
-	if !strings.Contains(feedback, "Old review") {
-		t.Error("Feedback should contain old review content")
+	if !strings.Contains(feedbackData.Summary, "Old comment") {
+		t.Error("Summary should contain old comment content (truncated)")
 	}
-	if !strings.Contains(feedback, "New review") {
-		t.Error("Feedback should contain new review content")
+
+	// Check that NewFeedback contains new items with IDs
+	if !strings.Contains(feedbackData.NewFeedback, "NEW Review Feedback") {
+		t.Error("NewFeedback should contain 'NEW Review Feedback' header")
 	}
-	if !strings.Contains(feedback, "Old comment") {
-		t.Error("Feedback should contain old comment content")
+	if !strings.Contains(feedbackData.NewFeedback, "New review") {
+		t.Error("NewFeedback should contain new review content")
 	}
-	if !strings.Contains(feedback, "New comment") {
-		t.Error("Feedback should contain new comment content")
+	if !strings.Contains(feedbackData.NewFeedback, "New comment") {
+		t.Error("NewFeedback should contain new comment content")
 	}
-	if strings.Contains(feedback, "Bot review") {
-		t.Error("Feedback should not contain bot review")
+	if !strings.Contains(feedbackData.NewFeedback, "General conversation comment") {
+		t.Error("NewFeedback should contain general conversation comment")
 	}
-	if strings.Contains(feedback, "Bot comment") {
-		t.Error("Feedback should not contain bot comment")
+
+	// Check that bot comments/reviews are excluded from both
+	if strings.Contains(feedbackData.Summary, "Bot review") {
+		t.Error("Summary should not contain bot review")
+	}
+	if strings.Contains(feedbackData.Summary, "Bot comment") {
+		t.Error("Summary should not contain bot comment")
+	}
+	if strings.Contains(feedbackData.NewFeedback, "Bot review") {
+		t.Error("NewFeedback should not contain bot review")
+	}
+	if strings.Contains(feedbackData.NewFeedback, "Bot comment") {
+		t.Error("NewFeedback should not contain bot comment")
+	}
+
+	// Check that comment/review IDs are present for new items
+	if !strings.Contains(feedbackData.NewFeedback, "REVIEW_") {
+		t.Error("NewFeedback should contain REVIEW_ ID for new review")
+	}
+	if !strings.Contains(feedbackData.NewFeedback, "COMMENT_") {
+		t.Error("NewFeedback should contain COMMENT_ IDs for new comments")
+	}
+
+	// Check that maps contain only new items
+	if len(feedbackData.CommentMap) != 2 {
+		t.Errorf("Expected 2 comments in CommentMap (new items only), got %d", len(feedbackData.CommentMap))
+	}
+	if len(feedbackData.ReviewCommentMap) != 1 {
+		t.Errorf("Expected 1 review in ReviewCommentMap (new items only), got %d", len(feedbackData.ReviewCommentMap))
 	}
 }
