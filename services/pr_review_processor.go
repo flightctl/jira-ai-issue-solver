@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -278,9 +279,13 @@ func (p *PRReviewProcessorImpl) extractPRInfoFromURL(prURL string) (owner, repo 
 	return owner, repo, prNumber, nil
 }
 
-// hasRequestChangesReviews checks if there are any "request changes" reviews
+// hasRequestChangesReviews checks if there are any "request changes" reviews from non-bot users
 func (p *PRReviewProcessorImpl) hasRequestChangesReviews(reviews []models.GitHubReview) bool {
 	for _, review := range reviews {
+		// Skip reviews from the bot itself to prevent infinite loops
+		if review.User.Login == p.config.GitHub.BotUsername {
+			continue
+		}
 		if strings.ToLower(review.State) == "changes_requested" {
 			return true
 		}
@@ -290,6 +295,7 @@ func (p *PRReviewProcessorImpl) hasRequestChangesReviews(reviews []models.GitHub
 
 // collectFeedback collects feedback, separating NEW items from HANDLED items
 // Returns a FeedbackData struct with summary of old items and detailed NEW items with IDs
+// Note: This function sorts the input slices by ID for deterministic ordering, which mutates the caller's data
 func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) *FeedbackData {
 	var summary strings.Builder
 	var newFeedback strings.Builder
@@ -298,6 +304,14 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 
 	commentIDCounter := 1
 	reviewIDCounter := 1
+
+	// Sort reviews and comments by ID for deterministic ordering
+	sort.Slice(reviews, func(i, j int) bool {
+		return reviews[i].ID < reviews[j].ID
+	})
+	sort.Slice(comments, func(i, j int) bool {
+		return comments[i].ID < comments[j].ID
+	})
 
 	// Build summary of HANDLED items
 	var handledItems []string
@@ -343,6 +357,10 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 		if review.User.Login == p.config.GitHub.BotUsername {
 			continue
 		}
+		// Skip reviews with empty bodies
+		if review.Body == "" {
+			continue
+		}
 		if review.SubmittedAt.After(lastProcessedTime) {
 			hasNewReviews = true
 			reviewID := fmt.Sprintf("REVIEW_%d", reviewIDCounter)
@@ -361,6 +379,10 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 	for i := range comments {
 		comment := &comments[i]
 		if comment.User.Login == p.config.GitHub.BotUsername {
+			continue
+		}
+		// Skip comments with empty bodies
+		if comment.Body == "" {
 			continue
 		}
 		if comment.CreatedAt.After(lastProcessedTime) {
@@ -477,9 +499,22 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	// Parse individual responses from AI output
 	aiOutputStr, ok := aiOutput.(string)
 	if !ok {
-		return fmt.Errorf("AI output is not a string")
+		return fmt.Errorf("AI output has unexpected type %T, expected string", aiOutput)
 	}
-	responses := p.parseCommentResponses(aiOutputStr)
+	if aiOutputStr == "" {
+		return fmt.Errorf("AI output is empty")
+	}
+
+	// Build list of expected IDs
+	var expectedIDs []string
+	for id := range feedbackData.CommentMap {
+		expectedIDs = append(expectedIDs, id)
+	}
+	for id := range feedbackData.ReviewCommentMap {
+		expectedIDs = append(expectedIDs, id)
+	}
+
+	responses := p.parseCommentResponses(aiOutputStr, expectedIDs)
 
 	// Get ticket details to get assignee info for co-author
 	ticket, err := p.jiraService.GetTicket(ticketKey)
@@ -503,17 +538,29 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	}
 
 	// Post individual replies to comments/reviews
-	p.postIndividualReplies(owner, repo, prNumber, feedbackData, responses)
+	successCount, failCount := p.postIndividualReplies(owner, repo, prNumber, feedbackData, responses)
 
 	p.logger.Info("Successfully updated PR with feedback fixes and posted replies",
 		zap.Int("pr_number", pr.Number),
 		zap.String("ticket", ticketKey),
-		zap.Int("replies_posted", len(responses)))
+		zap.Int("replies_attempted", len(responses)),
+		zap.Int("replies_posted", successCount),
+		zap.Int("replies_failed", failCount))
+
+	if failCount > 0 {
+		p.logger.Warn("Some replies failed to post",
+			zap.Int("failed_count", failCount),
+			zap.Int("total_attempted", len(responses)))
+	}
+
 	return nil
 }
 
 // postIndividualReplies posts individual replies to comments and reviews
-func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumber int, feedbackData *FeedbackData, responses map[string]string) {
+// Returns (successCount, failCount)
+func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumber int, feedbackData *FeedbackData, responses map[string]string) (int, int) {
+	successCount := 0
+	failCount := 0
 	// Reply to comments
 	for commentID, comment := range feedbackData.CommentMap {
 		response, ok := responses[commentID]
@@ -531,11 +578,13 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 		if comment.Path != "" && comment.Line > 0 {
 			err := p.githubService.ReplyToPRComment(owner, repo, prNumber, comment.ID, replyBody)
 			if err != nil {
+				failCount++
 				p.logger.Error("Failed to reply to line-based comment",
 					zap.String("comment_id", commentID),
 					zap.Int64("github_comment_id", comment.ID),
 					zap.Error(err))
 			} else {
+				successCount++
 				p.logger.Info("Posted reply to line-based comment",
 					zap.String("comment_id", commentID),
 					zap.String("path", comment.Path),
@@ -546,10 +595,12 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 			mentionBody := fmt.Sprintf("@%s %s", comment.User.Login, replyBody)
 			err := p.githubService.AddPRComment(owner, repo, prNumber, mentionBody)
 			if err != nil {
+				failCount++
 				p.logger.Error("Failed to post reply to general comment",
 					zap.String("comment_id", commentID),
 					zap.Error(err))
 			} else {
+				successCount++
 				p.logger.Info("Posted reply to general comment",
 					zap.String("comment_id", commentID),
 					zap.String("user", comment.User.Login))
@@ -572,15 +623,19 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 
 		err := p.githubService.AddPRComment(owner, repo, prNumber, replyBody)
 		if err != nil {
+			failCount++
 			p.logger.Error("Failed to post reply to review",
 				zap.String("review_id", reviewID),
 				zap.Error(err))
 		} else {
+			successCount++
 			p.logger.Info("Posted reply to review",
 				zap.String("review_id", reviewID),
 				zap.String("user", review.User.Login))
 		}
 	}
+
+	return successCount, failCount
 }
 
 // generateFeedbackPrompt generates a prompt for the AI service to fix code based on feedback
@@ -640,30 +695,80 @@ func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetail
 
 // parseCommentResponses extracts individual comment responses from AI output
 // Looks for patterns like "COMMENT_1_RESPONSE:" or "REVIEW_1_RESPONSE:" followed by the response text
-func (p *PRReviewProcessorImpl) parseCommentResponses(aiOutput string) map[string]string {
+// Returns map of comment/review IDs to responses, and logs warnings if parsing issues occur
+func (p *PRReviewProcessorImpl) parseCommentResponses(aiOutput string, expectedIDs []string) map[string]string {
 	responses := make(map[string]string)
 
-	// Pattern to match COMMENT_X_RESPONSE: or REVIEW_X_RESPONSE: followed by the response
-	pattern := regexp.MustCompile(`(?m)^((?:COMMENT|REVIEW)_\d+)_RESPONSE:\s*\n((?:.*\n)*?)(?:(?:COMMENT|REVIEW)_\d+_RESPONSE:|$)`)
+	// Pattern to match COMMENT_1_RESPONSE: or REVIEW_2_RESPONSE:
+	// We'll extract the text between each marker using FindAllStringSubmatchIndex
+	pattern := regexp.MustCompile(`((?:COMMENT|REVIEW)_\d+)_RESPONSE:\s*`)
 
-	matches := pattern.FindAllStringSubmatch(aiOutput, -1)
+	// Find all matches and their positions
+	matches := pattern.FindAllStringSubmatchIndex(aiOutput, -1)
 
-	for _, match := range matches {
-		if len(match) >= 3 {
-			id := match[1] // e.g., "COMMENT_1" or "REVIEW_2"
-			response := strings.TrimSpace(match[2])
+	for i, match := range matches {
+		// match[2], match[3] are the start and end of the ID capture group
+		id := aiOutput[match[2]:match[3]]
 
-			if response != "" {
-				responses[id] = response
-				p.logger.Debug("Parsed AI response",
-					zap.String("id", id),
-					zap.String("response_preview", truncateString(response, 100)))
+		// Start of response text is at match[1] (end of full match)
+		responseStart := match[1]
+
+		// End of response text is either:
+		// 1. The first double newline (\n\n) indicating end of response paragraph
+		// 2. The start of the next _RESPONSE: marker
+		// 3. The end of the string
+		var responseEnd int
+		if i+1 < len(matches) {
+			// Find the end: either double newline or next marker (whichever comes first)
+			nextMarkerStart := matches[i+1][0]
+			doubleNewlineIdx := strings.Index(aiOutput[responseStart:nextMarkerStart], "\n\n")
+			if doubleNewlineIdx != -1 {
+				responseEnd = responseStart + doubleNewlineIdx
+			} else {
+				responseEnd = nextMarkerStart
 			}
+		} else {
+			// Last response: find double newline or use end of string
+			doubleNewlineIdx := strings.Index(aiOutput[responseStart:], "\n\n")
+			if doubleNewlineIdx != -1 {
+				responseEnd = responseStart + doubleNewlineIdx
+			} else {
+				responseEnd = len(aiOutput)
+			}
+		}
+
+		responseText := strings.TrimSpace(aiOutput[responseStart:responseEnd])
+
+		if responseText != "" {
+			responses[id] = responseText
+			p.logger.Debug("Parsed AI response",
+				zap.String("id", id),
+				zap.String("response_preview", truncateString(responseText, 100)))
+		} else {
+			p.logger.Warn("Parsed empty response for ID",
+				zap.String("id", id))
 		}
 	}
 
+	// Validate that all expected IDs have responses
+	missing := []string{}
+	for _, expectedID := range expectedIDs {
+		if _, found := responses[expectedID]; !found {
+			missing = append(missing, expectedID)
+		}
+	}
+
+	if len(missing) > 0 {
+		p.logger.Warn("AI did not provide responses for some comments/reviews",
+			zap.Strings("missing_ids", missing),
+			zap.Int("total_expected", len(expectedIDs)),
+			zap.Int("total_found", len(responses)),
+			zap.String("ai_output_preview", truncateString(aiOutput, 500)))
+	}
+
 	p.logger.Info("Parsed AI responses",
-		zap.Int("count", len(responses)))
+		zap.Int("count", len(responses)),
+		zap.Int("expected", len(expectedIDs)))
 
 	return responses
 }

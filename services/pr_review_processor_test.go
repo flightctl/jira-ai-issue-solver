@@ -65,7 +65,11 @@ func TestPRReviewProcessor_ExtractPRInfoFromURL(t *testing.T) {
 }
 
 func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
-	processor := &PRReviewProcessorImpl{}
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
+	processor := &PRReviewProcessorImpl{
+		config: config,
+	}
 
 	tests := []struct {
 		name    string
@@ -76,6 +80,7 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 			name: "has changes requested",
 			reviews: []models.GitHubReview{
 				{
+					User:  models.GitHubUser{Login: "reviewer1"},
 					State: "CHANGES_REQUESTED",
 				},
 			},
@@ -85,18 +90,31 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 			name: "has changes requested lowercase",
 			reviews: []models.GitHubReview{
 				{
+					User:  models.GitHubUser{Login: "reviewer1"},
 					State: "changes_requested",
 				},
 			},
 			want: true,
 		},
 		{
+			name: "bot changes requested should be ignored",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "ai-bot"},
+					State: "CHANGES_REQUESTED",
+				},
+			},
+			want: false,
+		},
+		{
 			name: "no changes requested",
 			reviews: []models.GitHubReview{
 				{
+					User:  models.GitHubUser{Login: "reviewer1"},
 					State: "APPROVED",
 				},
 				{
+					User:  models.GitHubUser{Login: "reviewer2"},
 					State: "COMMENTED",
 				},
 			},
@@ -510,7 +528,8 @@ COMMENT_3_RESPONSE:
 Refactored the logic to use a more efficient algorithm. Time complexity is now O(n) instead of O(n²).
 `
 
-	responses := processor.parseCommentResponses(aiOutput)
+	expectedIDs := []string{"COMMENT_1", "COMMENT_2", "COMMENT_3", "REVIEW_1"}
+	responses := processor.parseCommentResponses(aiOutput, expectedIDs)
 
 	// Check that all responses were parsed
 	if len(responses) != 4 {
@@ -539,6 +558,7 @@ Refactored the logic to use a more efficient algorithm. Time complexity is now O
 
 	// Check REVIEW_1
 	if response, ok := responses["REVIEW_1"]; ok {
+		// Parser should stop at double newline, excluding extraneous text
 		expected := "Updated the error handling as suggested. Now using structured errors with proper context wrapping."
 		if response != expected {
 			t.Errorf("REVIEW_1 response mismatch.\nExpected: %s\nGot: %s", expected, response)
@@ -563,7 +583,7 @@ func TestPRReviewProcessor_ParseCommentResponses_EmptyOutput(t *testing.T) {
 		logger: zap.NewNop(),
 	}
 
-	responses := processor.parseCommentResponses("")
+	responses := processor.parseCommentResponses("", []string{})
 
 	if len(responses) != 0 {
 		t.Errorf("Expected 0 responses for empty output, got %d", len(responses))
@@ -579,7 +599,7 @@ func TestPRReviewProcessor_ParseCommentResponses_NoValidResponses(t *testing.T) 
 This should not match the pattern.
 Even if it has COMMENT or REVIEW in it.`
 
-	responses := processor.parseCommentResponses(aiOutput)
+	responses := processor.parseCommentResponses(aiOutput, []string{})
 
 	if len(responses) != 0 {
 		t.Errorf("Expected 0 responses for output without valid markers, got %d", len(responses))

@@ -948,9 +948,9 @@ func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, c
 	return nil
 }
 
-// listPRReviewComments lists line-based review comments on a PR (from pulls endpoint)
-func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments", owner, repo, prNumber)
+// fetchPRReviewCommentsPage fetches a single page of PR review comments
+func (s *GitHubServiceImpl) fetchPRReviewCommentsPage(owner, repo string, prNumber, page, perPage int) ([]models.GitHubPRComment, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments?per_page=%d&page=%d", owner, repo, prNumber, perPage, page)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -970,7 +970,7 @@ func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber in
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "listPRReviewComments"))
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "fetchPRReviewCommentsPage"))
 		}
 	}()
 
@@ -987,9 +987,43 @@ func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber in
 	return comments, nil
 }
 
-// listPRConversationComments lists general conversation comments on a PR (from issues endpoint)
-func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
+// listPRReviewComments lists line-based review comments on a PR (from pulls endpoint)
+// Handles pagination to retrieve all comments
+func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+	var allComments []models.GitHubPRComment
+	page := 1
+	perPage := 100
+
+	for {
+		comments, err := s.fetchPRReviewCommentsPage(owner, repo, prNumber, page, perPage)
+		if err != nil {
+			return nil, err
+		}
+
+		allComments = append(allComments, comments...)
+
+		// If we got fewer than perPage results, we've reached the last page
+		// Also break on empty response to avoid infinite loop edge case
+		if len(comments) == 0 || len(comments) < perPage {
+			break
+		}
+
+		page++
+		// Safety limit: prevent infinite loop if GitHub API misbehaves
+		if page > 100 { // 100 pages * 100 per page = 10,000 comments max
+			s.logger.Warn("Hit pagination safety limit for PR review comments",
+				zap.Int("page", page),
+				zap.Int("comments_retrieved", len(allComments)))
+			break
+		}
+	}
+
+	return allComments, nil
+}
+
+// fetchPRConversationCommentsPage fetches a single page of PR conversation comments
+func (s *GitHubServiceImpl) fetchPRConversationCommentsPage(owner, repo string, prNumber, page, perPage int) ([]models.GitHubPRComment, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments?per_page=%d&page=%d", owner, repo, prNumber, perPage, page)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -1009,7 +1043,7 @@ func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNum
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "listPRConversationComments"))
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "fetchPRConversationCommentsPage"))
 		}
 	}()
 
@@ -1026,7 +1060,43 @@ func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNum
 	return comments, nil
 }
 
+// listPRConversationComments lists general conversation comments on a PR (from issues endpoint)
+// Handles pagination to retrieve all comments
+func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+	var allComments []models.GitHubPRComment
+	page := 1
+	perPage := 100
+
+	for {
+		comments, err := s.fetchPRConversationCommentsPage(owner, repo, prNumber, page, perPage)
+		if err != nil {
+			return nil, err
+		}
+
+		allComments = append(allComments, comments...)
+
+		// If we got fewer than perPage results, we've reached the last page
+		// Also break on empty response to avoid infinite loop edge case
+		if len(comments) == 0 || len(comments) < perPage {
+			break
+		}
+
+		page++
+		// Safety limit: prevent infinite loop if GitHub API misbehaves
+		if page > 100 { // 100 pages * 100 per page = 10,000 comments max
+			s.logger.Warn("Hit pagination safety limit for PR conversation comments",
+				zap.Int("page", page),
+				zap.Int("comments_retrieved", len(allComments)))
+			break
+		}
+	}
+
+	return allComments, nil
+}
+
 // ListPRComments lists all PR comments (both line-based review comments and general conversation comments)
+// Note: The /pulls/{pr}/comments and /issues/{pr}/comments endpoints return disjoint sets per GitHub API spec.
+// Line-based review comments only appear in pulls endpoint; general conversation comments only in issues endpoint.
 func (s *GitHubServiceImpl) ListPRComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
 	// Get line-based review comments from pulls endpoint
 	reviewComments, err := s.listPRReviewComments(owner, repo, prNumber)
