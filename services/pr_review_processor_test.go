@@ -727,3 +727,75 @@ func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
 		t.Errorf("Expected 1 review in ReviewCommentMap (new items only), got %d", len(feedbackData.ReviewCommentMap))
 	}
 }
+
+func TestPRReviewProcessor_CollectFeedback_ThreadedReplies(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
+	processor := &PRReviewProcessorImpl{
+		config: config,
+		logger: zap.NewNop(),
+	}
+
+	baseTime := time.Date(2024, 7, 10, 12, 0, 0, 0, time.UTC)
+	oldTime := baseTime.Add(-2 * time.Hour)
+	newTime := baseTime.Add(1 * time.Hour)
+
+	comments := []models.GitHubPRComment{
+		{
+			ID:        100,
+			User:      models.GitHubUser{Login: "reviewer1"},
+			Body:      "Please refactor this function",
+			Path:      "src/main.go",
+			Line:      42,
+			CreatedAt: oldTime,
+		},
+		{
+			ID:          101,
+			InReplyToID: 100, // Reply to comment 100
+			User:        models.GitHubUser{Login: "ai-bot"},
+			Body:        "Done. Refactored the function as requested.",
+			Path:        "src/main.go",
+			Line:        42,
+			CreatedAt:   oldTime.Add(10 * time.Minute),
+		},
+		{
+			ID:          102,
+			InReplyToID: 101, // Follow-up reply to bot's comment
+			User:        models.GitHubUser{Login: "reviewer1"},
+			Body:        "Actually, please also add error handling",
+			Path:        "src/main.go",
+			Line:        42,
+			CreatedAt:   newTime, // NEW comment after baseTime
+		},
+	}
+
+	feedbackData := processor.collectFeedback([]models.GitHubReview{}, comments, baseTime)
+
+	// Verify the follow-up comment is detected
+	if !strings.Contains(feedbackData.NewFeedback, "Actually, please also add error handling") {
+		t.Error("NewFeedback should contain the follow-up comment")
+	}
+
+	// Verify threading context is included
+	if !strings.Contains(feedbackData.NewFeedback, "Follow-up to previous discussion") {
+		t.Error("NewFeedback should indicate this is a follow-up")
+	}
+
+	// Verify parent comment context is included
+	if !strings.Contains(feedbackData.NewFeedback, "Previous comment by ai-bot") {
+		t.Error("NewFeedback should include parent comment author")
+	}
+	if !strings.Contains(feedbackData.NewFeedback, "Done. Refactored the function") {
+		t.Error("NewFeedback should include preview of parent comment")
+	}
+
+	// Verify old comments are in summary
+	if !strings.Contains(feedbackData.Summary, "Please refactor this function") {
+		t.Error("Summary should contain the original comment (truncated)")
+	}
+
+	// Verify only the new follow-up comment is in the map
+	if len(feedbackData.CommentMap) != 1 {
+		t.Errorf("Expected 1 comment in CommentMap (only the new follow-up), got %d", len(feedbackData.CommentMap))
+	}
+}

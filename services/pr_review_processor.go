@@ -313,6 +313,12 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 		return comments[i].ID < comments[j].ID
 	})
 
+	// Build a lookup map of all comments by ID for threaded reply context
+	commentByID := make(map[int64]*models.GitHubPRComment)
+	for i := range comments {
+		commentByID[comments[i].ID] = &comments[i]
+	}
+
 	// Build summary of HANDLED items
 	var handledItems []string
 
@@ -417,6 +423,17 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 
 			newFeedback.WriteString(fmt.Sprintf("### %s\n", commentID))
 			newFeedback.WriteString(fmt.Sprintf("**Comment by %s %s:**\n", comment.User.Login, location))
+
+			// Check if this is a threaded reply (follow-up to a previous comment)
+			if comment.InReplyToID != 0 {
+				if parentComment, found := commentByID[comment.InReplyToID]; found {
+					newFeedback.WriteString("*(Follow-up to previous discussion)*\n")
+					newFeedback.WriteString(fmt.Sprintf("Previous comment by %s: \"%s\"\n\n",
+						parentComment.User.Login,
+						truncateString(parentComment.Body, 150)))
+				}
+			}
+
 			newFeedback.WriteString(comment.Body)
 			newFeedback.WriteString("\n\n")
 		}
