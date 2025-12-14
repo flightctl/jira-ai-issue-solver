@@ -91,7 +91,10 @@ type GitHubPRComment struct {
 	User      GitHubUser `json:"user"`
 	Body      string     `json:"body"`
 	Path      string     `json:"path"`
-	Line      int        `json:"line"`
+	Line      int        `json:"line"`       // Last line of range for multi-line comments
+	StartLine int        `json:"start_line"` // First line of range for multi-line comments (0 if single line)
+	Side      string     `json:"side"`       // Which side of diff: "LEFT" or "RIGHT"
+	StartSide string     `json:"start_side"` // Which side of diff for start line
 	HTMLURL   string     `json:"html_url"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+
 	"jira-ai-issue-solver/mocks"
 	"jira-ai-issue-solver/models"
 )
@@ -122,6 +124,7 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
 		config: config,
+		logger: zap.NewNop(),
 	}
 
 	pr := &models.GitHubPRDetails{
@@ -142,6 +145,14 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 				Body: "This line needs improvement",
 				Path: "src/main.go",
 				Line: 42,
+			},
+			{
+				User: models.GitHubUser{
+					Login: "commenter2",
+				},
+				Body: "Please add more tests",
+				Path: "",
+				Line: 0,
 			},
 		},
 	}
@@ -165,7 +176,74 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 		t.Error("Feedback should contain review body")
 	}
 	if !strings.Contains(feedback, "This line needs improvement") {
-		t.Error("Feedback should contain comment body")
+		t.Error("Feedback should contain line-based comment body")
+	}
+	if !strings.Contains(feedback, "Please add more tests") {
+		t.Error("Feedback should contain general comment body")
+	}
+	if !strings.Contains(feedback, "commenter2") {
+		t.Error("Feedback should contain second commenter name")
+	}
+}
+
+func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
+	processor := &PRReviewProcessorImpl{
+		config: config,
+		logger: zap.NewNop(),
+	}
+
+	comments := []models.GitHubPRComment{
+		{
+			User:      models.GitHubUser{Login: "reviewer1"},
+			Body:      "Single line comment",
+			Path:      "src/main.go",
+			Line:      42,
+			StartLine: 0, // Single line - no start line
+			CreatedAt: time.Now(),
+		},
+		{
+			User:      models.GitHubUser{Login: "reviewer2"},
+			Body:      "Multi-line comment",
+			Path:      "src/util.go",
+			Line:      100,
+			StartLine: 95, // Multi-line range: 95-100
+			CreatedAt: time.Now(),
+		},
+		{
+			User:      models.GitHubUser{Login: "reviewer3"},
+			Body:      "General conversation comment",
+			Path:      "", // No path
+			Line:      0,  // No line
+			StartLine: 0,
+			CreatedAt: time.Now(),
+		},
+	}
+
+	feedback := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
+
+	// Test single-line comment formatting
+	expectedSingleLine := "**Comment by reviewer1 on src/main.go:42 - 🔄 NEW:**"
+	if !strings.Contains(feedback, expectedSingleLine) {
+		t.Errorf("Single-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedSingleLine, feedback)
+	}
+
+	// Test multi-line comment formatting
+	expectedMultiLine := "**Comment by reviewer2 on src/util.go:95-100 - 🔄 NEW:**"
+	if !strings.Contains(feedback, expectedMultiLine) {
+		t.Errorf("Multi-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedMultiLine, feedback)
+	}
+
+	// Test general conversation comment formatting (no ":0")
+	expectedGeneral := "**Comment by reviewer3 - 🔄 NEW:**"
+	if !strings.Contains(feedback, expectedGeneral) {
+		t.Errorf("General comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedGeneral, feedback)
+	}
+
+	// Verify we don't have ":0" anywhere in general comment
+	if strings.Contains(feedback, "reviewer3 on :0") || strings.Contains(feedback, "reviewer3 on 0") {
+		t.Error("General comment should not contain ':0' or path/line references")
 	}
 }
 
@@ -369,6 +447,7 @@ func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
 	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
 		config: config,
+		logger: zap.NewNop(),
 	}
 
 	baseTime := time.Date(2024, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -409,6 +488,13 @@ func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
 			Body:      "New comment",
 			Path:      "src/main.go",
 			Line:      50,
+			CreatedAt: newTime,
+		},
+		{
+			User:      models.GitHubUser{Login: "commenter3"},
+			Body:      "General conversation comment",
+			Path:      "",
+			Line:      0,
 			CreatedAt: newTime,
 		},
 		{

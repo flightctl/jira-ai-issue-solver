@@ -893,8 +893,47 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 	return nil
 }
 
-// ListPRComments lists all comments on a PR (issue) on GitHub
-func (s *GitHubServiceImpl) ListPRComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+// listPRReviewComments lists line-based review comments on a PR (from pulls endpoint)
+func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments", owner, repo, prNumber)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	token, err := s.getAuthToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth token: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "listPRReviewComments"))
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get PR review comments: %s, status: %d", string(body), resp.StatusCode)
+	}
+
+	var comments []models.GitHubPRComment
+	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
+		return nil, fmt.Errorf("failed to decode review comments: %w", err)
+	}
+
+	return comments, nil
+}
+
+// listPRConversationComments lists general conversation comments on a PR (from issues endpoint)
+func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -915,21 +954,49 @@ func (s *GitHubServiceImpl) ListPRComments(owner, repo string, prNumber int) ([]
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "ListPRComments"))
+			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "listPRConversationComments"))
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get PR comments: %s, status: %d", string(body), resp.StatusCode)
+		return nil, fmt.Errorf("failed to get PR conversation comments: %s, status: %d", string(body), resp.StatusCode)
 	}
 
 	var comments []models.GitHubPRComment
 	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-		return nil, fmt.Errorf("failed to decode comments: %w", err)
+		return nil, fmt.Errorf("failed to decode conversation comments: %w", err)
 	}
 
 	return comments, nil
+}
+
+// ListPRComments lists all PR comments (both line-based review comments and general conversation comments)
+func (s *GitHubServiceImpl) ListPRComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+	// Get line-based review comments from pulls endpoint
+	reviewComments, err := s.listPRReviewComments(owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get review comments: %w", err)
+	}
+
+	// Get general conversation comments from issues endpoint
+	conversationComments, err := s.listPRConversationComments(owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get conversation comments: %w", err)
+	}
+
+	// Merge both types of comments
+	allComments := append(reviewComments, conversationComments...)
+
+	s.logger.Debug("Retrieved PR comments",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int("pr_number", prNumber),
+		zap.Int("review_comments", len(reviewComments)),
+		zap.Int("conversation_comments", len(conversationComments)),
+		zap.Int("total_comments", len(allComments)))
+
+	return allComments, nil
 }
 
 // ExtractRepoInfo extracts owner and repo from a repository URL

@@ -308,6 +308,9 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 
 	// Add comment feedback
 	if len(comments) > 0 {
+		p.logger.Debug("Collecting PR comments",
+			zap.Int("total_comments", len(comments)))
+
 		feedback.WriteString("### Comments\n\n")
 		for _, comment := range comments {
 			// Skip comments from our bot
@@ -320,7 +323,36 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 				status = "✅ HANDLED"
 			}
 
-			feedback.WriteString(fmt.Sprintf("**Comment by %s on %s:%d - %s:**\n", comment.User.Login, comment.Path, comment.Line, status))
+			// Format comment header based on whether it's line-based or general
+			var commentHeader string
+			if comment.Path == "" || comment.Line == 0 {
+				// General conversation comment (no specific file/line)
+				commentHeader = fmt.Sprintf("**Comment by %s - %s:**\n", comment.User.Login, status)
+				p.logger.Debug("General conversation comment",
+					zap.String("user", comment.User.Login),
+					zap.String("status", status))
+			} else if comment.StartLine > 0 && comment.StartLine != comment.Line {
+				// Multi-line comment (line range)
+				commentHeader = fmt.Sprintf("**Comment by %s on %s:%d-%d - %s:**\n",
+					comment.User.Login, comment.Path, comment.StartLine, comment.Line, status)
+				p.logger.Debug("Multi-line review comment",
+					zap.String("user", comment.User.Login),
+					zap.String("path", comment.Path),
+					zap.Int("start_line", comment.StartLine),
+					zap.Int("end_line", comment.Line),
+					zap.String("status", status))
+			} else {
+				// Single-line comment
+				commentHeader = fmt.Sprintf("**Comment by %s on %s:%d - %s:**\n",
+					comment.User.Login, comment.Path, comment.Line, status)
+				p.logger.Debug("Single-line review comment",
+					zap.String("user", comment.User.Login),
+					zap.String("path", comment.Path),
+					zap.Int("line", comment.Line),
+					zap.String("status", status))
+			}
+
+			feedback.WriteString(commentHeader)
 			feedback.WriteString(comment.Body)
 			feedback.WriteString("\n\n")
 		}
