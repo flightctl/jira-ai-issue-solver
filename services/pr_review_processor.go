@@ -555,14 +555,15 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	}
 
 	// Post individual replies to comments/reviews
-	successCount, failCount := p.postIndividualReplies(owner, repo, prNumber, feedbackData, responses)
+	successCount, failCount, skippedCount := p.postIndividualReplies(owner, repo, prNumber, pr.Comments, feedbackData, responses)
 
 	p.logger.Info("Successfully updated PR with feedback fixes and posted replies",
 		zap.Int("pr_number", pr.Number),
 		zap.String("ticket", ticketKey),
 		zap.Int("replies_attempted", len(responses)),
 		zap.Int("replies_posted", successCount),
-		zap.Int("replies_failed", failCount))
+		zap.Int("replies_failed", failCount),
+		zap.Int("replies_skipped", skippedCount))
 
 	if failCount > 0 {
 		p.logger.Warn("Some replies failed to post",
@@ -573,11 +574,100 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	return nil
 }
 
+// isKnownBot checks if a username matches a known bot pattern
+func (p *PRReviewProcessorImpl) isKnownBot(username string) bool {
+	usernameLower := strings.ToLower(username)
+	for _, botUsername := range p.config.GitHub.KnownBotUsernames {
+		if strings.ToLower(botUsername) == usernameLower {
+			return true
+		}
+	}
+	return false
+}
+
+// calculateThreadDepth walks the comment chain backwards and counts how many times our bot appears
+func (p *PRReviewProcessorImpl) calculateThreadDepth(
+	commentID int64,
+	commentByID map[int64]*models.GitHubPRComment,
+) int {
+	depth := 0
+	currentID := commentID
+	visited := make(map[int64]bool) // Prevent infinite loops in case of malformed data
+
+	for currentID != 0 {
+		// Check for cycles
+		if visited[currentID] {
+			p.logger.Warn("Detected cycle in comment thread",
+				zap.Int64("comment_id", commentID))
+			break
+		}
+		visited[currentID] = true
+
+		comment, found := commentByID[currentID]
+		if !found {
+			break
+		}
+
+		// Count if this comment is from our bot
+		if comment.User.Login == p.config.GitHub.BotUsername {
+			depth++
+		}
+
+		// Move to parent
+		currentID = comment.InReplyToID
+	}
+
+	return depth
+}
+
+// shouldSkipReply determines if we should skip replying to a comment to prevent loops
+// Returns (shouldSkip, reason)
+func (p *PRReviewProcessorImpl) shouldSkipReply(
+	comment *models.GitHubPRComment,
+	commentByID map[int64]*models.GitHubPRComment,
+) (bool, string) {
+	// Check 1: Bot detection - Don't respond to a bot's follow-up to our own comment
+	// This prevents bot-to-bot ping-pong while allowing ONE initial exchange for visibility
+	if p.isKnownBot(comment.User.Login) && comment.InReplyToID != 0 {
+		if parentComment, found := commentByID[comment.InReplyToID]; found {
+			if parentComment.User.Login == p.config.GitHub.BotUsername {
+				return true, fmt.Sprintf("bot '%s' is replying to our own comment (loop prevention)", comment.User.Login)
+			}
+		} else {
+			// Parent comment not found - be conservative and skip when bot is replying to unknown parent
+			// This handles data inconsistencies defensively (missing parent could have been our bot)
+			p.logger.Warn("Bot replying to missing parent - skipping as defensive measure",
+				zap.Int64("comment_id", comment.ID),
+				zap.Int64("parent_id", comment.InReplyToID),
+				zap.String("user", comment.User.Login))
+			return true, fmt.Sprintf("bot '%s' replying to missing parent %d (defensive skip)", comment.User.Login, comment.InReplyToID)
+		}
+	}
+
+	// Check 2: Thread depth limit - Don't exceed configured max depth
+	// MaxThreadDepth represents the maximum number of bot replies allowed in a thread
+	// When threadDepth equals MaxThreadDepth, we've already made the maximum number of replies
+	threadDepth := p.calculateThreadDepth(comment.ID, commentByID)
+	if threadDepth >= p.config.GitHub.MaxThreadDepth {
+		return true, fmt.Sprintf("thread depth %d reaches or exceeds max %d (loop prevention)", threadDepth, p.config.GitHub.MaxThreadDepth)
+	}
+
+	return false, ""
+}
+
 // postIndividualReplies posts individual replies to comments and reviews
-// Returns (successCount, failCount)
-func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumber int, feedbackData *FeedbackData, responses map[string]string) (int, int) {
+// Returns (successCount, failCount, skippedCount)
+func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumber int, allComments []models.GitHubPRComment, feedbackData *FeedbackData, responses map[string]string) (int, int, int) {
 	successCount := 0
 	failCount := 0
+	skippedCount := 0
+
+	// Build lookup map of all comments for thread depth calculation
+	commentByID := make(map[int64]*models.GitHubPRComment)
+	for i := range allComments {
+		commentByID[allComments[i].ID] = &allComments[i]
+	}
+
 	// Reply to comments
 	for commentID, comment := range feedbackData.CommentMap {
 		response, ok := responses[commentID]
@@ -585,6 +675,17 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 			p.logger.Warn("No AI response found for comment",
 				zap.String("comment_id", commentID),
 				zap.String("user", comment.User.Login))
+			continue
+		}
+
+		// Check if we should skip this reply to prevent loops
+		shouldSkip, reason := p.shouldSkipReply(comment, commentByID)
+		if shouldSkip {
+			skippedCount++
+			p.logger.Info("Skipping reply to prevent loop",
+				zap.String("comment_id", commentID),
+				zap.String("user", comment.User.Login),
+				zap.String("reason", reason))
 			continue
 		}
 
@@ -652,7 +753,14 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 		}
 	}
 
-	return successCount, failCount
+	// Log summary if any replies were skipped
+	if skippedCount > 0 {
+		p.logger.Info("Skipped replies to prevent loops",
+			zap.Int("skipped_count", skippedCount),
+			zap.Int("total_attempted", len(responses)))
+	}
+
+	return successCount, failCount, skippedCount
 }
 
 // generateFeedbackPrompt generates a prompt for the AI service to fix code based on feedback

@@ -799,3 +799,265 @@ func TestPRReviewProcessor_CollectFeedback_ThreadedReplies(t *testing.T) {
 		t.Errorf("Expected 1 comment in CommentMap (only the new follow-up), got %d", len(feedbackData.CommentMap))
 	}
 }
+
+func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.KnownBotUsernames = []string{
+		"github-actions[bot]",
+		"coderabbitai",
+		"dependabot[bot]",
+	}
+	processor := &PRReviewProcessorImpl{
+		config: config,
+	}
+
+	tests := []struct {
+		name     string
+		username string
+		want     bool
+	}{
+		{
+			name:     "exact match",
+			username: "coderabbitai",
+			want:     true,
+		},
+		{
+			name:     "case insensitive match",
+			username: "CodeRabbitAI",
+			want:     true,
+		},
+		{
+			name:     "bot suffix",
+			username: "github-actions[bot]",
+			want:     true,
+		},
+		{
+			name:     "not a bot",
+			username: "human-reviewer",
+			want:     false,
+		},
+		{
+			name:     "partial match should not match",
+			username: "coderabbit",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := processor.isKnownBot(tt.username)
+			if got != tt.want {
+				t.Errorf("isKnownBot(%q) = %v, want %v", tt.username, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRReviewProcessor_CalculateThreadDepth(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
+	processor := &PRReviewProcessorImpl{
+		config: config,
+		logger: zap.NewNop(),
+	}
+
+	// Build a comment thread: human -> bot -> human -> bot -> human
+	comments := []models.GitHubPRComment{
+		{
+			ID:   100,
+			User: models.GitHubUser{Login: "reviewer1"},
+		},
+		{
+			ID:          101,
+			InReplyToID: 100,
+			User:        models.GitHubUser{Login: "ai-bot"},
+		},
+		{
+			ID:          102,
+			InReplyToID: 101,
+			User:        models.GitHubUser{Login: "reviewer1"},
+		},
+		{
+			ID:          103,
+			InReplyToID: 102,
+			User:        models.GitHubUser{Login: "ai-bot"},
+		},
+		{
+			ID:          104,
+			InReplyToID: 103,
+			User:        models.GitHubUser{Login: "reviewer1"},
+		},
+	}
+
+	commentByID := make(map[int64]*models.GitHubPRComment)
+	for i := range comments {
+		commentByID[comments[i].ID] = &comments[i]
+	}
+
+	tests := []struct {
+		name      string
+		commentID int64
+		want      int
+	}{
+		{
+			name:      "first comment (human) - depth 0",
+			commentID: 100,
+			want:      0,
+		},
+		{
+			name:      "first bot reply - depth 1",
+			commentID: 101,
+			want:      1,
+		},
+		{
+			name:      "second human reply - depth 1 (only counts bot)",
+			commentID: 102,
+			want:      1,
+		},
+		{
+			name:      "second bot reply - depth 2",
+			commentID: 103,
+			want:      2,
+		},
+		{
+			name:      "third human reply - depth 2 (only counts bot)",
+			commentID: 104,
+			want:      2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := processor.calculateThreadDepth(tt.commentID, commentByID)
+			if got != tt.want {
+				t.Errorf("calculateThreadDepth(%d) = %d, want %d", tt.commentID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRReviewProcessor_ShouldSkipReply(t *testing.T) {
+	config := &models.Config{}
+	config.GitHub.BotUsername = "ai-bot"
+	config.GitHub.MaxThreadDepth = 3
+	config.GitHub.KnownBotUsernames = []string{"coderabbitai", "github-actions[bot]"}
+
+	processor := &PRReviewProcessorImpl{
+		config: config,
+		logger: zap.NewNop(),
+	}
+
+	// Build a comment thread
+	comments := []models.GitHubPRComment{
+		{
+			ID:   100,
+			User: models.GitHubUser{Login: "reviewer1"},
+		},
+		{
+			ID:          101,
+			InReplyToID: 100,
+			User:        models.GitHubUser{Login: "ai-bot"},
+		},
+		{
+			ID:          102,
+			InReplyToID: 101,
+			User:        models.GitHubUser{Login: "coderabbitai"}, // AI bot replying to our bot
+		},
+		{
+			ID:          103,
+			InReplyToID: 101,
+			User:        models.GitHubUser{Login: "reviewer1"}, // Human replying to our bot - OK
+		},
+		{
+			ID:          200,
+			InReplyToID: 100,
+			User:        models.GitHubUser{Login: "ai-bot"},
+		},
+		{
+			ID:          201,
+			InReplyToID: 200,
+			User:        models.GitHubUser{Login: "ai-bot"},
+		},
+		{
+			ID:          202,
+			InReplyToID: 201,
+			User:        models.GitHubUser{Login: "ai-bot"},
+		},
+		{
+			ID:          203,
+			InReplyToID: 202,
+			User:        models.GitHubUser{Login: "reviewer1"}, // Exceeds depth limit
+		},
+		{
+			ID:          300,
+			InReplyToID: 0, // Top-level bot comment
+			User:        models.GitHubUser{Login: "coderabbitai"},
+		},
+		{
+			ID:          400,
+			InReplyToID: 999, // Parent doesn't exist in map
+			User:        models.GitHubUser{Login: "coderabbitai"},
+		},
+	}
+
+	commentByID := make(map[int64]*models.GitHubPRComment)
+	for i := range comments {
+		commentByID[comments[i].ID] = &comments[i]
+	}
+
+	tests := []struct {
+		name       string
+		comment    *models.GitHubPRComment
+		wantSkip   bool
+		wantReason string
+	}{
+		{
+			name:       "human comment - should not skip",
+			comment:    &comments[0],
+			wantSkip:   false,
+			wantReason: "",
+		},
+		{
+			name:       "AI bot replying to our bot - should skip",
+			comment:    &comments[2], // coderabbitai replying to ai-bot
+			wantSkip:   true,
+			wantReason: "loop prevention",
+		},
+		{
+			name:       "human replying to our bot - should not skip",
+			comment:    &comments[3], // reviewer1 replying to ai-bot
+			wantSkip:   false,
+			wantReason: "",
+		},
+		{
+			name:       "comment at depth limit - should skip",
+			comment:    &comments[7], // depth is 3 (three ai-bot in chain), at max limit, would exceed if we replied
+			wantSkip:   true,
+			wantReason: "thread depth",
+		},
+		{
+			name:       "top-level bot comment - should not skip",
+			comment:    &comments[8], // Bot comment with no parent (InReplyToID = 0)
+			wantSkip:   false,
+			wantReason: "",
+		},
+		{
+			name:       "bot replying to missing parent - should skip defensively",
+			comment:    &comments[9], // Bot replying to parent not in map
+			wantSkip:   true,
+			wantReason: "defensive skip",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSkip, gotReason := processor.shouldSkipReply(tt.comment, commentByID)
+			if gotSkip != tt.wantSkip {
+				t.Errorf("shouldSkipReply() skip = %v, want %v", gotSkip, tt.wantSkip)
+			}
+			if tt.wantSkip && !strings.Contains(gotReason, tt.wantReason) {
+				t.Errorf("shouldSkipReply() reason = %q, want to contain %q", gotReason, tt.wantReason)
+			}
+		})
+	}
+}
