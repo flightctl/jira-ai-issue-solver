@@ -177,60 +177,71 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 		},
 	}
 
-	feedbackData := processor.collectFeedback(reviews, comments, time.Time{})
+	groupedFeedback := processor.collectFeedback(reviews, comments, time.Time{})
 
-	// Check that feedbackData structure is correct
-	if feedbackData == nil {
-		t.Fatal("feedbackData should not be nil")
-	}
-
-	// Check NewFeedback contains expected content
-	if !strings.Contains(feedbackData.NewFeedback, "NEW Review Feedback") {
-		t.Error("NewFeedback should contain 'NEW Review Feedback'")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "reviewer1") {
-		t.Error("NewFeedback should contain reviewer name")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "commenter1") {
-		t.Error("NewFeedback should contain commenter name")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "src/main.go") {
-		t.Error("NewFeedback should contain file name")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "Please fix the formatting") {
-		t.Error("NewFeedback should contain review body")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "This line needs improvement") {
-		t.Error("NewFeedback should contain line-based comment body")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "Please add more tests") {
-		t.Error("NewFeedback should contain general comment body")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "commenter2") {
-		t.Error("NewFeedback should contain second commenter name")
+	// Check that groupedFeedback structure is correct
+	if groupedFeedback == nil {
+		t.Fatal("groupedFeedback should not be nil")
 	}
 
-	// Check that comment/review IDs are present
-	if !strings.Contains(feedbackData.NewFeedback, "REVIEW_1") {
-		t.Error("NewFeedback should contain REVIEW_1 ID")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "COMMENT_1") {
-		t.Error("NewFeedback should contain COMMENT_1 ID")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "COMMENT_2") {
-		t.Error("NewFeedback should contain COMMENT_2 ID")
+	// Should have 2 groups: "" (general) and "src/main.go"
+	if len(groupedFeedback.Groups) != 2 {
+		t.Errorf("Expected 2 groups, got %d", len(groupedFeedback.Groups))
 	}
 
-	// Check that maps are populated
-	if len(feedbackData.CommentMap) != 2 {
-		t.Errorf("Expected 2 comments in CommentMap, got %d", len(feedbackData.CommentMap))
+	// Check general group (contains review and general comment)
+	generalGroup, ok := groupedFeedback.Groups[""]
+	if !ok {
+		t.Fatal("Should have a general group with key ''")
 	}
-	if len(feedbackData.ReviewCommentMap) != 1 {
-		t.Errorf("Expected 1 review in ReviewCommentMap, got %d", len(feedbackData.ReviewCommentMap))
+	if len(generalGroup.ReviewCommentMap) != 1 {
+		t.Errorf("General group should have 1 review, got %d", len(generalGroup.ReviewCommentMap))
+	}
+	if len(generalGroup.CommentMap) != 1 {
+		t.Errorf("General group should have 1 comment (general comment), got %d", len(generalGroup.CommentMap))
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "NEW Review Feedback") {
+		t.Error("General group NewFeedback should contain 'NEW Review Feedback'")
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "reviewer1") {
+		t.Error("General group should contain reviewer name")
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "Please fix the formatting") {
+		t.Error("General group should contain review body")
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "Please add more tests") {
+		t.Error("General group should contain general comment body")
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "REVIEW_1") {
+		t.Error("General group should contain REVIEW_1 ID")
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "COMMENT_2") {
+		t.Error("General group should contain COMMENT_2 ID (general comment)")
+	}
+
+	// Check src/main.go group (contains file-specific comment)
+	fileGroup, ok := groupedFeedback.Groups["src/main.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/main.go'")
+	}
+	if len(fileGroup.CommentMap) != 1 {
+		t.Errorf("File group should have 1 comment, got %d", len(fileGroup.CommentMap))
+	}
+	if len(fileGroup.ReviewCommentMap) != 0 {
+		t.Errorf("File group should have 0 reviews, got %d", len(fileGroup.ReviewCommentMap))
+	}
+	if !strings.Contains(fileGroup.NewFeedback, "src/main.go") {
+		t.Error("File group should contain file name")
+	}
+	if !strings.Contains(fileGroup.NewFeedback, "This line needs improvement") {
+		t.Error("File group should contain comment body")
+	}
+	if !strings.Contains(fileGroup.NewFeedback, "COMMENT_1") {
+		t.Error("File group should contain COMMENT_1 ID")
 	}
 
 	// Check that Summary is empty (no old items)
-	if feedbackData.Summary != "" {
+	if groupedFeedback.Summary != "" {
 		t.Error("Summary should be empty when there are no old items")
 	}
 }
@@ -270,28 +281,45 @@ func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
 		},
 	}
 
-	feedbackData := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
+	groupedFeedback := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
 
-	// Test single-line comment formatting
+	// Should have 3 groups: "src/main.go", "src/util.go", and "" (general)
+	if len(groupedFeedback.Groups) != 3 {
+		t.Errorf("Expected 3 groups, got %d", len(groupedFeedback.Groups))
+	}
+
+	// Test single-line comment formatting in src/main.go group
+	mainGroup, ok := groupedFeedback.Groups["src/main.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/main.go'")
+	}
 	expectedSingleLine := "**Comment by reviewer1 on src/main.go:42:**"
-	if !strings.Contains(feedbackData.NewFeedback, expectedSingleLine) {
-		t.Errorf("Single-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedSingleLine, feedbackData.NewFeedback)
+	if !strings.Contains(mainGroup.NewFeedback, expectedSingleLine) {
+		t.Errorf("Single-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedSingleLine, mainGroup.NewFeedback)
 	}
 
-	// Test multi-line comment formatting
+	// Test multi-line comment formatting in src/util.go group
+	utilGroup, ok := groupedFeedback.Groups["src/util.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/util.go'")
+	}
 	expectedMultiLine := "**Comment by reviewer2 on src/util.go:95-100:**"
-	if !strings.Contains(feedbackData.NewFeedback, expectedMultiLine) {
-		t.Errorf("Multi-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedMultiLine, feedbackData.NewFeedback)
+	if !strings.Contains(utilGroup.NewFeedback, expectedMultiLine) {
+		t.Errorf("Multi-line comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedMultiLine, utilGroup.NewFeedback)
 	}
 
-	// Test general conversation comment formatting (no path/line)
+	// Test general conversation comment formatting (no path/line) in general group
+	generalGroup, ok := groupedFeedback.Groups[""]
+	if !ok {
+		t.Fatal("Should have a general group with key ''")
+	}
 	expectedGeneral := "**Comment by reviewer3 General comment:**"
-	if !strings.Contains(feedbackData.NewFeedback, expectedGeneral) {
-		t.Errorf("General comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedGeneral, feedbackData.NewFeedback)
+	if !strings.Contains(generalGroup.NewFeedback, expectedGeneral) {
+		t.Errorf("General comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedGeneral, generalGroup.NewFeedback)
 	}
 
 	// Verify we don't have ":0" anywhere in general comment
-	if strings.Contains(feedbackData.NewFeedback, "reviewer3 on :0") || strings.Contains(feedbackData.NewFeedback, "reviewer3 on 0") {
+	if strings.Contains(generalGroup.NewFeedback, "reviewer3 on :0") || strings.Contains(generalGroup.NewFeedback, "reviewer3 on 0") {
 		t.Error("General comment should not contain ':0' or spurious path/line references")
 	}
 }
@@ -320,13 +348,13 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 	}
 
 	feedbackData := &FeedbackData{
-		Summary:          "Previously addressed (for context only - do not re-fix):\n- Old issue was fixed\n",
 		NewFeedback:      "## NEW Review Feedback (Action Required)\n\n### COMMENT_1\n**Comment by reviewer on src/main.go:42:**\nPlease fix the formatting\n\n",
 		CommentMap:       make(map[string]*models.GitHubPRComment),
 		ReviewCommentMap: make(map[string]*models.GitHubReview),
 	}
+	summary := "Previously addressed (for context only - do not re-fix):\n- Old issue was fixed\n"
 
-	prompt := processor.generateFeedbackPrompt(pr, feedbackData)
+	prompt := processor.generateFeedbackPrompt(pr, feedbackData, summary)
 
 	// Check that prompt contains expected content
 	if !strings.Contains(prompt, "Test PR") {
@@ -670,61 +698,81 @@ func TestPRReviewProcessor_CollectFeedbackWithHandlingStatus(t *testing.T) {
 		},
 	}
 
-	feedbackData := processor.collectFeedback(reviews, comments, baseTime)
+	groupedFeedback := processor.collectFeedback(reviews, comments, baseTime)
 
 	// Check that Summary contains old items (truncated)
-	if !strings.Contains(feedbackData.Summary, "Previously addressed") {
+	if !strings.Contains(groupedFeedback.Summary, "Previously addressed") {
 		t.Error("Summary should contain 'Previously addressed' header")
 	}
-	if !strings.Contains(feedbackData.Summary, "Old review") {
+	if !strings.Contains(groupedFeedback.Summary, "Old review") {
 		t.Error("Summary should contain old review content (truncated)")
 	}
-	if !strings.Contains(feedbackData.Summary, "Old comment") {
+	if !strings.Contains(groupedFeedback.Summary, "Old comment") {
 		t.Error("Summary should contain old comment content (truncated)")
 	}
 
-	// Check that NewFeedback contains new items with IDs
-	if !strings.Contains(feedbackData.NewFeedback, "NEW Review Feedback") {
-		t.Error("NewFeedback should contain 'NEW Review Feedback' header")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "New review") {
-		t.Error("NewFeedback should contain new review content")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "New comment") {
-		t.Error("NewFeedback should contain new comment content")
-	}
-	if !strings.Contains(feedbackData.NewFeedback, "General conversation comment") {
-		t.Error("NewFeedback should contain general conversation comment")
+	// Should have 2 groups: "src/main.go" and "" (general)
+	if len(groupedFeedback.Groups) != 2 {
+		t.Errorf("Expected 2 groups, got %d", len(groupedFeedback.Groups))
 	}
 
-	// Check that bot comments/reviews are excluded from both
-	if strings.Contains(feedbackData.Summary, "Bot review") {
+	// Check src/main.go group
+	fileGroup, ok := groupedFeedback.Groups["src/main.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/main.go'")
+	}
+	if len(fileGroup.CommentMap) != 1 {
+		t.Errorf("File group should have 1 new comment, got %d", len(fileGroup.CommentMap))
+	}
+	if !strings.Contains(fileGroup.NewFeedback, "New comment") {
+		t.Error("File group should contain new comment content")
+	}
+
+	// Check general group
+	generalGroup, ok := groupedFeedback.Groups[""]
+	if !ok {
+		t.Fatal("Should have a general group with key ''")
+	}
+	if len(generalGroup.ReviewCommentMap) != 1 {
+		t.Errorf("General group should have 1 new review, got %d", len(generalGroup.ReviewCommentMap))
+	}
+	if len(generalGroup.CommentMap) != 1 {
+		t.Errorf("General group should have 1 new comment, got %d", len(generalGroup.CommentMap))
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "New review") {
+		t.Error("General group should contain new review content")
+	}
+	if !strings.Contains(generalGroup.NewFeedback, "General conversation comment") {
+		t.Error("General group should contain general conversation comment")
+	}
+
+	// Check that bot comments/reviews are excluded from summary
+	if strings.Contains(groupedFeedback.Summary, "Bot review") {
 		t.Error("Summary should not contain bot review")
 	}
-	if strings.Contains(feedbackData.Summary, "Bot comment") {
+	if strings.Contains(groupedFeedback.Summary, "Bot comment") {
 		t.Error("Summary should not contain bot comment")
 	}
-	if strings.Contains(feedbackData.NewFeedback, "Bot review") {
-		t.Error("NewFeedback should not contain bot review")
-	}
-	if strings.Contains(feedbackData.NewFeedback, "Bot comment") {
-		t.Error("NewFeedback should not contain bot comment")
+
+	// Check that bot comments/reviews are excluded from all group NewFeedback
+	for _, group := range groupedFeedback.Groups {
+		if strings.Contains(group.NewFeedback, "Bot review") {
+			t.Error("NewFeedback should not contain bot review")
+		}
+		if strings.Contains(group.NewFeedback, "Bot comment") {
+			t.Error("NewFeedback should not contain bot comment")
+		}
 	}
 
 	// Check that comment/review IDs are present for new items
-	if !strings.Contains(feedbackData.NewFeedback, "REVIEW_") {
-		t.Error("NewFeedback should contain REVIEW_ ID for new review")
+	if !strings.Contains(generalGroup.NewFeedback, "REVIEW_") {
+		t.Error("General group NewFeedback should contain REVIEW_ ID for new review")
 	}
-	if !strings.Contains(feedbackData.NewFeedback, "COMMENT_") {
-		t.Error("NewFeedback should contain COMMENT_ IDs for new comments")
+	if !strings.Contains(fileGroup.NewFeedback, "COMMENT_") {
+		t.Error("File group NewFeedback should contain COMMENT_ IDs for new comments")
 	}
-
-	// Check that maps contain only new items
-	if len(feedbackData.CommentMap) != 2 {
-		t.Errorf("Expected 2 comments in CommentMap (new items only), got %d", len(feedbackData.CommentMap))
-	}
-	if len(feedbackData.ReviewCommentMap) != 1 {
-		t.Errorf("Expected 1 review in ReviewCommentMap (new items only), got %d", len(feedbackData.ReviewCommentMap))
+	if !strings.Contains(generalGroup.NewFeedback, "COMMENT_") {
+		t.Error("General group NewFeedback should contain COMMENT_ IDs for new comments")
 	}
 }
 
@@ -769,34 +817,44 @@ func TestPRReviewProcessor_CollectFeedback_ThreadedReplies(t *testing.T) {
 		},
 	}
 
-	feedbackData := processor.collectFeedback([]models.GitHubReview{}, comments, baseTime)
+	groupedFeedback := processor.collectFeedback([]models.GitHubReview{}, comments, baseTime)
+
+	// Should have 1 group for "src/main.go"
+	if len(groupedFeedback.Groups) != 1 {
+		t.Errorf("Expected 1 group, got %d", len(groupedFeedback.Groups))
+	}
+
+	fileGroup, ok := groupedFeedback.Groups["src/main.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/main.go'")
+	}
 
 	// Verify the follow-up comment is detected
-	if !strings.Contains(feedbackData.NewFeedback, "Actually, please also add error handling") {
+	if !strings.Contains(fileGroup.NewFeedback, "Actually, please also add error handling") {
 		t.Error("NewFeedback should contain the follow-up comment")
 	}
 
 	// Verify threading context is included
-	if !strings.Contains(feedbackData.NewFeedback, "Follow-up to previous discussion") {
+	if !strings.Contains(fileGroup.NewFeedback, "Follow-up to previous discussion") {
 		t.Error("NewFeedback should indicate this is a follow-up")
 	}
 
 	// Verify parent comment context is included
-	if !strings.Contains(feedbackData.NewFeedback, "Previous comment by ai-bot") {
+	if !strings.Contains(fileGroup.NewFeedback, "Previous comment by ai-bot") {
 		t.Error("NewFeedback should include parent comment author")
 	}
-	if !strings.Contains(feedbackData.NewFeedback, "Done. Refactored the function") {
+	if !strings.Contains(fileGroup.NewFeedback, "Done. Refactored the function") {
 		t.Error("NewFeedback should include preview of parent comment")
 	}
 
 	// Verify old comments are in summary
-	if !strings.Contains(feedbackData.Summary, "Please refactor this function") {
+	if !strings.Contains(groupedFeedback.Summary, "Please refactor this function") {
 		t.Error("Summary should contain the original comment (truncated)")
 	}
 
 	// Verify only the new follow-up comment is in the map
-	if len(feedbackData.CommentMap) != 1 {
-		t.Errorf("Expected 1 comment in CommentMap (only the new follow-up), got %d", len(feedbackData.CommentMap))
+	if len(fileGroup.CommentMap) != 1 {
+		t.Errorf("Expected 1 comment in CommentMap (only the new follow-up), got %d", len(fileGroup.CommentMap))
 	}
 }
 

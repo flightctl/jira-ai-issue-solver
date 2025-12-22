@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -44,12 +45,17 @@ func NewPRReviewProcessor(
 	}
 }
 
-// FeedbackData holds structured feedback information
+// FeedbackData holds structured feedback information for a single group
 type FeedbackData struct {
-	Summary          string                             // Summary of previously addressed items
 	NewFeedback      string                             // Formatted NEW feedback with comment IDs
 	CommentMap       map[string]*models.GitHubPRComment // Map of comment IDs to comment objects
 	ReviewCommentMap map[string]*models.GitHubReview    // Map of review IDs to review objects
+}
+
+// GroupedFeedbackData holds feedback grouped by file path
+type GroupedFeedbackData struct {
+	Groups  map[string]*FeedbackData // Key is file path, "" for general/reviews
+	Summary string                   // Overall summary of handled items (shared across all groups)
 }
 
 // ProcessPRReviewFeedback processes feedback for a ticket that has PR review feedback
@@ -108,8 +114,9 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 		return nil
 	}
 
-	// 2. Collect all feedback from reviews and comments (only NEW items, with summary of handled)
-	feedbackData := p.collectFeedback(prDetails.Reviews, prDetails.Comments, lastProcessedTime)
+	// 2. Collect and group feedback from reviews and comments (only NEW items, with summary of handled)
+	// Feedback is grouped by file path for more focused AI processing
+	groupedFeedback := p.collectFeedback(prDetails.Reviews, prDetails.Comments, lastProcessedTime)
 
 	// Get the repository URL from the PR details (our fork)
 	repoURL, err := p.getRepositoryURLFromPR(prDetails)
@@ -118,8 +125,8 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 		return err
 	}
 
-	// Clone the repository and apply fixes
-	err = p.applyFeedbackFixes(ticketKey, repoURL, prDetails, feedbackData, owner, repo, prNumber)
+	// Clone the repository and apply fixes (processes each file group separately)
+	err = p.applyFeedbackFixes(ticketKey, repoURL, prDetails, groupedFeedback, owner, repo, prNumber)
 	if err != nil {
 		p.logger.Error("Failed to apply feedback fixes", zap.String("ticket", ticketKey), zap.Error(err))
 		return err
@@ -293,33 +300,9 @@ func (p *PRReviewProcessorImpl) hasRequestChangesReviews(reviews []models.GitHub
 	return false
 }
 
-// collectFeedback collects feedback, separating NEW items from HANDLED items
-// Returns a FeedbackData struct with summary of old items and detailed NEW items with IDs
-// Note: This function sorts the input slices by ID for deterministic ordering, which mutates the caller's data
-func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) *FeedbackData {
+// buildHandledItemsSummary builds a summary of previously handled feedback items
+func (p *PRReviewProcessorImpl) buildHandledItemsSummary(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) string {
 	var summary strings.Builder
-	var newFeedback strings.Builder
-	commentMap := make(map[string]*models.GitHubPRComment)
-	reviewMap := make(map[string]*models.GitHubReview)
-
-	commentIDCounter := 1
-	reviewIDCounter := 1
-
-	// Sort reviews and comments by ID for deterministic ordering
-	sort.Slice(reviews, func(i, j int) bool {
-		return reviews[i].ID < reviews[j].ID
-	})
-	sort.Slice(comments, func(i, j int) bool {
-		return comments[i].ID < comments[j].ID
-	})
-
-	// Build a lookup map of all comments by ID for threaded reply context
-	commentByID := make(map[int64]*models.GitHubPRComment)
-	for i := range comments {
-		commentByID[comments[i].ID] = &comments[i]
-	}
-
-	// Build summary of HANDLED items
 	var handledItems []string
 
 	for _, review := range reviews {
@@ -353,13 +336,127 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 		}
 	}
 
-	// Build NEW feedback with IDs
+	return summary.String()
+}
+
+// buildGroupFeedbackString builds the NewFeedback string for a single group
+// commentByID parameter contains ALL comments (old and new) for threaded reply context.
+// This is intentional - we want to show parent comment context even if the parent is old/handled.
+func (p *PRReviewProcessorImpl) buildGroupFeedbackString(path string, group *FeedbackData, commentByID map[int64]*models.GitHubPRComment) string {
+	var newFeedback strings.Builder
 	newFeedback.WriteString("## NEW Review Feedback (Action Required)\n\n")
 
-	// Process NEW reviews
-	hasNewReviews := false
-	for i := range reviews {
-		review := &reviews[i]
+	if path != "" {
+		newFeedback.WriteString(fmt.Sprintf("**File: %s**\n\n", path))
+	}
+
+	// Add reviews (only in general group)
+	for reviewID, review := range group.ReviewCommentMap {
+		newFeedback.WriteString(fmt.Sprintf("### %s\n", reviewID))
+		newFeedback.WriteString(fmt.Sprintf("**Review by %s (%s):**\n", review.User.Login, review.State))
+		newFeedback.WriteString(review.Body)
+		newFeedback.WriteString("\n\n")
+	}
+
+	// Add comments
+	for commentID, comment := range group.CommentMap {
+		// Format comment location
+		var location string
+		if comment.Path == "" || comment.Line == 0 {
+			location = "General comment"
+			p.logger.Debug("New general conversation comment",
+				zap.String("user", comment.User.Login),
+				zap.String("id", commentID))
+		} else if comment.StartLine > 0 && comment.StartLine != comment.Line {
+			location = fmt.Sprintf("on %s:%d-%d", comment.Path, comment.StartLine, comment.Line)
+			p.logger.Debug("New multi-line review comment",
+				zap.String("user", comment.User.Login),
+				zap.String("path", comment.Path),
+				zap.Int("start_line", comment.StartLine),
+				zap.Int("end_line", comment.Line),
+				zap.String("id", commentID),
+				zap.String("group", path))
+		} else {
+			location = fmt.Sprintf("on %s:%d", comment.Path, comment.Line)
+			p.logger.Debug("New single-line review comment",
+				zap.String("user", comment.User.Login),
+				zap.String("path", comment.Path),
+				zap.Int("line", comment.Line),
+				zap.String("id", commentID),
+				zap.String("group", path))
+		}
+
+		newFeedback.WriteString(fmt.Sprintf("### %s\n", commentID))
+		newFeedback.WriteString(fmt.Sprintf("**Comment by %s %s:**\n", comment.User.Login, location))
+
+		// Check if this is a threaded reply (follow-up to a previous comment)
+		if comment.InReplyToID != 0 {
+			if parentComment, found := commentByID[comment.InReplyToID]; found {
+				newFeedback.WriteString("*(Follow-up to previous discussion)*\n")
+				newFeedback.WriteString(fmt.Sprintf("Previous comment by %s: \"%s\"\n\n",
+					parentComment.User.Login,
+					truncateString(parentComment.Body, 150)))
+			}
+		}
+
+		newFeedback.WriteString(comment.Body)
+		newFeedback.WriteString("\n\n")
+	}
+
+	if len(group.ReviewCommentMap) == 0 && len(group.CommentMap) == 0 {
+		newFeedback.WriteString("No new feedback.\n")
+	}
+
+	return newFeedback.String()
+}
+
+// collectFeedback collects feedback, separating NEW items from HANDLED items, grouped by file path
+// Returns a GroupedFeedbackData with feedback organized by file path ("" for general/reviews)
+func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) *GroupedFeedbackData {
+	// Create local copies to avoid mutating caller's data
+	reviewsCopy := make([]models.GitHubReview, len(reviews))
+	copy(reviewsCopy, reviews)
+	commentsCopy := make([]models.GitHubPRComment, len(comments))
+	copy(commentsCopy, comments)
+
+	// Sort copies by ID for deterministic ordering
+	sort.Slice(reviewsCopy, func(i, j int) bool {
+		return reviewsCopy[i].ID < reviewsCopy[j].ID
+	})
+	sort.Slice(commentsCopy, func(i, j int) bool {
+		return commentsCopy[i].ID < commentsCopy[j].ID
+	})
+
+	// Build a lookup map of all comments by ID for threaded reply context
+	commentByID := make(map[int64]*models.GitHubPRComment)
+	for i := range commentsCopy {
+		commentByID[commentsCopy[i].ID] = &commentsCopy[i]
+	}
+
+	// Build summary of HANDLED items (shared across all groups)
+	summary := p.buildHandledItemsSummary(reviewsCopy, commentsCopy, lastProcessedTime)
+
+	// Create groups map - key is file path, "" for general/reviews
+	groups := make(map[string]*FeedbackData)
+
+	// Helper function to get or create a group
+	getGroup := func(path string) *FeedbackData {
+		if groups[path] == nil {
+			groups[path] = &FeedbackData{
+				CommentMap:       make(map[string]*models.GitHubPRComment),
+				ReviewCommentMap: make(map[string]*models.GitHubReview),
+			}
+		}
+		return groups[path]
+	}
+
+	// Global counters for unique IDs across all groups
+	commentIDCounter := 1
+	reviewIDCounter := 1
+
+	// Process NEW reviews - add to general ("") group
+	for i := range reviewsCopy {
+		review := &reviewsCopy[i]
 		if review.User.Login == p.config.GitHub.BotUsername {
 			continue
 		}
@@ -368,22 +465,17 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 			continue
 		}
 		if review.SubmittedAt.After(lastProcessedTime) {
-			hasNewReviews = true
 			reviewID := fmt.Sprintf("REVIEW_%d", reviewIDCounter)
 			reviewIDCounter++
-			reviewMap[reviewID] = review
 
-			newFeedback.WriteString(fmt.Sprintf("### %s\n", reviewID))
-			newFeedback.WriteString(fmt.Sprintf("**Review by %s (%s):**\n", review.User.Login, review.State))
-			newFeedback.WriteString(review.Body)
-			newFeedback.WriteString("\n\n")
+			generalGroup := getGroup("")
+			generalGroup.ReviewCommentMap[reviewID] = review
 		}
 	}
 
-	// Process NEW comments
-	hasNewComments := false
-	for i := range comments {
-		comment := &comments[i]
+	// Process NEW comments - group by file path
+	for i := range commentsCopy {
+		comment := &commentsCopy[i]
 		if comment.User.Login == p.config.GitHub.BotUsername {
 			continue
 		}
@@ -392,67 +484,51 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 			continue
 		}
 		if comment.CreatedAt.After(lastProcessedTime) {
-			hasNewComments = true
 			commentID := fmt.Sprintf("COMMENT_%d", commentIDCounter)
 			commentIDCounter++
-			commentMap[commentID] = comment
 
-			// Format comment location
-			var location string
-			if comment.Path == "" || comment.Line == 0 {
-				location = "General comment"
-				p.logger.Debug("New general conversation comment",
-					zap.String("user", comment.User.Login),
-					zap.String("id", commentID))
-			} else if comment.StartLine > 0 && comment.StartLine != comment.Line {
-				location = fmt.Sprintf("on %s:%d-%d", comment.Path, comment.StartLine, comment.Line)
-				p.logger.Debug("New multi-line review comment",
-					zap.String("user", comment.User.Login),
-					zap.String("path", comment.Path),
-					zap.Int("start_line", comment.StartLine),
-					zap.Int("end_line", comment.Line),
-					zap.String("id", commentID))
-			} else {
-				location = fmt.Sprintf("on %s:%d", comment.Path, comment.Line)
-				p.logger.Debug("New single-line review comment",
-					zap.String("user", comment.User.Login),
-					zap.String("path", comment.Path),
-					zap.Int("line", comment.Line),
-					zap.String("id", commentID))
+			// Determine which group this comment belongs to
+			groupKey := ""
+			if comment.Path != "" && comment.Line > 0 {
+				// File-specific comment
+				groupKey = comment.Path
 			}
+			// else: general comment, stays in "" group
 
-			newFeedback.WriteString(fmt.Sprintf("### %s\n", commentID))
-			newFeedback.WriteString(fmt.Sprintf("**Comment by %s %s:**\n", comment.User.Login, location))
-
-			// Check if this is a threaded reply (follow-up to a previous comment)
-			if comment.InReplyToID != 0 {
-				if parentComment, found := commentByID[comment.InReplyToID]; found {
-					newFeedback.WriteString("*(Follow-up to previous discussion)*\n")
-					newFeedback.WriteString(fmt.Sprintf("Previous comment by %s: \"%s\"\n\n",
-						parentComment.User.Login,
-						truncateString(parentComment.Body, 150)))
-				}
-			}
-
-			newFeedback.WriteString(comment.Body)
-			newFeedback.WriteString("\n\n")
+			group := getGroup(groupKey)
+			group.CommentMap[commentID] = comment
 		}
 	}
 
-	if !hasNewReviews && !hasNewComments {
-		newFeedback.WriteString("No new feedback.\n")
+	// Build NewFeedback string for each group using helper function
+	for path, group := range groups {
+		group.NewFeedback = p.buildGroupFeedbackString(path, group, commentByID)
+	}
+
+	// Count total new items and log per-group details for debugging
+	totalReviews := 0
+	totalComments := 0
+	for path, group := range groups {
+		totalReviews += len(group.ReviewCommentMap)
+		totalComments += len(group.CommentMap)
+		groupLabel := path
+		if groupLabel == "" {
+			groupLabel = "general/reviews"
+		}
+		p.logger.Debug("Group feedback collected",
+			zap.String("group", groupLabel),
+			zap.Int("reviews", len(group.ReviewCommentMap)),
+			zap.Int("comments", len(group.CommentMap)))
 	}
 
 	p.logger.Info("Collected feedback",
-		zap.Int("new_reviews", len(reviewMap)),
-		zap.Int("new_comments", len(commentMap)),
-		zap.Int("handled_items", len(handledItems)))
+		zap.Int("groups", len(groups)),
+		zap.Int("new_reviews", totalReviews),
+		zap.Int("new_comments", totalComments))
 
-	return &FeedbackData{
-		Summary:          summary.String(),
-		NewFeedback:      newFeedback.String(),
-		CommentMap:       commentMap,
-		ReviewCommentMap: reviewMap,
+	return &GroupedFeedbackData{
+		Groups:  groups,
+		Summary: summary,
 	}
 }
 
@@ -480,9 +556,12 @@ func (p *PRReviewProcessorImpl) getRepositoryURLFromPR(pr *models.GitHubPRDetail
 	return pr.Head.Repo.CloneURL, nil
 }
 
-// applyFeedbackFixes applies the feedback fixes to the code
-func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, feedbackData *FeedbackData, owner, repo string, prNumber int) error {
-	p.logger.Info("Applying feedback fixes for ticket", zap.String("ticket", ticketKey))
+// applyFeedbackFixes applies the feedback fixes to the code, processing each file group separately
+// TODO: Add test coverage for error paths: AI service errors, type assertion failures, clone/checkout/pull failures
+func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, groupedFeedback *GroupedFeedbackData, owner, repo string, prNumber int) error {
+	p.logger.Info("Applying feedback fixes for ticket",
+		zap.String("ticket", ticketKey),
+		zap.Int("groups", len(groupedFeedback.Groups)))
 
 	// Clone the repository
 	repoDir := fmt.Sprintf("%s/%s-feedback", p.config.TempDir, ticketKey)
@@ -490,6 +569,15 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
+
+	// Clean up repository directory on function exit (success or failure)
+	defer func() {
+		if err := os.RemoveAll(repoDir); err != nil {
+			p.logger.Warn("Failed to clean up repository directory",
+				zap.String("repoDir", repoDir),
+				zap.Error(err))
+		}
+	}()
 
 	// Switch to the existing PR branch
 	branchName := pr.Head.Ref
@@ -504,35 +592,6 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 		return fmt.Errorf("failed to pull latest changes: %w", err)
 	}
 
-	// Generate a prompt for the AI service to fix the code based on feedback
-	prompt := p.generateFeedbackPrompt(pr, feedbackData)
-
-	// Run AI service to generate code fixes and get the AI output
-	aiOutput, err := p.aiService.GenerateCode(prompt, repoDir)
-	if err != nil {
-		return fmt.Errorf("failed to generate code fixes: %w", err)
-	}
-
-	// Parse individual responses from AI output
-	aiOutputStr, ok := aiOutput.(string)
-	if !ok {
-		return fmt.Errorf("AI output has unexpected type %T, expected string", aiOutput)
-	}
-	if aiOutputStr == "" {
-		return fmt.Errorf("AI output is empty")
-	}
-
-	// Build list of expected IDs
-	var expectedIDs []string
-	for id := range feedbackData.CommentMap {
-		expectedIDs = append(expectedIDs, id)
-	}
-	for id := range feedbackData.ReviewCommentMap {
-		expectedIDs = append(expectedIDs, id)
-	}
-
-	responses := p.parseCommentResponses(aiOutputStr, expectedIDs)
-
 	// Get ticket details to get assignee info for co-author
 	ticket, err := p.jiraService.GetTicket(ticketKey)
 	var coAuthorName, coAuthorEmail string
@@ -541,8 +600,79 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 		coAuthorEmail = ticket.Fields.Assignee.EmailAddress
 	}
 
-	// Commit the changes
+	// Accumulate all responses from all groups
+	allResponses := make(map[string]string)
+
+	// Track skipped groups for logging
+	var skippedGroups []string
+
+	// Process each file group separately
+	groupCount := 0
+	for path, feedbackData := range groupedFeedback.Groups {
+		groupCount++
+		groupLabel := path
+		if groupLabel == "" {
+			groupLabel = "general/reviews"
+		}
+
+		p.logger.Info("Processing feedback group",
+			zap.Int("group", groupCount),
+			zap.Int("total_groups", len(groupedFeedback.Groups)),
+			zap.String("file_path", groupLabel),
+			zap.Int("comments", len(feedbackData.CommentMap)),
+			zap.Int("reviews", len(feedbackData.ReviewCommentMap)))
+
+		// Generate a prompt for the AI service to fix the code based on this group's feedback
+		prompt := p.generateFeedbackPrompt(pr, feedbackData, groupedFeedback.Summary)
+
+		// Run AI service to generate code fixes and get the AI output
+		aiOutput, err := p.aiService.GenerateCode(prompt, repoDir)
+		if err != nil {
+			return fmt.Errorf("failed to generate code fixes for group '%s': %w", groupLabel, err)
+		}
+
+		// Parse individual responses from AI output
+		aiOutputStr, ok := aiOutput.(string)
+		if !ok {
+			return fmt.Errorf("AI output has unexpected type %T for group '%s', expected string", aiOutput, groupLabel)
+		}
+		if aiOutputStr == "" {
+			p.logger.Warn("AI output is empty for group", zap.String("group", groupLabel))
+			skippedGroups = append(skippedGroups, groupLabel)
+			continue
+		}
+
+		// Build list of expected IDs for this group
+		var expectedIDs []string
+		for id := range feedbackData.CommentMap {
+			expectedIDs = append(expectedIDs, id)
+		}
+		for id := range feedbackData.ReviewCommentMap {
+			expectedIDs = append(expectedIDs, id)
+		}
+		// Sort for deterministic output in logs and tests
+		sort.Strings(expectedIDs)
+
+		// Parse responses for this group
+		groupResponses := p.parseCommentResponses(aiOutputStr, expectedIDs)
+
+		// Add to accumulated responses
+		for id, response := range groupResponses {
+			allResponses[id] = response
+		}
+
+		p.logger.Info("Completed processing group",
+			zap.String("file_path", groupLabel),
+			zap.Int("responses_parsed", len(groupResponses)))
+	}
+
+	// Commit all changes from all groups in one commit
 	commitMessage := fmt.Sprintf("%s: Apply PR feedback fixes", ticketKey)
+	if len(skippedGroups) > 0 {
+		// Sort for deterministic commit messages
+		sort.Strings(skippedGroups)
+		commitMessage = fmt.Sprintf("%s: Apply PR feedback fixes (skipped: %s)", ticketKey, strings.Join(skippedGroups, ", "))
+	}
 	err = p.githubService.CommitChanges(repoDir, commitMessage, coAuthorName, coAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to commit changes: %w", err)
@@ -554,13 +684,28 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 		return fmt.Errorf("failed to push changes: %w", err)
 	}
 
-	// Post individual replies to comments/reviews
-	successCount, failCount, skippedCount := p.postIndividualReplies(owner, repo, prNumber, pr.Comments, feedbackData, responses)
+	// Post individual replies to comments/reviews using accumulated responses
+	// We need to flatten the grouped feedback back into a single FeedbackData for posting replies
+	flattenedFeedback := &FeedbackData{
+		CommentMap:       make(map[string]*models.GitHubPRComment),
+		ReviewCommentMap: make(map[string]*models.GitHubReview),
+	}
+	for _, group := range groupedFeedback.Groups {
+		for id, comment := range group.CommentMap {
+			flattenedFeedback.CommentMap[id] = comment
+		}
+		for id, review := range group.ReviewCommentMap {
+			flattenedFeedback.ReviewCommentMap[id] = review
+		}
+	}
+
+	successCount, failCount, skippedCount := p.postIndividualReplies(owner, repo, prNumber, pr.Comments, flattenedFeedback, allResponses)
 
 	p.logger.Info("Successfully updated PR with feedback fixes and posted replies",
 		zap.Int("pr_number", pr.Number),
 		zap.String("ticket", ticketKey),
-		zap.Int("replies_attempted", len(responses)),
+		zap.Int("groups_processed", len(groupedFeedback.Groups)),
+		zap.Int("replies_attempted", len(allResponses)),
 		zap.Int("replies_posted", successCount),
 		zap.Int("replies_failed", failCount),
 		zap.Int("replies_skipped", skippedCount))
@@ -568,7 +713,7 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	if failCount > 0 {
 		p.logger.Warn("Some replies failed to post",
 			zap.Int("failed_count", failCount),
-			zap.Int("total_attempted", len(responses)))
+			zap.Int("total_attempted", len(allResponses)))
 	}
 
 	return nil
@@ -764,7 +909,7 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 }
 
 // generateFeedbackPrompt generates a prompt for the AI service to fix code based on feedback
-func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedbackData *FeedbackData) string {
+func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedbackData *FeedbackData, summary string) string {
 	var prompt strings.Builder
 
 	prompt.WriteString("You are a code reviewer and developer. You need to fix the code based on NEW PR review feedback and provide individual responses.\n\n")
@@ -786,9 +931,9 @@ func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetail
 	prompt.WriteString("\n")
 
 	// Include summary of previously addressed items if available
-	if feedbackData.Summary != "" {
+	if summary != "" {
 		prompt.WriteString("## ")
-		prompt.WriteString(feedbackData.Summary)
+		prompt.WriteString(summary)
 		prompt.WriteString("\n")
 	}
 
