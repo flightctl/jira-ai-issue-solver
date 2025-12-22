@@ -340,8 +340,7 @@ func (p *PRReviewProcessorImpl) buildHandledItemsSummary(reviews []models.GitHub
 }
 
 // buildGroupFeedbackString builds the NewFeedback string for a single group
-// commentByID parameter contains ALL comments (old and new) for threaded reply context.
-// This is intentional - we want to show parent comment context even if the parent is old/handled.
+// The commentByID map is used to look up parent comments for threading context.
 func (p *PRReviewProcessorImpl) buildGroupFeedbackString(path string, group *FeedbackData, commentByID map[int64]*models.GitHubPRComment) string {
 	var newFeedback strings.Builder
 	newFeedback.WriteString("## NEW Review Feedback (Action Required)\n\n")
@@ -412,6 +411,9 @@ func (p *PRReviewProcessorImpl) buildGroupFeedbackString(path string, group *Fee
 
 // collectFeedback collects feedback, separating NEW items from HANDLED items, grouped by file path
 // Returns a GroupedFeedbackData with feedback organized by file path ("" for general/reviews)
+//
+// IMPORTANT: This function does not modify the input slices. Internal copies are made before sorting
+// to ensure deterministic behavior without affecting the caller's data.
 func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, comments []models.GitHubPRComment, lastProcessedTime time.Time) *GroupedFeedbackData {
 	// Create local copies to avoid mutating caller's data
 	reviewsCopy := make([]models.GitHubReview, len(reviews))
@@ -428,6 +430,9 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 	})
 
 	// Build a lookup map of all comments by ID for threaded reply context
+	// NOTE: This map contains ALL comments (old and new) intentionally, so that buildGroupFeedbackString
+	// can show parent comment context even if the parent is old/handled. This is critical for
+	// understanding threaded conversations.
 	commentByID := make(map[int64]*models.GitHubPRComment)
 	for i := range commentsCopy {
 		commentByID[commentsCopy[i].ID] = &commentsCopy[i]
@@ -637,7 +642,14 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 			return fmt.Errorf("AI output has unexpected type %T for group '%s', expected string", aiOutput, groupLabel)
 		}
 		if aiOutputStr == "" {
-			p.logger.Warn("AI output is empty for group", zap.String("group", groupLabel))
+			// Log the prompt (truncated) to help debug why AI didn't respond
+			truncatedPrompt := prompt
+			if len(prompt) > 500 {
+				truncatedPrompt = prompt[:500] + "... (truncated)"
+			}
+			p.logger.Warn("AI output is empty for group",
+				zap.String("group", groupLabel),
+				zap.String("prompt_preview", truncatedPrompt))
 			skippedGroups = append(skippedGroups, groupLabel)
 			continue
 		}
@@ -955,6 +967,8 @@ func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetail
 	prompt.WriteString("COMMENT_2_RESPONSE:\n")
 	prompt.WriteString("Brief 1-3 sentence explanation of what you changed.\n")
 	prompt.WriteString("```\n\n")
+	prompt.WriteString("NOTE: Each response should end with a double newline (\\n\\n) to separate it from the next response.\n")
+	prompt.WriteString("The parser stops at the first double newline, so keep responses concise (1-3 sentences).\n\n")
 
 	prompt.WriteString("Now please:\n")
 	prompt.WriteString("1. Apply all the fixes to the code\n")

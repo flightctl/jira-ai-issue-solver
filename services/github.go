@@ -84,6 +84,12 @@ func fileExists(path string) (bool, error) {
 	return false, err
 }
 
+const (
+	// maxPaginationPages is the safety limit for API pagination
+	// 100 pages * 100 items per page = 10,000 items max
+	maxPaginationPages = 100
+)
+
 // GitHubServiceImpl implements the GitHubService interface
 type GitHubServiceImpl struct {
 	config   *models.Config
@@ -1010,7 +1016,7 @@ func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber in
 
 		page++
 		// Safety limit: prevent infinite loop if GitHub API misbehaves
-		if page > 100 { // 100 pages * 100 per page = 10,000 comments max
+		if page > maxPaginationPages {
 			s.logger.Warn("Hit pagination safety limit for PR review comments",
 				zap.Int("page", page),
 				zap.Int("comments_retrieved", len(allComments)))
@@ -1083,7 +1089,7 @@ func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNum
 
 		page++
 		// Safety limit: prevent infinite loop if GitHub API misbehaves
-		if page > 100 { // 100 pages * 100 per page = 10,000 comments max
+		if page > maxPaginationPages {
 			s.logger.Warn("Hit pagination safety limit for PR conversation comments",
 				zap.Int("page", page),
 				zap.Int("comments_retrieved", len(allComments)))
