@@ -87,14 +87,18 @@ type GitHubCreatePRResponse struct {
 // GitHubPRComment represents a PR comment
 // (moved from pr_review_processor.go)
 type GitHubPRComment struct {
-	ID        int64      `json:"id"`
-	User      GitHubUser `json:"user"`
-	Body      string     `json:"body"`
-	Path      string     `json:"path"`
-	Line      int        `json:"line"`
-	HTMLURL   string     `json:"html_url"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID          int64      `json:"id"`
+	InReplyToID int64      `json:"in_reply_to_id,omitempty"` // ID of comment this is replying to (for threaded replies)
+	User        GitHubUser `json:"user"`
+	Body        string     `json:"body"`
+	Path        string     `json:"path"`
+	Line        int        `json:"line"`       // Last line of range for multi-line comments
+	StartLine   int        `json:"start_line"` // First line of range for multi-line comments (0 if single line)
+	Side        string     `json:"side"`       // Which side of diff: "LEFT" or "RIGHT"
+	StartSide   string     `json:"start_side"` // Which side of diff for start line
+	HTMLURL     string     `json:"html_url"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // GitHubPRDetails represents detailed PR information including reviews

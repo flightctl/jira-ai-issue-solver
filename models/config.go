@@ -299,12 +299,14 @@ type Config struct {
 
 	// GitHub configuration
 	GitHub struct {
-		PersonalAccessToken string `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-		BotUsername         string `yaml:"bot_username" mapstructure:"bot_username"`
-		BotEmail            string `yaml:"bot_email" mapstructure:"bot_email"`
-		TargetBranch        string `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-		PRLabel             string `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-		SSHKeyPath          string `yaml:"ssh_key_path" mapstructure:"ssh_key_path"` // Path to SSH private key for commit signing
+		PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+		BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+		BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+		TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+		PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+		SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
+		MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
+		KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
@@ -414,6 +416,8 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.target_branch")
 	bindEnv("github.pr_label")
 	bindEnv("github.ssh_key_path")
+	bindEnv("github.max_thread_depth")
+	bindEnv("github.known_bot_usernames")
 
 	// AI configuration
 	bindEnv("ai_provider")
@@ -620,6 +624,18 @@ func setDefaults(v *viper.Viper) {
 	// GitHub defaults
 	v.SetDefault("github.target_branch", "main")
 	v.SetDefault("github.pr_label", "ai-pr")
+	v.SetDefault("github.max_thread_depth", 5)
+	v.SetDefault("github.known_bot_usernames", []string{
+		"github-actions[bot]",
+		"dependabot[bot]",
+		"renovate[bot]",
+		"coderabbitai",
+		"sourcery-ai",
+		"copilot",
+		"deepsource-io[bot]",
+		"codefactor-io",
+		"codeclimate[bot]",
+	})
 
 	// AI Provider defaults
 	v.SetDefault("ai_provider", "claude")
