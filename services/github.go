@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/bradleyfalzon/ghinstallation/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -30,7 +33,9 @@ type GitHubService interface {
 	CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error
 
 	// PushChanges pushes changes to a remote repository
-	PushChanges(directory, branchName string) error
+	// For PAT auth: forkOwner and repo are not used
+	// For GitHub App auth: forkOwner and repo are required to get the installation token
+	PushChanges(directory, branchName string, forkOwner, repo string) error
 
 	// CreatePullRequest creates a pull request
 	CreatePullRequest(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error)
@@ -67,6 +72,15 @@ type GitHubService interface {
 
 	// ListPRReviews lists all reviews on a PR
 	ListPRReviews(owner, repo string, prNumber int) ([]models.GitHubReview, error)
+
+	// GetInstallationIDForRepo discovers the installation ID for a specific repository (GitHub App only)
+	GetInstallationIDForRepo(owner, repo string) (int64, error)
+
+	// CheckForkExistsForUser checks if a fork exists for a specific fork owner
+	CheckForkExistsForUser(owner, repo, forkOwner string) (bool, error)
+
+	// GetForkCloneURLForUser returns the clone URL for a specific user's fork
+	GetForkCloneURLForUser(owner, repo, forkOwner string) (string, error)
 }
 
 // fileExists returns true if the file exists, false if it does not exist,
@@ -92,10 +106,13 @@ const (
 
 // GitHubServiceImpl implements the GitHubService interface
 type GitHubServiceImpl struct {
-	config   *models.Config
-	client   *http.Client
-	executor models.CommandExecutor
-	logger   *zap.Logger
+	config             *models.Config
+	client             *http.Client
+	appTransport       *ghinstallation.AppsTransport       // For app-level operations
+	installationAuth   map[int64]*ghinstallation.Transport // Per-installation auth
+	installationAuthMu sync.RWMutex                        // Protects installationAuth map
+	executor           models.CommandExecutor
+	logger             *zap.Logger
 }
 
 // gitCommand encapsulates a git command execution with optional stdout/stderr capture.
@@ -175,12 +192,34 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 		commandExecutor = executor[0]
 	}
 
-	return &GitHubServiceImpl{
-		config:   config,
-		client:   &http.Client{},
-		executor: commandExecutor,
-		logger:   logger,
+	service := &GitHubServiceImpl{
+		config:           config,
+		client:           &http.Client{},
+		installationAuth: make(map[int64]*ghinstallation.Transport),
+		executor:         commandExecutor,
+		logger:           logger,
 	}
+
+	// Initialize GitHub App transport if configured
+	if config.GitHub.AppID != 0 && config.GitHub.PrivateKeyPath != "" {
+		// Create Apps Transport for app-level operations
+		appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+			http.DefaultTransport,
+			config.GitHub.AppID,
+			config.GitHub.PrivateKeyPath,
+		)
+		if err != nil {
+			logger.Fatal("Failed to create GitHub App transport", zap.Error(err))
+		}
+		service.appTransport = appTransport
+
+		logger.Info("Using GitHub App authentication",
+			zap.Int64("appID", config.GitHub.AppID))
+	} else {
+		logger.Info("Using Personal Access Token authentication")
+	}
+
+	return service
 }
 
 // CloneRepository clones a repository to a local directory
@@ -247,7 +286,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 	}
 	s.logger.Debug("git config user.name", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-	cmd = newGitCommand(s.executor("git", "config", "user.email", s.config.GitHub.BotEmail), directory, debugEnabled, true)
+	cmd = newGitCommand(s.executor("git", "config", "user.email", s.config.GetBotEmail()), directory, debugEnabled, true)
 
 	if err := cmd.run(); err != nil {
 		return fmt.Errorf("failed to configure git user email: %w, stderr: %s", err, cmd.getStderr())
@@ -307,17 +346,16 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 
 	s.logger.Debug("git config credential.helper", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-	// Set up the credential URL with token
-	token, err := s.getAuthToken()
-	if err != nil {
-		return fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Configure the remote URL to include the token
-	// Extract owner and repo from the URL
+	// Extract owner and repo from the URL first (needed for getting auth token)
 	owner, repo, err := ExtractRepoInfo(repoURL)
 	if err != nil {
 		return fmt.Errorf("failed to extract repo info: %w", err)
+	}
+
+	// Set up the credential URL with token
+	token, err := s.getAuthTokenForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get auth token: %w", err)
 	}
 
 	// Set the remote URL with embedded token
@@ -332,12 +370,51 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 	return nil
 }
 
-// getAuthToken returns the GitHub Personal Access Token for API calls
-func (s *GitHubServiceImpl) getAuthToken() (string, error) {
-	if s.config.GitHub.PersonalAccessToken == "" {
-		return "", fmt.Errorf("the Personal Access Token is not configured")
+// getAuthTokenForRepo gets the appropriate authentication token for a repository
+// For PAT: returns the configured PAT
+// For GitHub App: discovers installation ID and returns installation token
+func (s *GitHubServiceImpl) getAuthTokenForRepo(owner, repo string) (string, error) {
+	// If using PAT, return it
+	if s.config.GitHub.PersonalAccessToken != "" {
+		return s.config.GitHub.PersonalAccessToken, nil
 	}
-	return s.config.GitHub.PersonalAccessToken, nil
+
+	// If using GitHub App, get installation token
+	if s.appTransport != nil {
+		installationID, err := s.GetInstallationIDForRepo(owner, repo)
+		if err != nil {
+			return "", fmt.Errorf("failed to get installation ID: %w", err)
+		}
+
+		// Get installation-specific transport with double-check locking pattern
+		s.installationAuthMu.RLock()
+		transport, ok := s.installationAuth[installationID]
+		s.installationAuthMu.RUnlock()
+
+		if !ok {
+			s.installationAuthMu.Lock()
+			// Double-check pattern: another goroutine may have created it
+			if transport, ok = s.installationAuth[installationID]; !ok {
+				transport = ghinstallation.NewFromAppsTransport(s.appTransport, installationID)
+				s.installationAuth[installationID] = transport
+			}
+			s.installationAuthMu.Unlock()
+		}
+
+		// Get token from transport
+		token, err := transport.Token(context.Background())
+		if err != nil {
+			// Invalidate cached transport on error to allow retry with fresh transport
+			s.installationAuthMu.Lock()
+			delete(s.installationAuth, installationID)
+			s.installationAuthMu.Unlock()
+			return "", fmt.Errorf("failed to get installation token (cache invalidated): %w", err)
+		}
+
+		return token, nil
+	}
+
+	return "", fmt.Errorf("no authentication method configured")
 }
 
 // CreateBranch creates a new branch in a local repository based on the latest target branch
@@ -445,27 +522,28 @@ func (s *GitHubServiceImpl) CommitChanges(directory, message string, coAuthorNam
 }
 
 // PushChanges pushes changes to a remote repository
-func (s *GitHubServiceImpl) PushChanges(directory, branchName string) error {
-	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
-	fn := zap.String("function", "PushChanges")
-
-	// Ensure git is configured to not prompt for credentials
-	cmd := newGitCommand(s.executor("git", "config", "credential.helper", "store"), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to configure git credential helper: %w, stderr: %s", err, cmd.getStderr())
+func (s *GitHubServiceImpl) PushChanges(directory, branchName string, forkOwner, repo string) error {
+	// Get authentication token (supports both PAT and GitHub App)
+	token, err := s.getAuthTokenForRepo(forkOwner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get auth token: %w", err)
 	}
 
-	s.logger.Debug("git config credential.helper", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	// Construct authenticated push URL
+	pushURL := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, forkOwner, repo)
 
-	// Push the changes
-	cmd = newGitCommand(s.executor("git", "push", "-u", "origin", branchName), directory, debugEnabled, true)
+	// Push the changes to the authenticated URL
+	// Use --force-with-lease to safely overwrite if branch exists from previous attempt
+	// Don't capture stdout/stderr to prevent token leakage in logs
+	cmd := newGitCommand(s.executor("git", "push", "--force-with-lease", pushURL, branchName), directory, false, false)
 
 	if err := cmd.run(); err != nil {
 		return fmt.Errorf("failed to push changes: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git push", fn, zap.String("flags", "-u"), zap.String("remote", "origin"), zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Info("Successfully pushed branch",
+		zap.String("branch", branchName),
+		zap.String("fork", fmt.Sprintf("%s/%s", forkOwner, repo)))
 
 	return nil
 }
@@ -474,12 +552,17 @@ func (s *GitHubServiceImpl) PushChanges(directory, branchName string) error {
 func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls", owner, repo)
 
+	// Set maintainer_can_modify to false explicitly
+	// This is required when using GitHub App tokens to create PRs from forks
+	// See: https://github.com/orgs/community/discussions/39178
+	falseValue := false
 	payload := models.GitHubCreatePRRequest{
-		Title:  title,
-		Body:   body,
-		Head:   head,
-		Base:   base,
-		Labels: []string{s.config.GitHub.PRLabel},
+		Title:               title,
+		Body:                body,
+		Head:                head,
+		Base:                base,
+		Labels:              []string{s.config.GitHub.PRLabel},
+		MaintainerCanModify: &falseValue,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -492,23 +575,47 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Get authentication token
-	token, err := s.getAuthToken()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := s.client.Do(req)
+	// Use installation-specific client if using GitHub App
+	// PRs are created on the base repository, so use the base repo's installation
+	var client *http.Client
+	if s.appTransport != nil {
+		// Get installation ID for the base repository (where the PR will be created)
+		installationID, err := s.GetInstallationIDForRepo(owner, repo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get installation ID for %s/%s: %w", owner, repo, err)
+		}
+		client, err = s.getInstallationClient(installationID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get installation client: %w", err)
+		}
+
+		s.logger.Info("Creating PR using base repository's installation",
+			zap.String("owner", owner),
+			zap.String("repo", repo),
+			zap.Int64("installationID", installationID))
+
+		// Installation client's transport automatically adds Authorization header
+		// Do NOT set it manually here
+	} else {
+		// PAT mode - set Authorization header manually
+		token, err := s.getAuthTokenForRepo(owner, repo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get auth token: %w", err)
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
+		client = s.client
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "CreatePullRequest"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "CreatePullRequest"))
 		}
 	}()
 
@@ -528,7 +635,7 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 // CheckForkExists checks if a fork already exists for the given repository
 func (s *GitHubServiceImpl) CheckForkExists(owner, repo string) (exists bool, cloneURL string, err error) {
 	// Get authentication token
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return false, "", fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -550,8 +657,8 @@ func (s *GitHubServiceImpl) CheckForkExists(owner, repo string) (exists bool, cl
 		return false, "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "CheckForkExists"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "CheckForkExists"))
 		}
 	}()
 
@@ -654,7 +761,7 @@ func (s *GitHubServiceImpl) ResetFork(forkCloneURL, directory string) error {
 // ForkRepository forks a repository and returns the clone URL of the fork
 func (s *GitHubServiceImpl) ForkRepository(owner, repo string) (string, error) {
 	// Get authentication token
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -676,8 +783,8 @@ func (s *GitHubServiceImpl) ForkRepository(owner, repo string) (string, error) {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "ForkRepository"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "ForkRepository"))
 		}
 	}()
 
@@ -701,7 +808,7 @@ func (s *GitHubServiceImpl) ForkRepository(owner, repo string) (string, error) {
 // SyncForkWithUpstream syncs a fork with its upstream repository
 func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 	// Get authentication token
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -770,8 +877,8 @@ func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
 		return fmt.Errorf("failed to send sync request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "SyncForkWithUpstream-MergeUpstream"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "SyncForkWithUpstream-MergeUpstream"))
 		}
 	}()
 
@@ -875,7 +982,7 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -889,8 +996,8 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "AddPRComment"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "AddPRComment"))
 		}
 	}()
 
@@ -921,7 +1028,7 @@ func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, c
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -935,8 +1042,8 @@ func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, c
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "ReplyToPRComment"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "ReplyToPRComment"))
 		}
 	}()
 
@@ -962,7 +1069,7 @@ func (s *GitHubServiceImpl) fetchPRReviewCommentsPage(owner, repo string, prNumb
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -975,8 +1082,8 @@ func (s *GitHubServiceImpl) fetchPRReviewCommentsPage(owner, repo string, prNumb
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "fetchPRReviewCommentsPage"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "fetchPRReviewCommentsPage"))
 		}
 	}()
 
@@ -1035,7 +1142,7 @@ func (s *GitHubServiceImpl) fetchPRConversationCommentsPage(owner, repo string, 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -1048,8 +1155,8 @@ func (s *GitHubServiceImpl) fetchPRConversationCommentsPage(owner, repo string, 
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			s.logger.Error("Failed to close response body", zap.Error(err), zap.String("operation", "fetchPRConversationCommentsPage"))
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "fetchPRConversationCommentsPage"))
 		}
 	}()
 
@@ -1165,7 +1272,7 @@ func (s *GitHubServiceImpl) GetPRDetails(owner, repo string, prNumber int) (*mod
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -1218,7 +1325,7 @@ func (s *GitHubServiceImpl) ListPRReviews(owner, repo string, prNumber int) ([]m
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	token, err := s.getAuthToken()
+	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth token: %w", err)
 	}
@@ -1247,4 +1354,206 @@ func (s *GitHubServiceImpl) ListPRReviews(owner, repo string, prNumber int) ([]m
 	}
 
 	return reviews, nil
+}
+
+// GetInstallationIDForRepo discovers the GitHub App installation ID for a specific repository.
+// This is used in GitHub App authentication mode to obtain installation-specific tokens.
+//
+// Parameters:
+//   - owner: The repository owner (user or organization)
+//   - repo: The repository name
+//
+// Returns:
+//   - The installation ID if the GitHub App is installed on the repository
+//   - An error if the app is not configured, not installed, or if the API request fails
+//
+// Example usage:
+//
+//	installationID, err := githubService.GetInstallationIDForRepo("myorg", "myrepo")
+//	if err != nil {
+//	    // Handle error - app may not be installed on this repo
+//	}
+func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64, error) {
+	if s.appTransport == nil {
+		return 0, fmt.Errorf("GitHub App not configured")
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/installation", owner, repo)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Use app transport for this request
+	client := &http.Client{Transport: s.appTransport}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get installation: %w", err)
+	}
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "GetInstallationIDForRepo"))
+		}
+	}()
+
+	if resp.StatusCode == 404 {
+		return 0, fmt.Errorf("GitHub App is not installed on %s/%s", owner, repo)
+	}
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("failed to get installation (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&installation); err != nil {
+		return 0, fmt.Errorf("failed to decode installation response: %w", err)
+	}
+
+	s.logger.Info("Discovered installation ID",
+		zap.String("repo", fmt.Sprintf("%s/%s", owner, repo)),
+		zap.Int64("installationID", installation.ID))
+
+	return installation.ID, nil
+}
+
+// getInstallationClient returns an HTTP client authenticated for a specific installation
+func (s *GitHubServiceImpl) getInstallationClient(installationID int64) (*http.Client, error) {
+	if s.appTransport == nil {
+		// Fallback to PAT
+		return &http.Client{}, nil
+	}
+
+	// Check if we already have a transport for this installation with double-check locking
+	s.installationAuthMu.RLock()
+	transport, ok := s.installationAuth[installationID]
+	s.installationAuthMu.RUnlock()
+
+	if ok {
+		return &http.Client{Transport: transport}, nil
+	}
+
+	// Create new installation transport
+	s.installationAuthMu.Lock()
+	// Double-check pattern: another goroutine may have created it
+	if transport, ok = s.installationAuth[installationID]; !ok {
+		transport = ghinstallation.NewFromAppsTransport(s.appTransport, installationID)
+		s.installationAuth[installationID] = transport
+		s.logger.Debug("Created new installation transport", zap.Int64("installationID", installationID))
+	}
+	s.installationAuthMu.Unlock()
+
+	return &http.Client{Transport: transport}, nil
+}
+
+// CheckForkExistsForUser checks if a specific user has forked a repository.
+// This is used in GitHub App mode to verify that the assignee has created their own fork
+// before attempting to clone and push changes.
+//
+// Parameters:
+//   - owner: The original repository owner
+//   - repo: The original repository name
+//   - forkOwner: The username to check for a fork (e.g., the assignee's GitHub username)
+//
+// Returns:
+//   - true if forkOwner has a valid fork of owner/repo
+//   - false if no fork exists or if the repository exists but is not a fork of the expected parent
+//   - An error if the API request fails or if the repository exists but is not a fork
+//
+// Example usage:
+//
+//	exists, err := githubService.CheckForkExistsForUser("upstream-org", "myrepo", "developer123")
+//	if err != nil {
+//	    return fmt.Errorf("failed to check fork: %w", err)
+//	}
+//	if !exists {
+//	    return fmt.Errorf("developer must fork the repository first")
+//	}
+func (s *GitHubServiceImpl) CheckForkExistsForUser(owner, repo, forkOwner string) (bool, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", forkOwner, repo)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// For discovery, use unauthenticated requests (works for public repos)
+	// GitHub App JWT tokens can't access repository data, only app-level operations
+	// If the repo is private, this will return 404, which is fine - it means fork doesn't exist
+	client := &http.Client{}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to check fork: %w", err)
+	}
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "CheckForkExistsForUser"))
+		}
+	}()
+
+	if resp.StatusCode == 404 {
+		return false, nil
+	}
+
+	if resp.StatusCode == 200 {
+		// Verify it's actually a fork of the expected repo
+		var repoInfo struct {
+			Fork   bool `json:"fork"`
+			Parent struct {
+				FullName string `json:"full_name"`
+			} `json:"parent"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
+			return false, fmt.Errorf("failed to decode repository info: %w", err)
+		}
+
+		expectedParent := fmt.Sprintf("%s/%s", owner, repo)
+		if !repoInfo.Fork || repoInfo.Parent.FullName != expectedParent {
+			return false, fmt.Errorf("%s/%s exists but is not a fork of %s", forkOwner, repo, expectedParent)
+		}
+
+		return true, nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return false, fmt.Errorf("unexpected response (status %d): %s", resp.StatusCode, string(body))
+}
+
+// GetForkCloneURLForUser returns the HTTPS clone URL for a specific user's fork.
+// This verifies the fork exists and returns the URL that can be used to clone it.
+//
+// Parameters:
+//   - owner: The original repository owner
+//   - repo: The original repository name
+//   - forkOwner: The username whose fork URL to retrieve
+//
+// Returns:
+//   - The HTTPS clone URL (e.g., "https://github.com/forkOwner/repo.git")
+//   - An error if the fork doesn't exist or verification fails
+//
+// Example usage:
+//
+//	cloneURL, err := githubService.GetForkCloneURLForUser("upstream-org", "myrepo", "developer123")
+//	if err != nil {
+//	    return fmt.Errorf("fork not available: %w", err)
+//	}
+//	// Use cloneURL to clone the fork
+func (s *GitHubServiceImpl) GetForkCloneURLForUser(owner, repo, forkOwner string) (string, error) {
+	exists, err := s.CheckForkExistsForUser(owner, repo, forkOwner)
+	if err != nil {
+		return "", err
+	}
+
+	if !exists {
+		return "", fmt.Errorf("fork %s/%s does not exist (developer must fork the repository first)", forkOwner, repo)
+	}
+
+	return fmt.Sprintf("https://github.com/%s/%s.git", forkOwner, repo), nil
 }

@@ -65,11 +65,12 @@ type GitHubReview struct {
 
 // GitHubCreatePRRequest represents the request to create a pull request
 type GitHubCreatePRRequest struct {
-	Title  string   `json:"title"`
-	Body   string   `json:"body"`
-	Head   string   `json:"head"`
-	Base   string   `json:"base"`
-	Labels []string `json:"labels,omitempty"`
+	Title               string   `json:"title"`
+	Body                string   `json:"body"`
+	Head                string   `json:"head"`
+	Base                string   `json:"base"`
+	Labels              []string `json:"labels,omitempty"`
+	MaintainerCanModify *bool    `json:"maintainer_can_modify,omitempty"`
 }
 
 // GitHubCreatePRResponse represents the response from creating a pull request

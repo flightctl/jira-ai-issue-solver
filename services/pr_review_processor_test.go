@@ -182,6 +182,7 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 	// Check that groupedFeedback structure is correct
 	if groupedFeedback == nil {
 		t.Fatal("groupedFeedback should not be nil")
+		return
 	}
 
 	// Should have 2 groups: "" (general) and "src/main.go"

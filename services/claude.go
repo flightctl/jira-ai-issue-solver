@@ -204,6 +204,12 @@ func (s *ClaudeServiceImpl) GenerateCodeClaude(prompt string, repoDir string) (*
 	// Set environment variables
 	cmd.Env = os.Environ()
 
+	// Add Anthropic API key if configured (for headless/container environments)
+	if s.config.Claude.APIKey != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("ANTHROPIC_API_KEY=%s", s.config.Claude.APIKey))
+		s.logger.Debug("Added ANTHROPIC_API_KEY to environment")
+	}
+
 	// Create pipes for stdout and stderr
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

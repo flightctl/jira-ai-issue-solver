@@ -121,6 +121,14 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 	// Get the repository URL from the PR details (our fork)
 	repoURL, err := p.getRepositoryURLFromPR(prDetails)
 	if err != nil {
+		// Check if this is a legacy PR with missing repository (deleted fork)
+		if strings.Contains(err.Error(), "legacy PR with deleted fork") {
+			p.logger.Info("Skipping legacy PR with deleted fork",
+				zap.String("ticket", ticketKey),
+				zap.Int("pr_number", prNumber),
+				zap.String("pr_url", prURL))
+			return nil // Skip gracefully without error
+		}
 		p.logger.Error("Failed to get repository URL from PR", zap.String("ticket", ticketKey), zap.Error(err))
 		return err
 	}
@@ -552,8 +560,9 @@ func truncateString(s string, maxLen int) string {
 // getRepositoryURLFromPR gets the repository URL from the PR details (our fork)
 func (p *PRReviewProcessorImpl) getRepositoryURLFromPR(pr *models.GitHubPRDetails) (string, error) {
 	// The PR head repo should be our fork
+	// If CloneURL is empty, this is likely a legacy PR where the fork was deleted
 	if pr.Head.Repo.CloneURL == "" {
-		return "", fmt.Errorf("no clone URL found in PR head repository")
+		return "", fmt.Errorf("no clone URL found in PR head repository (likely legacy PR with deleted fork)")
 	}
 
 	// Return the clone URL as-is, let the GitHub service handle authentication
@@ -691,7 +700,9 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	}
 
 	// Push the changes to update the original PR
-	err = p.githubService.PushChanges(repoDir, branchName)
+	// Get fork owner from PR head (the branch that was created for the PR)
+	forkOwner := pr.Head.Repo.Owner.Login
+	err = p.githubService.PushChanges(repoDir, branchName, forkOwner, repo)
 	if err != nil {
 		return fmt.Errorf("failed to push changes: %w", err)
 	}

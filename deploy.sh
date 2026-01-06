@@ -194,7 +194,6 @@ parse_env_vars_from_config() {
     export JIRA_STATUS_TRANSITIONS_TASK_IN_PROGRESS=$(yq eval '.jira.status_transitions.Task.in_progress' config.yaml)
     export JIRA_STATUS_TRANSITIONS_TASK_IN_REVIEW=$(yq eval '.jira.status_transitions.Task.in_review' config.yaml)
     export GITHUB_BOT_USERNAME=$(yq eval '.github.bot_username' config.yaml)
-    export GITHUB_BOT_EMAIL=$(yq eval '.github.bot_email' config.yaml)
     export GITHUB_TARGET_BRANCH=$(yq eval '.github.target_branch' config.yaml)
     export GITHUB_PR_LABEL=$(yq eval '.github.pr_label' config.yaml)
     export CLAUDE_CLI_PATH=$(yq eval '.claude.cli_path' config.yaml)

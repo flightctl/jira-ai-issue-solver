@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 
@@ -274,11 +275,12 @@ type ProjectConfig struct {
 }
 
 type JiraConfig struct {
-	BaseURL         string          `yaml:"base_url" mapstructure:"base_url"`
-	Username        string          `yaml:"username" mapstructure:"username"`
-	APIToken        string          `yaml:"api_token" mapstructure:"api_token"`
-	IntervalSeconds int             `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
-	Projects        []ProjectConfig `yaml:"projects" mapstructure:"projects"`
+	BaseURL                  string            `yaml:"base_url" mapstructure:"base_url"`
+	Username                 string            `yaml:"username" mapstructure:"username"`
+	APIToken                 string            `yaml:"api_token" mapstructure:"api_token"`
+	IntervalSeconds          int               `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
+	AssigneeToGitHubUsername map[string]string `yaml:"assignee_to_github_username" mapstructure:"assignee_to_github_username"`
+	Projects                 []ProjectConfig   `yaml:"projects" mapstructure:"projects"`
 }
 
 // Config represents the application configuration
@@ -299,14 +301,21 @@ type Config struct {
 
 	// GitHub configuration
 	GitHub struct {
-		PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-		BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-		BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-		TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-		PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-		SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
-		MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
-		KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
+		// Legacy PAT authentication (deprecated, use GitHub App instead)
+		PersonalAccessToken string `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+
+		// GitHub App authentication (recommended)
+		AppID          int64  `yaml:"app_id" mapstructure:"app_id"`
+		PrivateKeyPath string `yaml:"private_key_path" mapstructure:"private_key_path"`
+
+		// Common fields
+		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"` // Optional: auto-constructed for GitHub App mode
+		TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
+		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
+		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
@@ -319,6 +328,7 @@ type Config struct {
 		DangerouslySkipPermissions bool   `yaml:"dangerously_skip_permissions" mapstructure:"dangerously_skip_permissions" default:"false"`
 		AllowedTools               string `yaml:"allowed_tools" mapstructure:"allowed_tools" default:"Bash Edit"`
 		DisallowedTools            string `yaml:"disallowed_tools" mapstructure:"disallowed_tools" default:"Python"`
+		APIKey                     string `yaml:"api_key" mapstructure:"api_key"` // Anthropic API key for headless/container environments
 	} `yaml:"claude" mapstructure:"claude"`
 
 	// Gemini CLI configuration
@@ -369,6 +379,24 @@ func (c *Config) GetAllProjectKeys() []string {
 	return allKeys
 }
 
+// GetBotEmail returns the bot email, constructing it from app_id and bot_username for GitHub App mode if not explicitly set
+// For GitHub App: {app_id}+{bot_username}[bot]@users.noreply.github.com
+// For PAT mode: uses the explicitly configured bot_email
+func (c *Config) GetBotEmail() string {
+	// If bot_email is explicitly set, use it (PAT mode or manual override)
+	if c.GitHub.BotEmail != "" {
+		return c.GitHub.BotEmail
+	}
+
+	// For GitHub App mode, construct from app_id and bot_username
+	if c.GitHub.AppID > 0 {
+		return fmt.Sprintf("%d+%s[bot]@users.noreply.github.com", c.GitHub.AppID, c.GitHub.BotUsername)
+	}
+
+	// Fallback: return empty string (will be caught by validation)
+	return ""
+}
+
 // LoadConfig loads configuration from multiple sources with Viper
 // Priority order: Environment variables > Config file > .env file > Defaults
 func LoadConfig(configPath string) (*Config, error) {
@@ -404,6 +432,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("jira.username")
 	bindEnv("jira.api_token")
 	bindEnv("jira.interval_seconds")
+	bindEnv("jira.assignee_to_github_username")
 	bindEnv("jira.disable_error_comments")
 	bindEnv("jira.git_pull_request_field_name")
 	bindEnv("jira.status_transitions")
@@ -411,6 +440,8 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// GitHub configuration
 	bindEnv("github.personal_access_token")
+	bindEnv("github.app_id")
+	bindEnv("github.private_key_path")
 	bindEnv("github.bot_username")
 	bindEnv("github.bot_email")
 	bindEnv("github.target_branch")
@@ -725,17 +756,40 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.GitHub.PersonalAccessToken != "" || c.GitHub.BotUsername != "" || c.GitHub.BotEmail != "" {
-		// If any GitHub config is provided, validate all required fields
-		if c.GitHub.PersonalAccessToken == "" {
-			return errors.New("github.personal_access_token is required when GitHub configuration is provided")
+	// GitHub validation - either PAT or App credentials required
+	hasPAT := c.GitHub.PersonalAccessToken != ""
+	hasAppCreds := c.GitHub.AppID > 0 && c.GitHub.PrivateKeyPath != ""
+
+	if !hasPAT && !hasAppCreds {
+		return errors.New("either github.personal_access_token or github app credentials (app_id, private_key_path) must be provided")
+	}
+
+	if hasPAT && hasAppCreds {
+		return errors.New("cannot use both github.personal_access_token and github app credentials - choose one authentication method")
+	}
+
+	// Validate app credentials if provided
+	if hasAppCreds {
+		if c.GitHub.AppID <= 0 {
+			return errors.New("github.app_id must be a positive integer")
 		}
-		if c.GitHub.BotUsername == "" {
-			return errors.New("github.bot_username is required when GitHub configuration is provided")
+		if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+			return fmt.Errorf("github.private_key_path file does not exist: %s", c.GitHub.PrivateKeyPath)
 		}
-		if c.GitHub.BotEmail == "" {
-			return errors.New("github.bot_email is required when GitHub configuration is provided")
-		}
+	}
+
+	if c.GitHub.BotUsername == "" {
+		return errors.New("github.bot_username is required")
+	}
+
+	// Validate bot email can be determined
+	if c.GetBotEmail() == "" {
+		return errors.New("github.bot_email is required (either set explicitly for PAT mode, or use GitHub App with app_id)")
+	}
+
+	// Validate Jira assignee mapping if using GitHub App
+	if hasAppCreds && len(c.Jira.AssigneeToGitHubUsername) == 0 {
+		return errors.New("jira.assignee_to_github_username is required when using GitHub App (needed to map assignees to forks)")
 	}
 
 	return nil

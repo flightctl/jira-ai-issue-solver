@@ -13,7 +13,16 @@ jira:
   username: your-username
   api_token: your-jira-api-token
   interval_seconds: 300
-  
+
+  # Map Jira assignee email/username to GitHub username
+  # Required when using GitHub App authentication
+  # The bot will use the assignee's fork instead of its own fork
+  # NOTE: Email addresses MUST be quoted to avoid YAML parsing errors
+  assignee_to_github_username:
+    "alice@yourcompany.com": alice
+    "bob.smith@yourcompany.com": bob-github
+    "charlie@yourcompany.com": charlie123
+
   # Project-specific configurations
   # Each project can have its own settings for components, status transitions, etc.
   projects:
@@ -68,13 +77,51 @@ jira:
         # flightctl: https://github.com/your-org/flightctl-lowercase.git
 
 # GitHub Configuration
+# ⚠️  IMPORTANT: Choose EXACTLY ONE authentication method below
+# ⚠️  Using both personal_access_token AND GitHub App credentials will cause a validation error
+# ⚠️  Choose ONE: either personal_access_token OR (app_id + private_key_path)
 github:
-  personal_access_token: your-personal-access-token-here
-  bot_username: your-org-ai-bot
-  bot_email: ai-bot@your-org.com
+  # ===== OPTION 1: Personal Access Token (PAT) Authentication (Legacy) =====
+  # Use this for simple setups where the bot has its own fork
+  # Uncomment the lines below and comment out app_id/private_key_path if using PAT:
+  # personal_access_token: your-personal-access-token-here
+  # bot_email: "your-bot-account@example.com"  # Required for PAT mode
+
+  # ===== OPTION 2: GitHub App Authentication (Recommended) =====
+  # Use this for fork-based workflow where developers install the app on their forks
+  # Advantages: Better permissions, auto-rotating tokens, developers can collaborate on bot's branches
+  app_id: 123456  # Your GitHub App ID from https://github.com/settings/apps/YOUR-APP-NAME
+  private_key_path: "/path/to/your-github-app-private-key.pem"  # Path to the .pem file downloaded when creating the app
+
+  # ===== Common Configuration (Required for both methods) =====
+
+  # Bot username (REQUIRED)
+  # For PAT: Use your bot account username
+  # For GitHub App: Use the app name with [bot] suffix (e.g., "jira-ai-issue-solver[bot]")
+  # Note: For GitHub App mode, bot_email is automatically constructed from app_id and bot_username
+  bot_username: jira-ai-issue-solver[bot]
+
   target_branch: main
   pr_label: ai-pr
-  # ssh_key_path: "/path/to/ssh_signing_key"  # Optional: Path to SSH private key for commit signing
+
+  # Optional: Path to SSH private key for commit signing
+  # ssh_key_path: "/path/to/ssh_signing_key"
+
+  # Bot loop prevention settings
+  max_thread_depth: 5  # Maximum depth of bot reply threads (prevents infinite loops)
+
+  # List of known bot usernames to ignore (prevents bot-to-bot conversations)
+  # Add any additional code review bots your team uses
+  known_bot_usernames:
+    - "github-actions[bot]"
+    - "dependabot[bot]"
+    - "renovate[bot]"
+    - "coderabbitai"
+    - "sourcery-ai"
+    - "copilot"
+    - "deepsource-io[bot]"
+    - "codefactor-io"
+    - "codeclimate[bot]"
 
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
@@ -90,6 +137,9 @@ claude:
   dangerously_skip_permissions: true
   allowed_tools: "Bash Edit"
   disallowed_tools: "Python"
+  # API key for headless/container environments (get from https://console.anthropic.com/settings/keys)
+  # If not set, Claude CLI will use interactive login (only works in non-container environments)
+  api_key: "your-anthropic-api-key-here"  # sk-ant-api03-...
 
 # Gemini CLI Configuration (used when ai_provider: gemini)
 gemini:

@@ -5,6 +5,37 @@ import (
 	"testing"
 )
 
+// getValidGitHubConfig returns a valid GitHub configuration for testing (using PAT)
+func getValidGitHubConfig() struct {
+	PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+	AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+	PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+	BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+	BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+	TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+	PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+	SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+	MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+	KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+} {
+	return struct {
+		PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+		AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+		PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+		BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+		BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+		TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+		PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+		SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+		MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+		KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+	}{
+		PersonalAccessToken: "ghp_test123",
+		BotEmail:            "test@example.com",
+		BotUsername:         "test-bot",
+	}
+}
+
 func TestConfig_validateStatusTransitions(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -40,6 +71,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: false,
 		},
@@ -65,6 +97,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: true,
 		},
@@ -90,6 +123,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: true,
 		},
@@ -115,6 +149,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: true,
 		},
@@ -134,6 +169,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: true,
 		},
@@ -159,6 +195,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: true,
 		},
@@ -189,6 +226,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
+				GitHub: getValidGitHubConfig(),
 			},
 			wantErr: true,
 		},
@@ -226,6 +264,9 @@ jira:
       component_to_repo:
         test: https://github.com/test/repo.git
 github:
+  personal_access_token: "ghp_test123"
+  app_id: 123456
+  bot_username: "test-bot"
   target_branch: "develop"
 `
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
@@ -251,6 +292,7 @@ github:
 	projectConfig := config.GetProjectConfigForTicket("PROJ1-123")
 	if projectConfig == nil {
 		t.Fatal("Project config not found")
+		return
 	}
 	bugTransitions := projectConfig.StatusTransitions.GetStatusTransitions("bug")
 	if bugTransitions.Todo != "To Do" {
@@ -290,6 +332,10 @@ jira:
           in_review: "In Review"
       component_to_repo:
         test: https://github.com/test/repo.git
+github:
+  personal_access_token: "ghp_test123"
+  app_id: 123456
+  bot_username: "test-bot"
 `
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -340,6 +386,10 @@ jira:
         flightctl: https://github.com/your-org/flightctl-lowercase.git
         Backend: https://github.com/your-org/backend.git
         backend: https://github.com/your-org/backend-lowercase.git
+github:
+  personal_access_token: "ghp_test123"
+  app_id: 123456
+  bot_username: "test-bot"
 `
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -364,6 +414,7 @@ jira:
 	projectConfig := config.GetProjectConfigForTicket("PROJ1-123")
 	if projectConfig == nil {
 		t.Fatal("Project config not found")
+		return
 	}
 
 	// Verify component mappings (keys converted to lowercase by Viper)
@@ -404,6 +455,9 @@ jira:
       component_to_repo:
         test: https://github.com/test/repo.git
 github:
+  personal_access_token: "ghp_test123"
+  app_id: 123456
+  bot_username: "test-bot"
   target_branch: "develop"
 `
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
@@ -429,6 +483,7 @@ github:
 	projectConfig := config.GetProjectConfigForTicket("PROJ1-123")
 	if projectConfig == nil {
 		t.Fatal("Project config not found")
+		return
 	}
 	bugTransitions := projectConfig.StatusTransitions.GetStatusTransitions("bug")
 	if bugTransitions.Todo != "Open" {
@@ -558,6 +613,10 @@ jira:
           in_review: "In Review"
       component_to_repo:
         "test-component": "https://github.com/test/repo"
+github:
+  personal_access_token: "ghp_test123"
+  app_id: 123456
+  bot_username: "test-bot"
 `
 
 	tempFile, err := os.CreateTemp("", "config_test_*.yaml")
@@ -585,4 +644,502 @@ jira:
 	if config.AI.GenerateDocumentation {
 		t.Error("Expected generate_documentation to be false, got true")
 	}
+}
+
+// TestConfig_GitHubAppAuthentication tests GitHub App configuration and validation
+func TestConfig_GitHubAppAuthentication(t *testing.T) {
+	// Create a temporary private key file for testing
+	tempKeyFile, err := os.CreateTemp("", "github-app-key-*.pem")
+	if err != nil {
+		t.Fatalf("Failed to create temp key file: %v", err)
+	}
+	defer func() { _ = os.Remove(tempKeyFile.Name()) }()
+
+	// Write a dummy private key content
+	if _, err := tempKeyFile.WriteString("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"); err != nil {
+		t.Fatalf("Failed to write to temp key file: %v", err)
+	}
+	if err := tempKeyFile.Close(); err != nil {
+		t.Fatalf("Failed to close temp key file: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid GitHub App configuration",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					AssigneeToGitHubUsername: map[string]string{
+						"alice@example.com": "alice",
+						"bob@example.com":   "bob",
+					},
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					AppID:          123456,
+					PrivateKeyPath: tempKeyFile.Name(),
+					BotUsername:    "test-bot[bot]",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "GitHub App and PAT both configured (should fail)",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					AssigneeToGitHubUsername: map[string]string{
+						"alice@example.com": "alice",
+					},
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					PersonalAccessToken: "ghp_test123",
+					AppID:               123456,
+					PrivateKeyPath:      tempKeyFile.Name(),
+					BotUsername:         "test-bot",
+				},
+			},
+			wantErr: true,
+			errMsg:  "cannot use both github.personal_access_token and github app credentials",
+		},
+		{
+			name: "GitHub App without app_id (should fail)",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					PrivateKeyPath: tempKeyFile.Name(),
+					BotUsername:    "test-bot",
+				},
+			},
+			wantErr: true,
+			errMsg:  "either github.personal_access_token or github app credentials",
+		},
+		{
+			name: "GitHub App with non-existent private key file (should fail)",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					AssigneeToGitHubUsername: map[string]string{
+						"alice@example.com": "alice",
+					},
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					AppID:          123456,
+					PrivateKeyPath: "/non/existent/path/key.pem",
+					BotUsername:    "test-bot",
+				},
+			},
+			wantErr: true,
+			errMsg:  "github.private_key_path file does not exist",
+		},
+		{
+			name: "GitHub App without assignee mapping (should fail)",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					// No AssigneeToGitHubUsername mapping
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					AppID:          123456,
+					PrivateKeyPath: tempKeyFile.Name(),
+					BotUsername:    "test-bot",
+				},
+			},
+			wantErr: true,
+			errMsg:  "jira.assignee_to_github_username is required when using GitHub App",
+		},
+		{
+			name: "valid PAT authentication (should still work)",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					PersonalAccessToken: "ghp_test123",
+					AppID:               123456,
+					BotUsername:         "test-bot",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "neither PAT nor App credentials (should fail)",
+			config: Config{
+				AIProvider: "claude",
+				Logging: struct {
+					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
+					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
+				}{
+					Level:  LogLevelInfo,
+					Format: LogFormatConsole,
+				},
+				Jira: JiraConfig{
+					BaseURL:  "https://example.com",
+					Username: "testuser",
+					APIToken: "testtoken",
+					Projects: []ProjectConfig{
+						{
+							ProjectKeys: ProjectKeys{"PROJ1"},
+							StatusTransitions: TicketTypeStatusTransitions{
+								"Bug": StatusTransitions{
+									Todo:       "To Do",
+									InProgress: "In Progress",
+									InReview:   "In Review",
+								},
+							},
+							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+						},
+					},
+				},
+				GitHub: struct {
+					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
+					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					AppID:       123456,
+					BotUsername: "test-bot",
+				},
+			},
+			wantErr: true,
+			errMsg:  "either github.personal_access_token or github app credentials",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Config.validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if err == nil || !contains(err.Error(), tt.errMsg) {
+					t.Errorf("Config.validate() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadConfig_WithAssigneeToGitHubUsername tests loading assignee_to_github_username from YAML
+func TestLoadConfig_WithAssigneeToGitHubUsername(t *testing.T) {
+	// Create a temporary private key file for GitHub App
+	tempKeyFile, err := os.CreateTemp("", "github-app-key-*.pem")
+	if err != nil {
+		t.Fatalf("Failed to create temp key file: %v", err)
+	}
+	defer func() { _ = os.Remove(tempKeyFile.Name()) }()
+
+	if _, err := tempKeyFile.WriteString("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"); err != nil {
+		t.Fatalf("Failed to write to temp key file: %v", err)
+	}
+	if err := tempKeyFile.Close(); err != nil {
+		t.Fatalf("Failed to close temp key file: %v", err)
+	}
+
+	// Create a temporary config file with assignee_to_github_username
+	configContent := `
+logging:
+  level: info
+  format: console
+ai_provider: "claude"
+jira:
+  base_url: "https://example.com"
+  username: "testuser"
+  api_token: "testtoken"
+  assignee_to_github_username:
+    "alice@example.com": alice-github
+    "bob.smith@company.com": bob-smith
+    "charlie+tag@domain.org": charlie
+  projects:
+    - project_keys:
+        - "PROJ1"
+      status_transitions:
+        Bug:
+          todo: "To Do"
+          in_progress: "In Progress"
+          in_review: "In Review"
+      component_to_repo:
+        test: https://github.com/test/repo.git
+github:
+  app_id: 123456
+  private_key_path: "` + tempKeyFile.Name() + `"
+  bot_username: "test-bot[bot]"
+`
+	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
+
+	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load the config
+	config, err := LoadConfig(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Verify assignee_to_github_username was loaded correctly
+	if config.Jira.AssigneeToGitHubUsername == nil {
+		t.Fatal("AssigneeToGitHubUsername is nil")
+	}
+
+	expectedMappings := map[string]string{
+		"alice@example.com":      "alice-github",
+		"bob.smith@company.com":  "bob-smith",
+		"charlie+tag@domain.org": "charlie",
+	}
+
+	if len(config.Jira.AssigneeToGitHubUsername) != len(expectedMappings) {
+		t.Errorf("Expected %d mappings, got %d", len(expectedMappings), len(config.Jira.AssigneeToGitHubUsername))
+	}
+
+	for email, expectedUsername := range expectedMappings {
+		actualUsername, exists := config.Jira.AssigneeToGitHubUsername[email]
+		if !exists {
+			t.Errorf("Expected mapping for %s not found", email)
+			continue
+		}
+		if actualUsername != expectedUsername {
+			t.Errorf("For email %s: expected username %s, got %s", email, expectedUsername, actualUsername)
+		}
+	}
+}
+
+// contains checks if a string contains a substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

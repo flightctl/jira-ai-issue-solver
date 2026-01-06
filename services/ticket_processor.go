@@ -43,6 +43,8 @@ func NewTicketProcessor(
 }
 
 // ProcessTicket processes a Jira ticket
+//
+//nolint:gocyclo // High complexity is inherent to workflow orchestration
 func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	p.logger.Info("Processing ticket", zap.String("ticket", ticketKey))
 
@@ -136,36 +138,118 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		zap.String("owner", owner),
 		zap.String("repo", repo))
 
-	// Check if a fork already exists
-	exists, forkURL, err := p.githubService.CheckForkExists(owner, repo)
-	if err != nil {
-		p.logger.Error("Failed to check if fork exists",
-			zap.String("ticket", ticketKey),
-			zap.String("owner", owner),
-			zap.String("repo", repo),
-			zap.Error(err))
-		p.handleFailure(ticketKey, fmt.Sprintf("Failed to check if fork exists: %v", err))
-		return err
-	}
+	// Determine which fork to use based on authentication method
+	var forkOwner string
+	var forkURL string
 
-	if !exists {
-		// Create a fork
-		forkURL, err = p.githubService.ForkRepository(owner, repo)
+	if p.config.GitHub.AppID != 0 {
+		// GitHub App mode: use assignee's fork
+		if ticket.Fields.Assignee == nil {
+			p.handleFailure(ticketKey, "Ticket has no assignee (required for GitHub App workflow)")
+			return fmt.Errorf("ticket %s has no assignee", ticketKey)
+		}
+
+		assigneeEmail := ticket.Fields.Assignee.EmailAddress
+		githubUsername, ok := p.config.Jira.AssigneeToGitHubUsername[assigneeEmail]
+		if !ok {
+			p.handleFailure(ticketKey, fmt.Sprintf("No GitHub username mapping found for assignee %s", assigneeEmail))
+			return fmt.Errorf("no GitHub username mapping found for assignee %s (add to config: jira.assignee_to_github_username)", assigneeEmail)
+		}
+
+		forkOwner = githubUsername
+		p.logger.Info("Using assignee's fork (GitHub App mode)",
+			zap.String("ticket", ticketKey),
+			zap.String("assignee", assigneeEmail),
+			zap.String("githubUsername", githubUsername))
+
+		// Check if assignee's fork exists
+		exists, err := p.githubService.CheckForkExistsForUser(owner, repo, forkOwner)
 		if err != nil {
-			p.logger.Error("Failed to create fork",
+			p.logger.Error("Failed to check if fork exists",
+				zap.String("ticket", ticketKey),
+				zap.String("forkOwner", forkOwner),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to check if fork exists: %v", err))
+			return err
+		}
+
+		if !exists {
+			message := fmt.Sprintf(
+				"Setup Required: The assignee (%s) needs to:\n"+
+					"1. Fork the repository %s/%s on GitHub\n"+
+					"2. Install the GitHub App on their fork\n\n"+
+					"Please contact your GitHub administrator if you need help with this setup.",
+				assigneeEmail, owner, repo)
+			p.handleFailure(ticketKey, message)
+			return fmt.Errorf("fork %s/%s does not exist", forkOwner, repo)
+		}
+
+		// Verify GitHub App is installed on the fork
+		_, err = p.githubService.GetInstallationIDForRepo(forkOwner, repo)
+		if err != nil {
+			message := fmt.Sprintf(
+				"GitHub App Installation Required: The assignee (%s) has forked the repository but needs to:\n"+
+					"1. Install the GitHub App on their fork %s/%s\n\n"+
+					"Installation instructions:\n"+
+					"- Go to https://github.com/%s/%s/settings/installations\n"+
+					"- Install the app to enable automated code generation\n\n"+
+					"Error details: %v",
+				assigneeEmail, forkOwner, repo, forkOwner, repo, err)
+			p.handleFailure(ticketKey, message)
+			return fmt.Errorf("GitHub App not installed on fork %s/%s: %w", forkOwner, repo, err)
+		}
+
+		// Get fork clone URL
+		forkURL, err = p.githubService.GetForkCloneURLForUser(owner, repo, forkOwner)
+		if err != nil {
+			p.logger.Error("Failed to get fork clone URL",
+				zap.String("ticket", ticketKey),
+				zap.String("forkOwner", forkOwner),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to get fork clone URL: %v", err))
+			return err
+		}
+
+		p.logger.Info("Using assignee's fork",
+			zap.String("ticket", ticketKey),
+			zap.String("fork", fmt.Sprintf("%s/%s", forkOwner, repo)))
+	} else {
+		// PAT mode: use bot's fork (legacy behavior)
+		forkOwner = p.config.GitHub.BotUsername
+		p.logger.Info("Using bot's fork (PAT mode)", zap.String("ticket", ticketKey))
+
+		// Check if a fork already exists
+		var exists bool
+		exists, forkURL, err = p.githubService.CheckForkExists(owner, repo)
+		if err != nil {
+			p.logger.Error("Failed to check if fork exists",
 				zap.String("ticket", ticketKey),
 				zap.String("owner", owner),
 				zap.String("repo", repo),
 				zap.Error(err))
-			p.handleFailure(ticketKey, fmt.Sprintf("Failed to create fork: %v", err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to check if fork exists: %v", err))
 			return err
 		}
-		p.logger.Info("Fork created successfully, waiting for fork to be ready",
-			zap.String("ticket", ticketKey),
-			zap.String("fork_url", forkURL))
 
-		// Wait for the fork to be ready by checking if it exists
-		time.Sleep(10 * time.Second)
+		if !exists {
+			// Create a fork
+			forkURL, err = p.githubService.ForkRepository(owner, repo)
+			if err != nil {
+				p.logger.Error("Failed to create fork",
+					zap.String("ticket", ticketKey),
+					zap.String("owner", owner),
+					zap.String("repo", repo),
+					zap.Error(err))
+				p.handleFailure(ticketKey, fmt.Sprintf("Failed to create fork: %v", err))
+				return err
+			}
+			p.logger.Info("Fork created successfully, waiting for fork to be ready",
+				zap.String("ticket", ticketKey),
+				zap.String("fork_url", forkURL))
+
+			// Wait for the fork to be ready
+			time.Sleep(10 * time.Second)
+		}
 	}
 
 	// Clone the repository
@@ -258,12 +342,13 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// Push the changes
-	err = p.githubService.PushChanges(repoDir, branchName)
+	err = p.githubService.PushChanges(repoDir, branchName, forkOwner, repo)
 	if err != nil {
 		p.logger.Error("Failed to push changes",
 			zap.String("ticket", ticketKey),
 			zap.String("repo_dir", repoDir),
 			zap.String("branch_name", branchName),
+			zap.String("forkOwner", forkOwner),
 			zap.Error(err))
 		p.handleFailure(ticketKey, fmt.Sprintf("Failed to push changes: %v", err))
 		return err
@@ -284,7 +369,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// When creating a pull request from a fork, the head parameter should be in the format "forkOwner:branchName"
-	head := fmt.Sprintf("%s:%s", p.config.GitHub.BotUsername, branchName)
+	head := fmt.Sprintf("%s:%s", forkOwner, branchName)
 	pr, err := p.githubService.CreatePullRequest(owner, repo, prTitle, prBody, head, p.config.GitHub.TargetBranch)
 	if err != nil {
 		p.logger.Error("Failed to create pull request",
