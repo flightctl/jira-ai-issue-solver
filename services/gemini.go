@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,48 +227,39 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	wg.Add(2) // We have two goroutines for logging (stdout and stderr)
 
 	// Accumulate stdout for the final response
-	var outputBuilder strings.Builder
-	var outputMu sync.Mutex
+	var stdoutData []byte
+	var stdoutErr error
+	var stdoutMu sync.Mutex
 
-	// Log stdout concurrently and accumulate output
+	// Read stdout and accumulate output
 	go func() {
-		defer func() {
-			s.logger.Debug("Gemini stdout logging goroutine finished")
-			wg.Done()
-		}()
-		scanner := bufio.NewScanner(stdoutPipe)
-		// Increase buffer size to handle large output
-		buf := make([]byte, 1024*1024) // 1MB buffer
-		scanner.Buffer(buf, 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
+		defer wg.Done()
+		// Read all stdout at once to avoid scanner timing issues
+		data, err := io.ReadAll(stdoutPipe)
+		stdoutMu.Lock()
+		stdoutData = data
+		stdoutErr = err
+		stdoutMu.Unlock()
 
-			// Accumulate the original line (preserve formatting)
-			outputMu.Lock()
-			if outputBuilder.Len() > 0 {
-				outputBuilder.WriteString("\n")
-			}
-			outputBuilder.WriteString(line)
-			outputMu.Unlock()
-
-			// Log cleaned version for debugging
-			trimmed := strings.TrimSpace(line)
-			if trimmed != "" {
-				cleaned := strings.ReplaceAll(trimmed, "Flushing log events to Clearcut.", "")
-				cleaned = strings.TrimSpace(cleaned)
-				if cleaned != "" {
-					s.logger.Debug(cleaned)
+		// Log the output for debugging
+		if err == nil && len(data) > 0 {
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" {
+					cleaned := strings.ReplaceAll(trimmed, "Flushing log events to Clearcut.", "")
+					cleaned = strings.TrimSpace(cleaned)
+					if cleaned != "" {
+						s.logger.Debug(cleaned)
+					}
 				}
 			}
 		}
+		s.logger.Debug("Gemini stdout reading finished", zap.Int("bytes_read", len(data)))
 	}()
 
 	// Log stderr concurrently
 	go func() {
-		defer func() {
-			s.logger.Debug("Gemini stderr logging goroutine finished")
-			wg.Done()
-		}()
 		scanner := bufio.NewScanner(stderrPipe)
 		// Increase buffer size to handle large output
 		buf := make([]byte, 1024*1024) // 1MB buffer
@@ -275,6 +267,8 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 		for scanner.Scan() {
 			s.logger.Debug("=== Gemini stderr ===\n" + scanner.Text() + "\n===================")
 		}
+		s.logger.Debug("Gemini stderr logging goroutine finished")
+		wg.Done()
 	}()
 
 	// Wait for the command to finish or for the timeout to be reached
@@ -308,9 +302,14 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	}
 
 	// Get the accumulated output
-	outputMu.Lock()
-	finalOutput := outputBuilder.String()
-	outputMu.Unlock()
+	stdoutMu.Lock()
+	finalOutput := string(stdoutData)
+	readErr := stdoutErr
+	stdoutMu.Unlock()
+
+	if readErr != nil {
+		return nil, fmt.Errorf("failed to read stdout: %w", readErr)
+	}
 
 	// Create response with the actual accumulated output
 	response := &models.GeminiResponse{

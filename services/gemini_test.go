@@ -334,10 +334,24 @@ Fixed the nil pointer check.`
 
 	logger := zap.NewNop()
 
+	// Write mock output to a temp file to avoid shell escaping and stdin race conditions
+	tmpfile, err := os.CreateTemp("", "gemini-test-*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
+	if _, err := tmpfile.WriteString(mockOutput); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatalf("Failed to close temp file: %v", err)
+	}
+
 	// Create a mock executor
-	// Ignores the passed name and args, just outputs our test data
+	// Ignores the passed name and args, just outputs our test data from the temp file
 	mockExecutor := func(name string, args ...string) *exec.Cmd {
-		cmd := exec.Command("sh", "-c", "printf '%s' '"+strings.ReplaceAll(mockOutput, "'", "'\\''")+"'")
+		// Use cat to read from temp file (avoids all shell escaping and race issues)
+		cmd := exec.Command("cat", tmpfile.Name())
 		return cmd
 	}
 
