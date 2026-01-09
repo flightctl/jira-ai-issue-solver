@@ -1,6 +1,7 @@
 package services
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -370,7 +371,7 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "Please fix the formatting") {
 		t.Error("Prompt should contain feedback")
 	}
-	if !strings.Contains(prompt, "Apply the necessary fixes") {
+	if !strings.Contains(prompt, "Apply the necessary code fixes") {
 		t.Error("Prompt should contain instructions")
 	}
 	if !strings.Contains(prompt, "Previously addressed") {
@@ -525,7 +526,8 @@ func TestPRReviewProcessor_UpdateProcessingTimestamp(t *testing.T) {
 		githubService: mockGitHub,
 		config:        config,
 	}
-	err := processor.updateProcessingTimestamp("owner", "repo", 1, "TEST-123")
+	testTimestamp := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	err := processor.updateProcessingTimestamp("owner", "repo", 1, "TEST-123", testTimestamp)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1118,5 +1120,194 @@ func TestPRReviewProcessor_ShouldSkipReply(t *testing.T) {
 				t.Errorf("shouldSkipReply() reason = %q, want to contain %q", gotReason, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestPRReviewProcessor_TimestampCapturedAtStart validates that the processing timestamp
+// is captured at the START of processing, not the END. This ensures comments made during
+// processing (which can take 30+ seconds) are included in the next scan, fixing the race
+// condition where comments made between fetching and timestamp update would be missed.
+func TestPRReviewProcessor_TimestampCapturedAtStart(t *testing.T) {
+	startTime := time.Now().UTC()
+
+	// Track when updateProcessingTimestamp is called and capture the timestamp
+	var capturedTimestamp time.Time
+	var timestampCaptured bool
+
+	mockGitHub := &mocks.MockGitHubService{
+		GetPRDetailsFunc: func(owner, repo string, prNumber int) (*models.GitHubPRDetails, error) {
+			return &models.GitHubPRDetails{
+				Number: prNumber,
+				Head: models.GitHubRef{
+					Ref: "test-branch",
+					Repo: models.GitHubRepository{
+						CloneURL: "https://github.com/test/repo.git",
+						Owner: models.GitHubUser{
+							Login: "test-owner",
+						},
+					},
+				},
+				Reviews: []models.GitHubReview{
+					{
+						ID:          1,
+						User:        models.GitHubUser{Login: "reviewer"},
+						Body:        "Please fix this",
+						State:       "CHANGES_REQUESTED",
+						SubmittedAt: startTime.Add(1 * time.Second),
+					},
+				},
+				Comments: []models.GitHubPRComment{},
+				Files: []models.GitHubPRFile{
+					{
+						Filename:  "test.go",
+						Status:    "modified",
+						Additions: 10,
+						Deletions: 5,
+						Patch:     "+some changes",
+					},
+				},
+			}, nil
+		},
+		ListPRCommentsFunc: func(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+			return []models.GitHubPRComment{}, nil
+		},
+		AddPRCommentFunc: func(owner, repo string, prNumber int, body string) error {
+			// Extract timestamp from comment body using regex
+			re := regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`)
+			matches := re.FindStringSubmatch(body)
+			if len(matches) > 1 {
+				var err error
+				capturedTimestamp, err = time.Parse(time.RFC3339, matches[1])
+				if err == nil {
+					timestampCaptured = true
+				} else {
+					t.Logf("Failed to parse timestamp: %v (raw: %s)", err, matches[1])
+				}
+			} else {
+				t.Logf("No timestamp found in comment body: %s", body)
+			}
+			return nil
+		},
+		CloneRepositoryFunc: func(repoURL, directory string) error {
+			// Simulate processing taking time
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		},
+		SwitchToBranchFunc: func(directory, branchName string) error {
+			return nil
+		},
+		CommitChangesFunc: func(directory, message, coAuthorName, coAuthorEmail string) error {
+			return nil
+		},
+		PushChangesFunc: func(directory, branchName, forkOwner, repo string) error {
+			return nil
+		},
+		ReplyToPRCommentFunc: func(owner, repo string, prNumber int, commentID int64, body string) error {
+			return nil
+		},
+	}
+
+	mockJira := &mocks.MockJiraService{
+		GetTicketFunc: func(ticketKey string) (*models.JiraTicketResponse, error) {
+			return &models.JiraTicketResponse{
+				Key: ticketKey,
+				Fields: models.JiraFields{
+					Summary:     "Test ticket",
+					Description: "Test description",
+					IssueType: models.JiraIssueType{
+						Name: "Bug",
+					},
+					Assignee: &models.JiraUser{
+						DisplayName:  "Test User",
+						EmailAddress: "test@example.com",
+					},
+				},
+			}, nil
+		},
+		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
+			return "customfield_12345", nil
+		},
+		GetTicketWithExpandedFieldsFunc: func(ticketKey string) (map[string]interface{}, map[string]string, error) {
+			return map[string]interface{}{
+				"customfield_12345": "https://github.com/test/repo/pull/123",
+			}, map[string]string{}, nil
+		},
+		HasSecurityLevelFunc: func(ticketKey string) (bool, error) {
+			return false, nil
+		},
+	}
+
+	mockClaude := &mocks.MockClaudeService{
+		GenerateCodeFunc: func(prompt, repoDir string) (*models.ClaudeResponse, error) {
+			// Simulate AI processing time to ensure timestamp is captured at START not END.
+			// Combined with CloneRepositoryFunc delay (100ms), total processing is ~200ms.
+			time.Sleep(100 * time.Millisecond)
+			return &models.ClaudeResponse{
+				Type:    "completion",
+				IsError: false,
+				Result:  "REVIEW_1_RESPONSE:\nFixed the issue as requested.\n\n",
+			}, nil
+		},
+	}
+
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys:             models.ProjectKeys{"TEST"},
+			GitPullRequestFieldName: "Git Pull Request",
+			DisableErrorComments:    false,
+			ComponentToRepo:         map[string]string{"test": "https://github.com/test/repo"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"bug": {
+					Todo:       "TODO",
+					InProgress: "IN_PROGRESS",
+					InReview:   "IN_REVIEW",
+				},
+			},
+		},
+	}
+	config.TempDir = t.TempDir()
+
+	logger := zap.NewNop()
+	processor := NewPRReviewProcessor(mockJira, mockGitHub, mockClaude, config, logger)
+
+	// Run processing
+	err := processor.ProcessPRReviewFeedback("TEST-123")
+	if err != nil {
+		t.Fatalf("ProcessPRReviewFeedback failed: %v", err)
+	}
+
+	// Verify timestamp was captured
+	if !timestampCaptured {
+		t.Fatal("Timestamp was not captured from PR comment")
+	}
+
+	// Verify timestamp is from START of processing, not END
+	// The captured timestamp should be very close to startTime (within tolerance)
+	// because it's captured at the START, not after the 200ms of simulated processing
+	endTime := time.Now().UTC()
+
+	// Calculate time differences
+	// If timestamp was captured at END: timeSinceStart ≈ 200ms, timeSinceEnd ≈ 0ms
+	// If timestamp was captured at START: timeSinceStart ≈ 0ms, timeSinceEnd ≈ 200ms
+	timeSinceStart := capturedTimestamp.Sub(startTime)
+	timeSinceEnd := endTime.Sub(capturedTimestamp)
+
+	// The key invariant: timestamp should be MUCH closer to start than to end
+	// This assertion is robust to CI timing variance
+	if timeSinceStart > timeSinceEnd {
+		t.Errorf("Timestamp appears to be from END of processing (since start: %v, since end: %v), should be from START",
+			timeSinceStart, timeSinceEnd)
+	}
+
+	// Sanity check: should be reasonably close to start (allow generous overhead for slow CI)
+	if timeSinceStart > 5*time.Second {
+		t.Errorf("Timestamp is unreasonably far from start time: %v after start", timeSinceStart)
+	}
+
+	// Additional sanity check: timestamp should definitely be before endTime
+	if capturedTimestamp.After(endTime) {
+		t.Errorf("Timestamp %v is after end time %v, this should never happen", capturedTimestamp, endTime)
 	}
 }

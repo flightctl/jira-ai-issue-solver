@@ -46,7 +46,13 @@ func NewGeminiService(config *models.Config, logger *zap.Logger, executor ...mod
 
 // GenerateCode implements the AIService interface
 func (s *GeminiServiceImpl) GenerateCode(prompt string, repoDir string) (interface{}, error) {
-	return s.GenerateCodeGemini(prompt, repoDir)
+	resp, err := s.GenerateCodeGemini(prompt, repoDir)
+	if err != nil {
+		return nil, err
+	}
+	// Return the Result string for compatibility with consumers that expect string output
+	// (e.g., PR review processor that parses comment responses)
+	return resp.Result, nil
 }
 
 // GenerateDocumentation implements the AIService interface
@@ -170,9 +176,18 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Create the command with context
-	cmd := exec.CommandContext(ctx, s.config.Gemini.CLIPath, args...)
+	// Create the command using the executor (allows for testing)
+	cmd := s.executor(s.config.Gemini.CLIPath, args...)
 	cmd.Dir = repoDir
+
+	// Apply context cancellation by setting up a goroutine to kill the process
+	// This is done instead of using CommandContext to allow executor mocking
+	go func() {
+		<-ctx.Done()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
 
 	// Print the actual command being executed
 	s.logger.Debug("Executing Gemini CLI",
@@ -186,7 +201,7 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	// Set Gemini API key if configured
 	if s.config.Gemini.APIKey != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("GEMINI_API_KEY=%s", s.config.Gemini.APIKey))
-		s.logger.Debug("Gemini API key set", zap.String("api_key", s.config.Gemini.APIKey))
+		s.logger.Debug("Gemini API key configured")
 	} else {
 		s.logger.Debug("Gemini API key not set")
 	}
@@ -210,7 +225,11 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	var wg sync.WaitGroup
 	wg.Add(2) // We have two goroutines for logging (stdout and stderr)
 
-	// Log stdout concurrently
+	// Accumulate stdout for the final response
+	var outputBuilder strings.Builder
+	var outputMu sync.Mutex
+
+	// Log stdout concurrently and accumulate output
 	go func() {
 		defer func() {
 			s.logger.Debug("Gemini stdout logging goroutine finished")
@@ -221,16 +240,24 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 		buf := make([]byte, 1024*1024) // 1MB buffer
 		scanner.Buffer(buf, 1024*1024)
 		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
+			line := scanner.Text()
 
-			// Log each line for debugging in real-time
-			cleaned := strings.ReplaceAll(line, "Flushing log events to Clearcut.", "")
-			cleaned = strings.TrimSpace(cleaned)
-			if cleaned != "" {
-				s.logger.Debug(cleaned)
+			// Accumulate the original line (preserve formatting)
+			outputMu.Lock()
+			if outputBuilder.Len() > 0 {
+				outputBuilder.WriteString("\n")
+			}
+			outputBuilder.WriteString(line)
+			outputMu.Unlock()
+
+			// Log cleaned version for debugging
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				cleaned := strings.ReplaceAll(trimmed, "Flushing log events to Clearcut.", "")
+				cleaned = strings.TrimSpace(cleaned)
+				if cleaned != "" {
+					s.logger.Debug(cleaned)
+				}
 			}
 		}
 	}()
@@ -280,20 +307,26 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 		return nil, fmt.Errorf("gemini CLI failed: %w", err)
 	}
 
-	// Create response indicating completion
+	// Get the accumulated output
+	outputMu.Lock()
+	finalOutput := outputBuilder.String()
+	outputMu.Unlock()
+
+	// Create response with the actual accumulated output
 	response := &models.GeminiResponse{
 		Type:    "assistant",
 		IsError: false,
-		Result:  "done",
+		Result:  finalOutput,
 		Message: &models.GeminiMessage{
 			Type:    "message",
 			Role:    "assistant",
 			Model:   s.config.Gemini.Model,
-			Content: "done",
+			Content: finalOutput,
 		},
 	}
 
-	s.logger.Debug("Capturing final Gemini response...")
+	s.logger.Debug("Capturing final Gemini response...",
+		zap.Int("output_length", len(finalOutput)))
 	s.logger.Debug("Output processing complete. Final response captured.")
 	return response, nil
 }

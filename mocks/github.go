@@ -17,6 +17,7 @@ type MockGitHubService struct {
 	SyncForkWithUpstreamFunc     func(owner, repo string) error
 	SwitchToTargetBranchFunc     func(directory string) error
 	SwitchToBranchFunc           func(directory, branchName string) error
+	HasChangesFunc               func(directory string) (bool, error)
 	PullChangesFunc              func(directory, branchName string) error
 	AddPRCommentFunc             func(owner, repo string, prNumber int, body string) error
 	ListPRCommentsFunc           func(owner, repo string, prNumber int) ([]models.GitHubPRComment, error)
@@ -26,6 +27,7 @@ type MockGitHubService struct {
 	GetInstallationIDForRepoFunc func(owner, repo string) (int64, error)
 	CheckForkExistsForUserFunc   func(owner, repo, forkOwner string) (bool, error)
 	GetForkCloneURLForUserFunc   func(owner, repo, forkOwner string) (string, error)
+	CommitChangesViaAPIFunc      func(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
 }
 
 // CloneRepository is the mock implementation of GitHubService's CloneRepository method
@@ -116,6 +118,14 @@ func (m *MockGitHubService) SwitchToBranch(directory, branchName string) error {
 	return nil
 }
 
+// HasChanges is the mock implementation of GitHubService's HasChanges method
+func (m *MockGitHubService) HasChanges(directory string) (bool, error) {
+	if m.HasChangesFunc != nil {
+		return m.HasChangesFunc(directory)
+	}
+	return false, nil
+}
+
 // PullChanges is the mock implementation of GitHubService's PullChanges method
 func (m *MockGitHubService) PullChanges(directory, branchName string) error {
 	if m.PullChangesFunc != nil {
@@ -186,4 +196,12 @@ func (m *MockGitHubService) GetForkCloneURLForUser(owner, repo, forkOwner string
 		return m.GetForkCloneURLForUserFunc(owner, repo, forkOwner)
 	}
 	return "", nil
+}
+
+// CommitChangesViaAPI is the mock implementation of GitHubService's CommitChangesViaAPI method
+func (m *MockGitHubService) CommitChangesViaAPI(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+	if m.CommitChangesViaAPIFunc != nil {
+		return m.CommitChangesViaAPIFunc(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
+	}
+	return "mock-commit-sha", nil
 }

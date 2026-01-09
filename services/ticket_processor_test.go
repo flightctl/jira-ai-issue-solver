@@ -52,6 +52,9 @@ func TestTicketProcessor_ProcessTicket(t *testing.T) {
 		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
 			return true, "https://github.com/mockuser/frontend.git", nil
 		},
+		HasChangesFunc: func(directory string) (bool, error) {
+			return true, nil // Mock AI generates changes
+		},
 	}
 	mockClaudeService := &mocks.MockClaudeService{}
 
@@ -140,6 +143,9 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 		},
 		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
 			return true, "https://github.com/test-bot/repo.git", nil
+		},
+		HasChangesFunc: func(directory string) (bool, error) {
+			return true, nil // Mock AI generates changes
 		},
 	}
 	mockJira := &mocks.MockJiraService{
@@ -256,6 +262,9 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
 			return true, "https://github.com/test-bot/repo.git", nil
 		},
+		HasChangesFunc: func(directory string) (bool, error) {
+			return true, nil // Mock AI generates changes
+		},
 	}
 	mockJira := &mocks.MockJiraService{
 		GetTicketFunc: func(key string) (*models.JiraTicketResponse, error) {
@@ -355,6 +364,9 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
 			return true, "https://github.com/mockuser/frontend.git", nil
 		},
+		HasChangesFunc: func(directory string) (bool, error) {
+			return true, nil // Mock AI generates changes
+		},
 	}
 	mockClaudeService := &mocks.MockClaudeService{}
 
@@ -387,8 +399,10 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		t.Errorf("Expected no error but got: %v", err)
 	}
 
-	// Verify that the correct status transitions were used
-	expectedStatuses := []string{"Development", "Code Review"}
+	// Verify that the correct status transition was used
+	// Note: We only update to "In Review" status, not "In Progress"
+	// This prevents tickets from getting stuck if something fails
+	expectedStatuses := []string{"Code Review"}
 	if len(capturedStatuses) != len(expectedStatuses) {
 		t.Errorf("Expected %d status updates, got %d", len(expectedStatuses), len(capturedStatuses))
 	}
@@ -410,8 +424,12 @@ func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
 		AIProvider: "claude",
 		AI: struct {
 			GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+			MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
+			RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
 		}{
 			GenerateDocumentation: true,
+			MaxRetries:            5,
+			RetryDelaySeconds:     2,
 		},
 	}
 
@@ -424,8 +442,12 @@ func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
 		AIProvider: "gemini",
 		AI: struct {
 			GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+			MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
+			RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
 		}{
 			GenerateDocumentation: false,
+			MaxRetries:            5,
+			RetryDelaySeconds:     2,
 		},
 	}
 
@@ -451,3 +473,10 @@ func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
 		t.Error("AI provider should be gemini for processor2")
 	}
 }
+
+// Note: AI retry logic is tested through integration tests
+// The retry logic in ticket_processor.go:311-384 handles:
+// - Retrying AI code generation up to config.AI.MaxRetries times
+// - Checking for changes after each attempt using githubService.HasChanges()
+// - Failing gracefully with clear error messages if no changes after all retries
+// - Waiting config.AI.RetryDelaySeconds between retries

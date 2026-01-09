@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"jira-ai-issue-solver/models"
 )
@@ -17,7 +16,14 @@ type MockClaudeService struct {
 // GenerateCode is the mock implementation of ClaudeService's GenerateCode method
 func (m *MockClaudeService) GenerateCode(prompt string, repoDir string) (interface{}, error) {
 	if m.GenerateCodeFunc != nil {
-		return m.GenerateCodeFunc(prompt, repoDir)
+		resp, err := m.GenerateCodeFunc(prompt, repoDir)
+		if err != nil {
+			return nil, err
+		}
+		// Extract and return the Result field as a string for compatibility with consumers.
+		// The AIService interface returns interface{}, and consumers (e.g., PR review processor)
+		// expect a string, not a ClaudeResponse struct. This matches the real ClaudeService behavior.
+		return resp.Result, nil
 	}
 
 	// Default behavior: create some fake files to simulate code generation
@@ -26,15 +32,8 @@ func (m *MockClaudeService) GenerateCode(prompt string, repoDir string) (interfa
 		return nil, fmt.Errorf("failed to create fake files: %w", err)
 	}
 
-	// Return a mock response describing what was "generated"
-	return &models.ClaudeResponse{
-		Type:          "completion",
-		Subtype:       "text",
-		IsError:       false,
-		DurationMs:    1500,
-		DurationApiMs: 1200,
-		NumTurns:      1,
-		Result: `## Summary
+	// Return the Result string directly for compatibility with consumers
+	result := `## Summary
 Generated mock implementation for the requested feature.
 
 ## Changes Made
@@ -43,15 +42,9 @@ Generated mock implementation for the requested feature.
 - Updated README.md with usage documentation
 
 ## Testing
-The implementation includes comprehensive unit tests that cover all edge cases.`,
-		SessionID:    "mock-session-" + fmt.Sprintf("%d", time.Now().Unix()),
-		TotalCostUsd: 0.0025,
-		Usage: models.ClaudeUsage{
-			InputTokens:  250,
-			OutputTokens: 150,
-			ServiceTier:  "claude-3-sonnet-20240229",
-		},
-	}, nil
+The implementation includes comprehensive unit tests that cover all edge cases.`
+
+	return result, nil
 }
 
 // GenerateDocumentation is the mock implementation of ClaudeService's GenerateDocumentation method

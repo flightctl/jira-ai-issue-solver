@@ -77,7 +77,13 @@ func NewClaudeService(config *models.Config, logger *zap.Logger, executor ...mod
 
 // GenerateCode implements the AIService interface
 func (s *ClaudeServiceImpl) GenerateCode(prompt string, repoDir string) (interface{}, error) {
-	return s.GenerateCodeClaude(prompt, repoDir)
+	resp, err := s.GenerateCodeClaude(prompt, repoDir)
+	if err != nil {
+		return nil, err
+	}
+	// Return the Result string for compatibility with consumers that expect string output
+	// (e.g., PR review processor that parses comment responses)
+	return resp.Result, nil
 }
 
 // GenerateDocumentation implements the AIService interface

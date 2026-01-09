@@ -344,6 +344,8 @@ type Config struct {
 	// AI configuration
 	AI struct {
 		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+		MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`                 // Maximum number of times to retry AI code generation if no changes are detected
+		RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"` // Delay in seconds between AI retries
 	} `yaml:"ai" mapstructure:"ai"`
 
 	// Temporary directory for cloning repositories
@@ -470,6 +472,8 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// AI configuration
 	bindEnv("ai.generate_documentation")
+	bindEnv("ai.max_retries")
+	bindEnv("ai.retry_delay_seconds")
 
 	// Server configuration
 	bindEnv("server.port")
@@ -687,6 +691,8 @@ func setDefaults(v *viper.Viper) {
 
 	// AI defaults
 	v.SetDefault("ai.generate_documentation", true)
+	v.SetDefault("ai.max_retries", 5)
+	v.SetDefault("ai.retry_delay_seconds", 2)
 
 	// Temp directory defaults
 	v.SetDefault("temp_dir", "/tmp/jira-ai-issue-solver")

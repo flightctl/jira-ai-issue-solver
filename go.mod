@@ -3,6 +3,7 @@ module jira-ai-issue-solver
 go 1.24.0
 
 require (
+	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/spf13/viper v1.19.0
 	go.uber.org/zap v1.27.0
@@ -10,7 +11,6 @@ require (
 )
 
 require (
-	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/go-github/v75 v75.0.0 // indirect
