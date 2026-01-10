@@ -1,16 +1,13 @@
 package services
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -207,111 +204,69 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 		s.logger.Debug("Gemini API key not set")
 	}
 
-	// Create pipes for stdout and stderr
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
+	// Capture stdout and stderr using buffers to avoid pipe race conditions
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	// Start the command
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start Gemini CLI: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2) // We have two goroutines for logging (stdout and stderr)
+	// Wait for the command to finish or for the timeout to be reached
+	waitErr := cmd.Wait()
+	s.logger.Debug("Gemini CLI finished")
 
-	// Accumulate stdout for the final response
-	var stdoutData []byte
-	var stdoutErr error
-	var stdoutMu sync.Mutex
+	// Get the captured output
+	stdoutData := stdoutBuf.Bytes()
+	stderrData := stderrBuf.Bytes()
 
-	// Read stdout and accumulate output
-	go func() {
-		defer wg.Done()
-		// Read all stdout at once to avoid scanner timing issues
-		data, err := io.ReadAll(stdoutPipe)
-		stdoutMu.Lock()
-		stdoutData = data
-		stdoutErr = err
-		stdoutMu.Unlock()
-
-		// Log the output for debugging
-		if err == nil && len(data) > 0 {
-			lines := strings.Split(string(data), "\n")
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed != "" {
-					cleaned := strings.ReplaceAll(trimmed, "Flushing log events to Clearcut.", "")
-					cleaned = strings.TrimSpace(cleaned)
-					if cleaned != "" {
-						s.logger.Debug(cleaned)
-					}
+	// Log stdout for debugging
+	if len(stdoutData) > 0 {
+		lines := strings.Split(string(stdoutData), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				cleaned := strings.ReplaceAll(trimmed, "Flushing log events to Clearcut.", "")
+				cleaned = strings.TrimSpace(cleaned)
+				if cleaned != "" {
+					s.logger.Debug(cleaned)
 				}
 			}
 		}
-		s.logger.Debug("Gemini stdout reading finished", zap.Int("bytes_read", len(data)))
-	}()
+	}
+	s.logger.Debug("Gemini stdout captured", zap.Int("bytes_read", len(stdoutData)))
 
-	// Log stderr concurrently
-	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		// Increase buffer size to handle large output
-		buf := make([]byte, 1024*1024) // 1MB buffer
-		scanner.Buffer(buf, 1024*1024)
-		for scanner.Scan() {
-			s.logger.Debug("=== Gemini stderr ===\n" + scanner.Text() + "\n===================")
-		}
-		s.logger.Debug("Gemini stderr logging goroutine finished")
-		wg.Done()
-	}()
-
-	// Wait for the command to finish or for the timeout to be reached
-	err = cmd.Wait()
-	s.logger.Debug("Gemini CLI finished")
-
-	// Wait for the logging goroutines to finish
-	// This ensures we capture all output before the function exits
-	wg.Wait()
-	s.logger.Debug("Gemini CLI logging goroutines finished")
+	// Log stderr for debugging
+	if len(stderrData) > 0 {
+		s.logger.Debug("=== Gemini stderr ===\n" + string(stderrData) + "\n===================")
+	}
+	s.logger.Debug("Gemini stderr captured", zap.Int("bytes_read", len(stderrData)))
 
 	// Print the command exit code if possible
 	exitCode := -1
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		if status, ok := exitErr.Sys().(interface{ ExitStatus() int }); ok {
 			exitCode = status.ExitStatus()
 		}
 		s.logger.Debug("Gemini CLI exited with code", zap.Int("exit_code", exitCode))
-	} else if err == nil {
+	} else if waitErr == nil {
 		// If no error, exit code is 0
 		exitCode = 0
 		s.logger.Debug("Gemini CLI exited with code", zap.Int("exit_code", exitCode))
 	}
 
-	if err != nil {
+	if waitErr != nil {
 		// The context being canceled will result in an error
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("gemini CLI timed out after %d seconds", s.config.Gemini.Timeout)
 		}
-		return nil, fmt.Errorf("gemini CLI failed: %w", err)
-	}
-
-	// Get the accumulated output
-	stdoutMu.Lock()
-	finalOutput := string(stdoutData)
-	readErr := stdoutErr
-	stdoutMu.Unlock()
-
-	if readErr != nil {
-		return nil, fmt.Errorf("failed to read stdout: %w", readErr)
+		return nil, fmt.Errorf("gemini CLI failed: %w", waitErr)
 	}
 
 	// Create response with the actual accumulated output
+	finalOutput := string(stdoutData)
 	response := &models.GeminiResponse{
 		Type:    "assistant",
 		IsError: false,
