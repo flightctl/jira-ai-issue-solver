@@ -208,6 +208,19 @@ func TestGeminiService_GenerateCodeGemini_StdoutAccumulation(t *testing.T) {
 			}
 			defer func() { _ = os.RemoveAll(tempDir) }()
 
+			// Write mock output to a temp file to avoid shell escaping issues
+			tmpfile, err := os.CreateTemp("", "gemini-stdout-*.txt")
+			if err != nil {
+				t.Fatalf("Failed to create temp file: %v", err)
+			}
+			defer func() { _ = os.Remove(tmpfile.Name()) }()
+			if _, err := tmpfile.WriteString(tt.mockOutput); err != nil {
+				t.Fatalf("Failed to write to temp file: %v", err)
+			}
+			if err := tmpfile.Close(); err != nil {
+				t.Fatalf("Failed to close temp file: %v", err)
+			}
+
 			// Create a config with a mock executor
 			config := &models.Config{}
 			config.Gemini.CLIPath = "echo"
@@ -217,10 +230,10 @@ func TestGeminiService_GenerateCodeGemini_StdoutAccumulation(t *testing.T) {
 			logger := zap.NewNop()
 
 			// Create a mock executor that prints our test output
-			// Ignores the passed name and args, just outputs our test data
+			// Ignores the passed name and args, just outputs our test data from temp file
 			mockExecutor := func(name string, args ...string) *exec.Cmd {
-				// Use sh -c to run printf, ignoring the passed arguments
-				cmd := exec.Command("sh", "-c", "printf '%s' '"+strings.ReplaceAll(tt.mockOutput, "'", "'\\''")+"'")
+				// Use cat to read from temp file (avoids all shell escaping issues)
+				cmd := exec.Command("cat", tmpfile.Name())
 				return cmd
 			}
 
