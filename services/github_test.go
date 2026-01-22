@@ -207,6 +207,13 @@ func TestCreatePullRequest_GitHubApp(t *testing.T) {
 						}`))),
 					}, nil
 				}
+				// Mock label addition request
+				if strings.Contains(req.URL.Path, "/labels") {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(bytes.NewReader([]byte(`[{"id":1,"name":"ai-pr","url":"https://api.github.com/repos/test/test/labels/ai-pr","color":"008672"}]`))),
+					}, nil
+				}
 
 				// Ignore other requests (GitHub App may make additional API calls)
 				return &http.Response{
@@ -238,6 +245,7 @@ func TestCreatePullRequest_GitHubApp(t *testing.T) {
 				appTransport:        appTransport,
 				installationAuth:    make(map[int64]*ghinstallation.Transport),
 				installationClients: make(map[int64]*github.Client),
+				installationIDs:     make(map[string]int64),
 				executor:            execCommand,
 				logger:              zap.NewNop(),
 			}
@@ -447,6 +455,7 @@ func TestCreatePullRequest(t *testing.T) {
 				appTransport:        appTransport,
 				installationAuth:    make(map[int64]*ghinstallation.Transport),
 				installationClients: make(map[int64]*github.Client),
+				installationIDs:     make(map[string]int64),
 				logger:              zap.NewNop(),
 			}
 
@@ -1129,6 +1138,7 @@ func TestCommitChangesViaAPI_Success(t *testing.T) {
 		appTransport:        appTransport,
 		installationAuth:    make(map[int64]*ghinstallation.Transport),
 		installationClients: make(map[int64]*github.Client),
+		installationIDs:     make(map[string]int64),
 		executor:            execCommand,
 		logger:              zap.NewNop(),
 	}
@@ -1336,6 +1346,7 @@ func TestCommitChangesViaAPI_NoChanges(t *testing.T) {
 		appTransport:        appTransport,
 		installationAuth:    make(map[int64]*ghinstallation.Transport),
 		installationClients: make(map[int64]*github.Client),
+		installationIDs:     make(map[string]int64),
 		executor:            execCommand,
 		logger:              zap.NewNop(),
 	}
@@ -1521,6 +1532,7 @@ func TestCommitChangesViaAPI_WithoutCoAuthor(t *testing.T) {
 		appTransport:        appTransport,
 		installationAuth:    make(map[int64]*ghinstallation.Transport),
 		installationClients: make(map[int64]*github.Client),
+		installationIDs:     make(map[string]int64),
 		executor:            execCommand,
 		logger:              zap.NewNop(),
 	}
@@ -1724,6 +1736,7 @@ func TestCommitChangesViaAPI_NewBranch(t *testing.T) {
 		appTransport:        appTransport,
 		installationAuth:    make(map[int64]*ghinstallation.Transport),
 		installationClients: make(map[int64]*github.Client),
+		installationIDs:     make(map[string]int64),
 		executor:            execCommand,
 		logger:              zap.NewNop(),
 	}

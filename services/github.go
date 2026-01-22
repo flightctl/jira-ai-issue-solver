@@ -113,6 +113,10 @@ func fileExists(path string) (bool, error) {
 }
 
 const (
+	// githubAPITimeout is the default timeout for GitHub API operations
+	// Allows sufficient time for API calls while preventing indefinite hangs
+	githubAPITimeout = 30 * time.Second
+
 	// maxPaginationPages is the safety limit for API pagination
 	// 100 pages * 100 items per page = 10,000 items max
 	maxPaginationPages = 100
@@ -129,9 +133,10 @@ type GitHubServiceImpl struct {
 	appTransport         *ghinstallation.AppsTransport       // For app-level operations
 	installationAuth     map[int64]*ghinstallation.Transport // Per-installation auth
 	installationAuthMu   sync.RWMutex                        // Protects installationAuth map
-	appClient            *github.Client                      // go-github client for app-level operations
 	installationClients  map[int64]*github.Client            // Per-installation go-github clients
 	installationClientMu sync.RWMutex                        // Protects installationClients map
+	installationIDs      map[string]int64                    // Cache: "owner/repo" -> installation ID
+	installationIDsMu    sync.RWMutex                        // Protects installationIDs map
 	executor             models.CommandExecutor
 	logger               *zap.Logger
 }
@@ -218,6 +223,7 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 		client:              &http.Client{},
 		installationAuth:    make(map[int64]*ghinstallation.Transport),
 		installationClients: make(map[int64]*github.Client),
+		installationIDs:     make(map[string]int64),
 		executor:            commandExecutor,
 		logger:              logger,
 	}
@@ -233,9 +239,6 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 	}
 	service.appTransport = appTransport
 
-	// Create go-github client for app-level operations
-	service.appClient = github.NewClient(&http.Client{Transport: appTransport})
-
 	logger.Info("Using GitHub App authentication",
 		zap.Int64("appID", config.GitHub.AppID))
 
@@ -244,6 +247,8 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 
 // getInstallationGitHubClient returns a go-github client authenticated for a specific installation
 // Uses double-checked locking pattern for thread-safe lazy initialization of per-installation clients
+// Note: Currently no error path exists (NewFromAppsTransport doesn't return error), but error return
+// is kept for defensive programming in case future go-github versions change the API
 func (s *GitHubServiceImpl) getInstallationGitHubClient(installationID int64) (*github.Client, error) {
 	// Fast path: check if client already exists with read lock
 	s.installationClientMu.RLock()
@@ -254,16 +259,8 @@ func (s *GitHubServiceImpl) getInstallationGitHubClient(installationID int64) (*
 		return client, nil
 	}
 
-	// Slow path: create new client with write lock
-	s.installationClientMu.Lock()
-	defer s.installationClientMu.Unlock()
-
-	// Double-check: another goroutine might have created the client while we waited
-	if existingClient, found := s.installationClients[installationID]; found {
-		return existingClient, nil
-	}
-
-	// Get or create the installation transport
+	// Get or create the installation transport FIRST (outside client lock to avoid deadlock)
+	// This ensures consistent lock ordering: always acquire installationAuthMu before installationClientMu
 	s.installationAuthMu.RLock()
 	transport, exists := s.installationAuth[installationID]
 	s.installationAuthMu.RUnlock()
@@ -278,6 +275,15 @@ func (s *GitHubServiceImpl) getInstallationGitHubClient(installationID int64) (*
 			transport = tr
 		}
 		s.installationAuthMu.Unlock()
+	}
+
+	// Now acquire client lock and create client
+	s.installationClientMu.Lock()
+	defer s.installationClientMu.Unlock()
+
+	// Double-check: another goroutine might have created the client while we waited
+	if existingClient, found := s.installationClients[installationID]; found {
+		return existingClient, nil
 	}
 
 	// Create and cache the go-github client
@@ -1601,22 +1607,30 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 		MaintainerCanModify: &falseValue,
 	}
 
-	ctx := context.Background()
+	// Create PR with its own timeout
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
 	pr, _, err := ghClient.PullRequests.Create(ctx, owner, repo, newPR)
+	cancel() // Release resources immediately after PR creation
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pull request: %w", err)
 	}
 
-	// Add label to the PR
+	// Add label with a fresh timeout to prevent cascading timeout if PR creation was slow
+	// Label is critical for workflow tracking - fail if it can't be added
 	if s.config.GitHub.PRLabel != "" {
-		_, _, err = ghClient.Issues.AddLabelsToIssue(ctx, owner, repo, pr.GetNumber(), []string{s.config.GitHub.PRLabel})
+		labelCtx, labelCancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		defer labelCancel()
+		_, _, err = ghClient.Issues.AddLabelsToIssue(labelCtx, owner, repo, pr.GetNumber(), []string{s.config.GitHub.PRLabel})
 		if err != nil {
-			s.logger.Warn("Failed to add label to PR",
-				zap.String("label", s.config.GitHub.PRLabel),
-				zap.Int("prNumber", pr.GetNumber()),
-				zap.Error(err))
-			// Don't fail the whole operation if label addition fails
+			return nil, fmt.Errorf("failed to add label %q to PR #%d: %w (PR created but not labeled)",
+				s.config.GitHub.PRLabel, pr.GetNumber(), err)
 		}
+	}
+
+	// Defensive nil check - should never occur if go-github contract is honored,
+	// but protects against unexpected API behavior changes
+	if pr == nil {
+		return nil, fmt.Errorf("GitHub API returned nil pull request (unexpected API contract violation)")
 	}
 
 	// Convert go-github PR to our model
@@ -2062,7 +2076,9 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 		return fmt.Errorf("failed to get installation client: %w", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
 	comment := &github.IssueComment{
 		Body: &body,
 	}
@@ -2088,7 +2104,8 @@ func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, c
 		return fmt.Errorf("failed to get installation client: %w", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
 
 	// Create a reply to a review comment
 	comment := &github.PullRequestComment{
@@ -2112,38 +2129,57 @@ func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, c
 
 // fetchPRReviewCommentsPage fetches a single page of PR review comments
 func (s *GitHubServiceImpl) fetchPRReviewCommentsPage(owner, repo string, prNumber, page, perPage int) ([]models.GitHubPRComment, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments?per_page=%d&page=%d", owner, repo, prNumber, perPage, page)
-	req, err := http.NewRequest("GET", url, nil)
+	installationID, err := s.GetInstallationIDForRepo(owner, repo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to get installation ID: %w", err)
 	}
 
-	token, err := s.getAuthTokenForRepo(owner, repo)
+	ghClient, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
 
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{
+			Page:    page,
+			PerPage: perPage,
+		},
 	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "fetchPRReviewCommentsPage"))
+
+	ghComments, _, err := ghClient.PullRequests.ListComments(ctx, owner, repo, prNumber, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR review comments: %w", err)
+	}
+
+	// Convert go-github comments to our model
+	comments := make([]models.GitHubPRComment, 0, len(ghComments))
+	for _, c := range ghComments {
+		// Defensive nil check for User object
+		user := c.GetUser()
+		login := ""
+		if user != nil {
+			login = user.GetLogin()
 		}
-	}()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get PR review comments: %s, status: %d", string(body), resp.StatusCode)
-	}
-
-	var comments []models.GitHubPRComment
-	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-		return nil, fmt.Errorf("failed to decode review comments: %w", err)
+		comments = append(comments, models.GitHubPRComment{
+			ID:          c.GetID(),
+			InReplyToID: c.GetInReplyTo(),
+			User: models.GitHubUser{
+				Login: login,
+			},
+			Body:      c.GetBody(),
+			Path:      c.GetPath(),
+			Line:      c.GetLine(),
+			StartLine: c.GetStartLine(),
+			Side:      c.GetSide(),
+			StartSide: c.GetStartSide(),
+			HTMLURL:   c.GetHTMLURL(),
+			CreatedAt: c.GetCreatedAt().Time,
+			UpdatedAt: c.GetUpdatedAt().Time,
+		})
 	}
 
 	return comments, nil
@@ -2185,38 +2221,53 @@ func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber in
 
 // fetchPRConversationCommentsPage fetches a single page of PR conversation comments
 func (s *GitHubServiceImpl) fetchPRConversationCommentsPage(owner, repo string, prNumber, page, perPage int) ([]models.GitHubPRComment, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments?per_page=%d&page=%d", owner, repo, prNumber, perPage, page)
-	req, err := http.NewRequest("GET", url, nil)
+	installationID, err := s.GetInstallationIDForRepo(owner, repo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to get installation ID: %w", err)
 	}
 
-	token, err := s.getAuthTokenForRepo(owner, repo)
+	ghClient, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
 
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{
+			Page:    page,
+			PerPage: perPage,
+		},
 	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "fetchPRConversationCommentsPage"))
+
+	ghComments, _, err := ghClient.Issues.ListComments(ctx, owner, repo, prNumber, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR conversation comments: %w", err)
+	}
+
+	// Convert go-github comments to our model
+	// Note: Issue comments don't have path/line/side fields (only PR review comments do)
+	comments := make([]models.GitHubPRComment, 0, len(ghComments))
+	for _, c := range ghComments {
+		// Defensive nil check for User object
+		user := c.GetUser()
+		login := ""
+		if user != nil {
+			login = user.GetLogin()
 		}
-	}()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get PR conversation comments: %s, status: %d", string(body), resp.StatusCode)
-	}
-
-	var comments []models.GitHubPRComment
-	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-		return nil, fmt.Errorf("failed to decode conversation comments: %w", err)
+		comments = append(comments, models.GitHubPRComment{
+			ID: c.GetID(),
+			User: models.GitHubUser{
+				Login: login,
+			},
+			Body:      c.GetBody(),
+			HTMLURL:   c.GetHTMLURL(),
+			CreatedAt: c.GetCreatedAt().Time,
+			UpdatedAt: c.GetUpdatedAt().Time,
+			// Path, Line, StartLine, Side, StartSide not set for conversation comments
+		})
 	}
 
 	return comments, nil
@@ -2427,9 +2478,24 @@ func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64,
 		return 0, fmt.Errorf("GitHub App not configured")
 	}
 
+	key := fmt.Sprintf("%s/%s", owner, repo)
+
+	// Fast path: check cache with read lock
+	s.installationIDsMu.RLock()
+	installationID, exists := s.installationIDs[key]
+	s.installationIDsMu.RUnlock()
+
+	if exists {
+		return installationID, nil
+	}
+
+	// Slow path: fetch from API with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/installation", owner, repo)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -2465,8 +2531,13 @@ func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64,
 	}
 
 	s.logger.Info("Discovered installation ID",
-		zap.String("repo", fmt.Sprintf("%s/%s", owner, repo)),
+		zap.String("repo", key),
 		zap.Int64("installationID", installation.ID))
+
+	// Cache the result
+	s.installationIDsMu.Lock()
+	s.installationIDs[key] = installation.ID
+	s.installationIDsMu.Unlock()
 
 	return installation.ID, nil
 }
