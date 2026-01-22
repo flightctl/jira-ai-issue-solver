@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
+	"github.com/google/go-github/v75/github"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -119,13 +120,16 @@ const (
 
 // GitHubServiceImpl implements the GitHubService interface
 type GitHubServiceImpl struct {
-	config             *models.Config
-	client             *http.Client
-	appTransport       *ghinstallation.AppsTransport       // For app-level operations
-	installationAuth   map[int64]*ghinstallation.Transport // Per-installation auth
-	installationAuthMu sync.RWMutex                        // Protects installationAuth map
-	executor           models.CommandExecutor
-	logger             *zap.Logger
+	config               *models.Config
+	client               *http.Client
+	appTransport         *ghinstallation.AppsTransport       // For app-level operations
+	installationAuth     map[int64]*ghinstallation.Transport // Per-installation auth
+	installationAuthMu   sync.RWMutex                        // Protects installationAuth map
+	appClient            *github.Client                      // go-github client for app-level operations
+	installationClients  map[int64]*github.Client            // Per-installation go-github clients
+	installationClientMu sync.RWMutex                        // Protects installationClients map
+	executor             models.CommandExecutor
+	logger               *zap.Logger
 }
 
 // gitCommand encapsulates a git command execution with optional stdout/stderr capture.
@@ -206,11 +210,12 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 	}
 
 	service := &GitHubServiceImpl{
-		config:           config,
-		client:           &http.Client{},
-		installationAuth: make(map[int64]*ghinstallation.Transport),
-		executor:         commandExecutor,
-		logger:           logger,
+		config:              config,
+		client:              &http.Client{},
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		executor:            commandExecutor,
+		logger:              logger,
 	}
 
 	// Initialize GitHub App transport
@@ -224,10 +229,61 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 	}
 	service.appTransport = appTransport
 
+	// Create go-github client for app-level operations
+	service.appClient = github.NewClient(&http.Client{Transport: appTransport})
+
 	logger.Info("Using GitHub App authentication",
 		zap.Int64("appID", config.GitHub.AppID))
 
 	return service
+}
+
+// getInstallationGitHubClient returns a go-github client authenticated for a specific installation
+// Uses double-checked locking pattern for thread-safe lazy initialization of per-installation clients
+func (s *GitHubServiceImpl) getInstallationGitHubClient(installationID int64) (*github.Client, error) {
+	// Fast path: check if client already exists with read lock
+	s.installationClientMu.RLock()
+	client, exists := s.installationClients[installationID]
+	s.installationClientMu.RUnlock()
+
+	if exists {
+		return client, nil
+	}
+
+	// Slow path: create new client with write lock
+	s.installationClientMu.Lock()
+	defer s.installationClientMu.Unlock()
+
+	// Double-check: another goroutine might have created the client while we waited
+	if existingClient, found := s.installationClients[installationID]; found {
+		return existingClient, nil
+	}
+
+	// Get or create the installation transport
+	s.installationAuthMu.RLock()
+	transport, exists := s.installationAuth[installationID]
+	s.installationAuthMu.RUnlock()
+
+	if !exists {
+		// Create new installation transport
+		s.installationAuthMu.Lock()
+		// Double-check pattern for transport as well
+		if transport, exists = s.installationAuth[installationID]; !exists {
+			tr := ghinstallation.NewFromAppsTransport(s.appTransport, installationID)
+			s.installationAuth[installationID] = tr
+			transport = tr
+		}
+		s.installationAuthMu.Unlock()
+	}
+
+	// Create and cache the go-github client
+	client = github.NewClient(&http.Client{Transport: transport})
+	s.installationClients[installationID] = client
+
+	s.logger.Debug("Created new go-github client for installation",
+		zap.Int64("installationID", installationID))
+
+	return client, nil
 }
 
 // CloneRepository clones a repository to a local directory
@@ -1482,41 +1538,13 @@ func (s *GitHubServiceImpl) createReference(owner, repo, branchName, commitSHA, 
 
 // CreatePullRequest creates a pull request
 func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls", owner, repo)
-
-	// Set maintainer_can_modify to false explicitly
-	// This is required when using GitHub App tokens to create PRs from forks
-	// See: https://github.com/orgs/community/discussions/39178
-	falseValue := false
-	payload := models.GitHubCreatePRRequest{
-		Title:               title,
-		Body:                body,
-		Head:                head,
-		Base:                base,
-		Labels:              []string{s.config.GitHub.PRLabel},
-		MaintainerCanModify: &falseValue,
-	}
-
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
 	// Use installation-specific client
 	// PRs are created on the base repository, so use the base repo's installation
 	installationID, err := s.GetInstallationIDForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get installation ID for %s/%s: %w", owner, repo, err)
 	}
-	client, err := s.getInstallationClient(installationID)
+	ghClient, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get installation client: %w", err)
 	}
@@ -1526,30 +1554,45 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 		zap.String("repo", repo),
 		zap.Int64("installationID", installationID))
 
-	// Installation client's transport automatically adds Authorization header
-	// Do NOT set it manually here
+	// Set maintainer_can_modify to false explicitly
+	// This is required when using GitHub App tokens to create PRs from forks
+	// See: https://github.com/orgs/community/discussions/39178
+	falseValue := false
+	newPR := &github.NewPullRequest{
+		Title:               &title,
+		Body:                &body,
+		Head:                &head,
+		Base:                &base,
+		MaintainerCanModify: &falseValue,
+	}
 
-	resp, err := client.Do(req)
+	ctx := context.Background()
+	pr, _, err := ghClient.PullRequests.Create(ctx, owner, repo, newPR)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf("failed to create pull request: %w", err)
 	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "CreatePullRequest"))
+
+	// Add label to the PR
+	if s.config.GitHub.PRLabel != "" {
+		_, _, err = ghClient.Issues.AddLabelsToIssue(ctx, owner, repo, pr.GetNumber(), []string{s.config.GitHub.PRLabel})
+		if err != nil {
+			s.logger.Warn("Failed to add label to PR",
+				zap.String("label", s.config.GitHub.PRLabel),
+				zap.Int("prNumber", pr.GetNumber()),
+				zap.Error(err))
+			// Don't fail the whole operation if label addition fails
 		}
-	}()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to create pull request: %s, status code: %d", string(body), resp.StatusCode)
 	}
 
-	var prResponse models.GitHubCreatePRResponse
-	if err := json.NewDecoder(resp.Body).Decode(&prResponse); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &prResponse, nil
+	// Convert go-github PR to our model
+	return &models.GitHubCreatePRResponse{
+		ID:      pr.GetID(),
+		Number:  pr.GetNumber(),
+		State:   pr.GetState(),
+		Title:   pr.GetTitle(),
+		Body:    pr.GetBody(),
+		HTMLURL: pr.GetHTMLURL(),
+	}, nil
 }
 
 // CheckForkExists checks if a fork already exists for the given repository
@@ -1974,43 +2017,24 @@ func (s *GitHubServiceImpl) PullChanges(directory, branchName string) error {
 
 // AddPRComment posts a comment to a PR (issue) on GitHub
 func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body string) error {
-	commentRequest := struct {
-		Body string `json:"body"`
-	}{Body: body}
-
-	jsonPayload, err := json.Marshal(commentRequest)
+	installationID, err := s.GetInstallationIDForRepo(owner, repo)
 	if err != nil {
-		return fmt.Errorf("failed to marshal comment request: %w", err)
+		return fmt.Errorf("failed to get installation ID: %w", err)
 	}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	ghClient, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to get installation client: %w", err)
 	}
 
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return fmt.Errorf("failed to get auth token: %w", err)
+	ctx := context.Background()
+	comment := &github.IssueComment{
+		Body: &body,
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
+	_, _, err = ghClient.Issues.CreateComment(ctx, owner, repo, prNumber, comment)
 	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "AddPRComment"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to add PR comment: %s, status: %d", string(body), resp.StatusCode)
+		return fmt.Errorf("failed to add PR comment: %w", err)
 	}
 
 	return nil
@@ -2019,44 +2043,27 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 // ReplyToPRComment replies to a specific PR review comment
 // For line-based review comments, this creates a threaded reply
 func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, commentID int64, body string) error {
-	commentRequest := struct {
-		Body string `json:"body"`
-	}{Body: body}
-
-	jsonPayload, err := json.Marshal(commentRequest)
+	installationID, err := s.GetInstallationIDForRepo(owner, repo)
 	if err != nil {
-		return fmt.Errorf("failed to marshal comment request: %w", err)
+		return fmt.Errorf("failed to get installation ID: %w", err)
 	}
 
-	// Use the pulls comments endpoint for threaded replies
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, prNumber, commentID)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	ghClient, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to get installation client: %w", err)
 	}
 
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return fmt.Errorf("failed to get auth token: %w", err)
+	ctx := context.Background()
+
+	// Create a reply to a review comment
+	comment := &github.PullRequestComment{
+		Body:      &body,
+		InReplyTo: &commentID,
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
+	_, _, err = ghClient.PullRequests.CreateComment(ctx, owner, repo, prNumber, comment)
 	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "ReplyToPRComment"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to reply to PR comment: %s, status: %d", string(body), resp.StatusCode)
+		return fmt.Errorf("failed to reply to PR comment: %w", err)
 	}
 
 	s.logger.Debug("Replied to PR comment",
@@ -2427,35 +2434,6 @@ func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64,
 		zap.Int64("installationID", installation.ID))
 
 	return installation.ID, nil
-}
-
-// getInstallationClient returns an HTTP client authenticated for a specific installation
-func (s *GitHubServiceImpl) getInstallationClient(installationID int64) (*http.Client, error) {
-	if s.appTransport == nil {
-		// Fallback to PAT
-		return &http.Client{}, nil
-	}
-
-	// Check if we already have a transport for this installation with double-check locking
-	s.installationAuthMu.RLock()
-	transport, ok := s.installationAuth[installationID]
-	s.installationAuthMu.RUnlock()
-
-	if ok {
-		return &http.Client{Transport: transport}, nil
-	}
-
-	// Create new installation transport
-	s.installationAuthMu.Lock()
-	// Double-check pattern: another goroutine may have created it
-	if transport, ok = s.installationAuth[installationID]; !ok {
-		transport = ghinstallation.NewFromAppsTransport(s.appTransport, installationID)
-		s.installationAuth[installationID] = transport
-		s.logger.Debug("Created new installation transport", zap.Int64("installationID", installationID))
-	}
-	s.installationAuthMu.Unlock()
-
-	return &http.Client{Transport: transport}, nil
 }
 
 // CheckForkExistsForUser checks if a specific user has forked a repository.
