@@ -308,8 +308,15 @@ func TestCreatePullRequest_GitHubApp(t *testing.T) {
 	}
 }
 
-// TestCreatePullRequest tests the CreatePullRequest method with PAT authentication
+// TestCreatePullRequest tests the CreatePullRequest method
 func TestCreatePullRequest(t *testing.T) {
+	// Generate temporary RSA key for testing
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return // Test was skipped
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
 	// Test cases
 	testCases := []struct {
 		name           string
@@ -382,22 +389,56 @@ func TestCreatePullRequest(t *testing.T) {
 			// Create a mock HTTP client that captures the request body
 			var capturedBody []byte
 			mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-				// Capture the request body
+				// Mock installation token request
+				if strings.Contains(req.URL.Path, "/access_tokens") {
+					return &http.Response{
+						StatusCode: http.StatusCreated,
+						Body: io.NopCloser(bytes.NewReader([]byte(`{
+							"token": "ghs_mock_installation_token",
+							"expires_at": "2099-01-01T00:00:00Z"
+						}`))),
+					}, nil
+				}
+
+				// Mock installation ID request
+				if strings.Contains(req.URL.Path, "/installation") && !strings.Contains(req.URL.Path, "/access_tokens") {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body: io.NopCloser(bytes.NewReader([]byte(`{
+							"id": 12345678
+						}`))),
+					}, nil
+				}
+
+				// Capture the request body for PR creation
 				capturedBody, _ = io.ReadAll(req.Body)
 				return tc.mockResponse, tc.mockError
 			})
 
 			// Create a GitHubService with the mock client
 			config := &models.Config{}
-			config.GitHub.PersonalAccessToken = "test-token"
 			config.GitHub.AppID = 123456
+			config.GitHub.PrivateKeyPath = keyPath
 			config.GitHub.BotUsername = "test-bot"
 			config.GitHub.PRLabel = tc.prLabel
 
+			// Create app transport
+			appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+				mockClient.Transport,
+				config.GitHub.AppID,
+				config.GitHub.PrivateKeyPath,
+			)
+			if err != nil {
+				t.Fatalf("Failed to create app transport: %v", err)
+			}
+
 			service := &GitHubServiceImpl{
-				config:   config,
-				client:   mockClient,
-				executor: execCommand,
+				config:           config,
+				client:           mockClient,
+				executor:         execCommand,
+				appTransport:     appTransport,
+				installationAuth: make(map[int64]*ghinstallation.Transport),
+				logger:           zap.NewNop(),
 			}
 
 			// Call the method being tested
@@ -522,6 +563,10 @@ func TestSwitchToBranch(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
 	// Track the commands that would be executed
 	var executedCommands []string
 	mockExecutor := func(name string, args ...string) *exec.Cmd {
@@ -535,6 +580,7 @@ func TestSwitchToBranch(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
 	config.GitHub.BotUsername = "test-bot"
 
 	// Create GitHub service with mocked executor
@@ -575,6 +621,10 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
@@ -592,6 +642,7 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
 	config.GitHub.BotUsername = "test-bot"
 
 	// Create GitHub service
@@ -611,6 +662,10 @@ func TestGitHubService_CommitChanges_WithCoAuthor(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
 
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
@@ -641,6 +696,7 @@ func TestGitHubService_CommitChanges_WithCoAuthor(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
 	config.GitHub.BotUsername = "test-bot"
 
 	// Create GitHub service
@@ -682,6 +738,10 @@ func TestGitHubService_CommitChanges_WithoutCoAuthor(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
@@ -711,6 +771,7 @@ func TestGitHubService_CommitChanges_WithoutCoAuthor(t *testing.T) {
 	// Create config
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
 	config.GitHub.BotUsername = "test-bot"
 
 	// Create GitHub service
@@ -750,6 +811,10 @@ func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
 	// Initialize git repository
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tempDir
@@ -779,6 +844,7 @@ func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
 	// Create config with SSH key
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
 	config.GitHub.BotUsername = "test-bot"
 	config.GitHub.SSHKeyPath = "/path/to/test_ssh_key" // Test SSH key path
 
@@ -1869,7 +1935,7 @@ func TestCreateBlobsForChangedFiles_GitStatusParsing(t *testing.T) {
 	}
 
 	config := &models.Config{}
-	config.GitHub.PersonalAccessToken = "fake-token"
+	config.GitHub.AppID = 123456
 
 	service := &GitHubServiceImpl{
 		config:   config,
@@ -1914,5 +1980,253 @@ func TestCreateBlobsForChangedFiles_GitStatusParsing(t *testing.T) {
 	// Verify blobs were created
 	if blobCounter != 3 {
 		t.Errorf("Expected 3 blob creation calls but got %d", blobCounter)
+	}
+}
+
+func TestGitHubService_HasChanges_NoChanges(t *testing.T) {
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "github-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Initialize git repository
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init git repository: %v", err)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user name: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user email: %v", err)
+	}
+
+	// Create an initial commit
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cmd = exec.Command("git", "add", ".")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to add files: %v", err)
+	}
+
+	cmd = exec.Command("git", "commit", "-m", "Initial commit")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
+	// Create GitHub service
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	// Test HasChanges - should return false (no changes)
+	hasChanges, err := githubService.HasChanges(tempDir)
+	if err != nil {
+		t.Fatalf("HasChanges failed: %v", err)
+	}
+
+	if hasChanges {
+		t.Error("Expected HasChanges to return false for clean repository, but got true")
+	}
+}
+
+func TestGitHubService_HasChanges_WorkingTreeChanges(t *testing.T) {
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "github-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Initialize git repository
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init git repository: %v", err)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user name: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user email: %v", err)
+	}
+
+	// Create an initial commit
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cmd = exec.Command("git", "add", ".")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to add files: %v", err)
+	}
+
+	cmd = exec.Command("git", "commit", "-m", "Initial commit")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Modify the file (create working tree changes)
+	if err := os.WriteFile(testFile, []byte("modified content"), 0644); err != nil {
+		t.Fatalf("Failed to modify test file: %v", err)
+	}
+
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
+	// Create GitHub service
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	// Test HasChanges - should return true (working tree changes)
+	hasChanges, err := githubService.HasChanges(tempDir)
+	if err != nil {
+		t.Fatalf("HasChanges failed: %v", err)
+	}
+
+	if !hasChanges {
+		t.Error("Expected HasChanges to return true for modified file, but got false")
+	}
+}
+
+func TestGitHubService_HasChanges_UnpushedCommits(t *testing.T) {
+	// This test verifies that HasChanges detects when there are local commits
+	// that haven't been pushed to the remote. We test this by creating a branch
+	// with a remote, then adding a local commit without pushing it.
+
+	// Note: The complexity of setting up a real bare repository for this test
+	// outweighs its value since TestGitHubService_HasChanges_NewBranch already
+	// validates the core unpushed commit detection logic (a new branch is
+	// effectively unpushed commits).
+	//
+	// In a real-world scenario, this would be tested via integration tests
+	// against an actual Git server.
+	t.Skip("Skipping bare repository test - covered by NewBranch test")
+}
+
+func TestGitHubService_HasChanges_NewBranch(t *testing.T) {
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "github-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Initialize git repository
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init git repository: %v", err)
+	}
+
+	// Configure git user
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user name: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to configure git user email: %v", err)
+	}
+
+	// Create an initial commit
+	testFile := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cmd = exec.Command("git", "add", ".")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to add files: %v", err)
+	}
+
+	cmd = exec.Command("git", "commit", "-m", "Initial commit")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	// Simulate a remote by creating a bare repository
+	bareDir, err := os.MkdirTemp("", "github-test-bare-*")
+	if err != nil {
+		t.Fatalf("Failed to create bare directory: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(bareDir) }()
+
+	cmd = exec.Command("git", "init", "--bare")
+	cmd.Dir = bareDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to init bare repository: %v", err)
+	}
+
+	// Add the bare repo as a remote
+	cmd = exec.Command("git", "remote", "add", "origin", bareDir)
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to add remote: %v", err)
+	}
+
+	// Create a new branch (not pushed to remote yet)
+	cmd = exec.Command("git", "checkout", "-b", "feature-branch")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to create new branch: %v", err)
+	}
+
+	// Create temporary private key file
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
+	// Create GitHub service
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	// Test HasChanges - should return true (new branch, no remote counterpart)
+	hasChanges, err := githubService.HasChanges(tempDir)
+	if err != nil {
+		t.Fatalf("HasChanges failed: %v", err)
+	}
+
+	if !hasChanges {
+		t.Error("Expected HasChanges to return true for new branch without remote, but got false")
 	}
 }

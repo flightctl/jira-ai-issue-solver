@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"go.uber.org/zap"
@@ -88,6 +89,11 @@ type GitHubService interface {
 	// CommitChangesViaAPI creates a commit using the GitHub API (for verified GitHub App commits)
 	// Returns the commit SHA
 	CommitChangesViaAPI(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
+
+	// CreateVerifiedCommitFromLocal creates a verified commit via GitHub API from local repository state
+	// Handles both working tree changes and local commits (including merge commits with multiple parents)
+	// Returns empty string if no changes, otherwise returns the commit SHA
+	CreateVerifiedCommitFromLocal(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
 }
 
 // fileExists returns true if the file exists, false if it does not exist,
@@ -207,24 +213,19 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 		logger:           logger,
 	}
 
-	// Initialize GitHub App transport if configured
-	if config.GitHub.AppID != 0 && config.GitHub.PrivateKeyPath != "" {
-		// Create Apps Transport for app-level operations
-		appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
-			http.DefaultTransport,
-			config.GitHub.AppID,
-			config.GitHub.PrivateKeyPath,
-		)
-		if err != nil {
-			logger.Fatal("Failed to create GitHub App transport", zap.Error(err))
-		}
-		service.appTransport = appTransport
-
-		logger.Info("Using GitHub App authentication",
-			zap.Int64("appID", config.GitHub.AppID))
-	} else {
-		logger.Info("Using Personal Access Token authentication")
+	// Initialize GitHub App transport
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		http.DefaultTransport,
+		config.GitHub.AppID,
+		config.GitHub.PrivateKeyPath,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create GitHub App transport", zap.Error(err))
 	}
+	service.appTransport = appTransport
+
+	logger.Info("Using GitHub App authentication",
+		zap.Int64("appID", config.GitHub.AppID))
 
 	return service
 }
@@ -377,51 +378,43 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 	return nil
 }
 
-// getAuthTokenForRepo gets the appropriate authentication token for a repository
-// For PAT: returns the configured PAT
-// For GitHub App: discovers installation ID and returns installation token
+// getAuthTokenForRepo gets the GitHub App installation token for a repository
 func (s *GitHubServiceImpl) getAuthTokenForRepo(owner, repo string) (string, error) {
-	// If using PAT, return it
-	if s.config.GitHub.PersonalAccessToken != "" {
-		return s.config.GitHub.PersonalAccessToken, nil
+	if s.appTransport == nil {
+		return "", fmt.Errorf("GitHub App authentication not configured")
 	}
 
-	// If using GitHub App, get installation token
-	if s.appTransport != nil {
-		installationID, err := s.GetInstallationIDForRepo(owner, repo)
-		if err != nil {
-			return "", fmt.Errorf("failed to get installation ID: %w", err)
-		}
-
-		// Get installation-specific transport with double-check locking pattern
-		s.installationAuthMu.RLock()
-		transport, ok := s.installationAuth[installationID]
-		s.installationAuthMu.RUnlock()
-
-		if !ok {
-			s.installationAuthMu.Lock()
-			// Double-check pattern: another goroutine may have created it
-			if transport, ok = s.installationAuth[installationID]; !ok {
-				transport = ghinstallation.NewFromAppsTransport(s.appTransport, installationID)
-				s.installationAuth[installationID] = transport
-			}
-			s.installationAuthMu.Unlock()
-		}
-
-		// Get token from transport
-		token, err := transport.Token(context.Background())
-		if err != nil {
-			// Invalidate cached transport on error to allow retry with fresh transport
-			s.installationAuthMu.Lock()
-			delete(s.installationAuth, installationID)
-			s.installationAuthMu.Unlock()
-			return "", fmt.Errorf("failed to get installation token (cache invalidated): %w", err)
-		}
-
-		return token, nil
+	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return "", fmt.Errorf("failed to get installation ID: %w", err)
 	}
 
-	return "", fmt.Errorf("no authentication method configured")
+	// Get installation-specific transport with double-check locking pattern
+	s.installationAuthMu.RLock()
+	transport, ok := s.installationAuth[installationID]
+	s.installationAuthMu.RUnlock()
+
+	if !ok {
+		s.installationAuthMu.Lock()
+		// Double-check pattern: another goroutine may have created it
+		if transport, ok = s.installationAuth[installationID]; !ok {
+			transport = ghinstallation.NewFromAppsTransport(s.appTransport, installationID)
+			s.installationAuth[installationID] = transport
+		}
+		s.installationAuthMu.Unlock()
+	}
+
+	// Get token from transport
+	token, err := transport.Token(context.Background())
+	if err != nil {
+		// Invalidate cached transport on error to allow retry with fresh transport
+		s.installationAuthMu.Lock()
+		delete(s.installationAuth, installationID)
+		s.installationAuthMu.Unlock()
+		return "", fmt.Errorf("failed to get installation token (cache invalidated): %w", err)
+	}
+
+	return token, nil
 }
 
 // CreateBranch creates a new branch in a local repository based on the latest target branch
@@ -657,6 +650,198 @@ func (s *GitHubServiceImpl) CommitChangesViaAPI(owner, repo, branchName, message
 	return commitSHA, nil
 }
 
+// CreateVerifiedCommitFromLocal creates a verified commit via GitHub API from local repository state
+// Handles both working tree changes and local commits (including merge commits with multiple parents)
+// Returns empty string if no changes, otherwise returns the commit SHA
+func (s *GitHubServiceImpl) CreateVerifiedCommitFromLocal(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+	// Check what kind of changes we have
+	hasChanges, err := s.HasChanges(directory)
+	if err != nil {
+		return "", fmt.Errorf("failed to check for changes: %w", err)
+	}
+
+	if !hasChanges {
+		s.logger.Info("No changes to commit")
+		return "", nil
+	}
+
+	// Check if there are unpushed local commits (created by AI)
+	hasLocalCommits, err := s.hasUnpushedCommits(directory, zap.String("function", "CreateVerifiedCommitFromLocal"))
+	if err != nil {
+		return "", fmt.Errorf("failed to check unpushed commits: %w", err)
+	}
+
+	if hasLocalCommits {
+		// Local commits exist - create verified commit from local HEAD
+		// This preserves merge commit structure (two parents)
+		return s.createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
+	}
+
+	// Only working tree changes exist - use existing API commit logic
+	return s.CommitChangesViaAPI(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
+}
+
+// createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit
+// Preserves merge commit structure if HEAD is a merge commit
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+	token, err := s.getAuthTokenForRepo(owner, repo)
+	if err != nil {
+		return "", fmt.Errorf("failed to get auth token: %w", err)
+	}
+
+	// Get parent commit SHAs from local HEAD (could be 1 or 2 for merge commits)
+	parentSHAs, err := s.getLocalParentSHAs(directory)
+	if err != nil {
+		return "", fmt.Errorf("failed to get parent SHAs from local HEAD: %w", err)
+	}
+
+	s.logger.Debug("Creating verified commit from local HEAD",
+		zap.Strings("parents", parentSHAs),
+		zap.Int("parent_count", len(parentSHAs)))
+
+	// Use first parent as base tree (the branch we're merging into)
+	firstParent := parentSHAs[0]
+
+	// Get the base tree from the first parent on GitHub
+	baseTreeSHA, err := s.getTreeSHAFromCommit(owner, repo, firstParent, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
+	}
+
+	// Create blobs for files that changed from the first parent
+	// For merge commits, this includes files that differ from the first parent
+	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to create blobs: %w", err)
+	}
+
+	if len(treeEntries) == 0 {
+		s.logger.Info("No changes from first parent; nothing to commit")
+		return "", nil
+	}
+
+	// Create a new tree on GitHub
+	treeSHA, err := s.createTree(owner, repo, baseTreeSHA, treeEntries, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to create tree: %w", err)
+	}
+
+	s.logger.Debug("Created tree on GitHub",
+		zap.String("tree", treeSHA),
+		zap.String("baseTree", baseTreeSHA),
+		zap.Int("entries", len(treeEntries)))
+
+	// Build commit message with optional co-author
+	commitMessage := message
+	if coAuthorName != "" && coAuthorEmail != "" {
+		commitMessage = fmt.Sprintf("%s\n\nCo-authored-by: %s <%s>", message, coAuthorName, coAuthorEmail)
+	}
+
+	// Create the commit with the tree and all parents from local HEAD
+	commitSHA, err := s.createCommitWithParents(owner, repo, commitMessage, treeSHA, parentSHAs, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	// Update the branch reference to point to the new commit
+	// Branch must exist since we have local commits on it
+	if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
+		return "", fmt.Errorf("failed to update reference: %w", err)
+	}
+
+	s.logger.Info("Successfully created verified commit from local HEAD",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.String("branch", branchName),
+		zap.String("commit_sha", commitSHA),
+		zap.Bool("isMergeCommit", len(parentSHAs) > 1))
+
+	return commitSHA, nil
+}
+
+// getLocalParentSHAs gets the parent commit SHAs from local HEAD
+// Returns 1 parent for normal commits, 2 parents for merge commits
+func (s *GitHubServiceImpl) getLocalParentSHAs(directory string) ([]string, error) {
+	// Get parent SHAs (one per line)
+	cmd := newGitCommand(s.executor("git", "rev-parse", "HEAD^@"), directory, true, true)
+	if err := cmd.run(); err != nil {
+		return nil, fmt.Errorf("failed to get parent SHAs: %w, stderr: %s", err, cmd.getStderr())
+	}
+
+	output := strings.TrimSpace(cmd.getStdout())
+	if output == "" {
+		return nil, fmt.Errorf("no parent commits found")
+	}
+
+	// Split by newlines to get individual parent SHAs
+	parents := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		parent := strings.TrimSpace(line)
+		if parent != "" {
+			parents = append(parents, parent)
+		}
+	}
+
+	if len(parents) == 0 {
+		return nil, fmt.Errorf("failed to parse parent SHAs")
+	}
+
+	return parents, nil
+}
+
+// createCommitWithParents creates a commit via GitHub API with specific parents (supports merge commits)
+func (s *GitHubServiceImpl) createCommitWithParents(owner, repo, message, treeSHA string, parentSHAs []string, token string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/commits", owner, repo)
+
+	commitRequest := struct {
+		Message string   `json:"message"`
+		Tree    string   `json:"tree"`
+		Parents []string `json:"parents"`
+	}{
+		Message: message,
+		Tree:    treeSHA,
+		Parents: parentSHAs,
+	}
+
+	jsonPayload, err := json.Marshal(commitRequest)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal commit request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create commit: %w", err)
+	}
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "createCommitWithParents"))
+		}
+	}()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to create commit: %s, status: %d", string(body), resp.StatusCode)
+	}
+
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&commit); err != nil {
+		return "", fmt.Errorf("failed to decode commit response: %w", err)
+	}
+
+	return commit.SHA, nil
+}
+
 // getTreeSHAFromCommit gets the tree SHA from a commit
 func (s *GitHubServiceImpl) getTreeSHAFromCommit(owner, repo, commitSHA, token string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/commits/%s", owner, repo, commitSHA)
@@ -792,18 +977,174 @@ func (s *GitHubServiceImpl) createBlobsForChangedFiles(owner, repo, directory, t
 			Path: filename,
 			Mode: mode,
 			Type: "blob",
-			SHA:  blobSHA,
+			SHA:  &blobSHA,
 		})
 
 		s.logger.Debug("Created blob for file",
 			zap.String("file", filename),
 			zap.String("sha", blobSHA))
+
+		// Add a small delay between blob creations to avoid rate limiting
+		// GitHub's secondary rate limit is triggered by rapid API calls
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	return treeEntries, nil
 }
 
-// createBlob creates a blob on GitHub
+// createBlobsForFilesChangedFromParent creates tree entries for all changes from a specific parent commit
+// Handles additions, modifications, deletions, and renames properly using git diff-tree
+func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string) ([]models.GitHubTreeEntry, error) {
+	// Use git diff-tree with -r (recursive), --name-status (show status), -M (detect renames)
+	// This shows the exact operation for each file: A (add), M (modify), D (delete), R (rename)
+	cmd := newGitCommand(s.executor("git", "diff-tree", "-r", "--name-status", "-M", parentSHA, "HEAD"), directory, true, true)
+	if err := cmd.run(); err != nil {
+		return nil, fmt.Errorf("failed to get diff-tree from parent: %w, stderr: %s", err, cmd.getStderr())
+	}
+
+	if !cmd.hasStdout() {
+		// No changes from parent
+		return []models.GitHubTreeEntry{}, nil
+	}
+
+	var treeEntries []models.GitHubTreeEntry
+	lines := strings.Split(strings.TrimSpace(cmd.getStdout()), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse the diff-tree output format:
+		// For A/M/D: <status>\t<file>
+		// For R: R<similarity>\t<old-file>\t<new-file>
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+
+		status := parts[0]
+
+		s.logger.Debug("Processing file change from parent",
+			zap.String("status", status),
+			zap.String("line", line),
+			zap.String("parent", parentSHA))
+
+		switch {
+		case status == "A" || status == "M":
+			// Added or Modified file - create blob and add to tree
+			filename := parts[1]
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create tree entry for %s: %w", filename, err)
+			}
+			treeEntries = append(treeEntries, entry)
+
+		case status == "D":
+			// Deleted file - add entry with nil SHA to remove from tree
+			filename := parts[1]
+			s.logger.Debug("File deleted, adding deletion entry",
+				zap.String("file", filename))
+			treeEntries = append(treeEntries, models.GitHubTreeEntry{
+				Path: filename,
+				SHA:  nil, // nil SHA tells GitHub to delete this file
+			})
+
+		case strings.HasPrefix(status, "R"):
+			// Renamed file - delete old path and add new path
+			if len(parts) < 3 {
+				s.logger.Warn("Invalid rename entry, skipping", zap.String("line", line))
+				continue
+			}
+			oldPath := parts[1]
+			newPath := parts[2]
+
+			s.logger.Debug("File renamed",
+				zap.String("old_path", oldPath),
+				zap.String("new_path", newPath))
+
+			// Delete old path
+			treeEntries = append(treeEntries, models.GitHubTreeEntry{
+				Path: oldPath,
+				SHA:  nil,
+			})
+
+			// Add new path
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create tree entry for renamed file %s: %w", newPath, err)
+			}
+			treeEntries = append(treeEntries, entry)
+
+		case strings.HasPrefix(status, "C"):
+			// Copied file - just add the new copy
+			if len(parts) < 3 {
+				s.logger.Warn("Invalid copy entry, skipping", zap.String("line", line))
+				continue
+			}
+			newPath := parts[2]
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create tree entry for copied file %s: %w", newPath, err)
+			}
+			treeEntries = append(treeEntries, entry)
+
+		default:
+			s.logger.Warn("Unknown diff-tree status, skipping",
+				zap.String("status", status),
+				zap.String("line", line))
+		}
+	}
+
+	return treeEntries, nil
+}
+
+// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob
+func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string) (models.GitHubTreeEntry, error) {
+	filePath := filepath.Join(directory, filename)
+
+	// Read file content
+	// #nosec G304 - filename comes from git diff-tree output in controlled repo directory
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to read file %s: %w", filename, err)
+	}
+
+	// Create blob
+	blobSHA, err := s.createBlob(owner, repo, string(content), token)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob: %w", err)
+	}
+
+	// Determine file mode (check if executable)
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
+	}
+
+	mode := "100644" // Regular file
+	if fileInfo.Mode()&0111 != 0 {
+		mode = "100755" // Executable
+	}
+
+	s.logger.Debug("Created blob for file",
+		zap.String("file", filename),
+		zap.String("sha", blobSHA),
+		zap.String("mode", mode))
+
+	// Add a small delay to avoid rate limiting
+	time.Sleep(100 * time.Millisecond)
+
+	return models.GitHubTreeEntry{
+		Path: filename,
+		Mode: mode,
+		Type: "blob",
+		SHA:  &blobSHA,
+	}, nil
+}
+
+// createBlob creates a blob on GitHub with retry logic for rate limiting
 func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/blobs", owner, repo)
 
@@ -817,36 +1158,71 @@ func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (stri
 		return "", fmt.Errorf("failed to marshal blob request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
+	// Retry logic for rate limiting
+	maxRetries := 3
+	baseDelay := 2 * time.Second
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to create blob: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "createBlob"))
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 2s, 4s, 8s
+			// #nosec G115 - attempt is bounded by maxRetries (3), so shift is safe
+			delay := baseDelay * time.Duration(1<<uint(attempt-1))
+			s.logger.Warn("Rate limited, retrying blob creation",
+				zap.Int("attempt", attempt),
+				zap.Duration("delay", delay),
+				zap.String("owner", owner),
+				zap.String("repo", repo))
+			time.Sleep(delay)
 		}
-	}()
 
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to create blob: %w", err)
+		}
+
+		// Read response body
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createBlob"))
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("failed to read response body: %w", readErr)
+		}
+
+		// Success case
+		if resp.StatusCode == http.StatusCreated {
+			var blobResp models.GitHubBlobResponse
+			if err := json.Unmarshal(body, &blobResp); err != nil {
+				return "", fmt.Errorf("failed to decode blob response: %w", err)
+			}
+			return blobResp.SHA, nil
+		}
+
+		// Check if it's a rate limit error
+		if resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "secondary rate limit") {
+			if attempt < maxRetries {
+				// Will retry after backoff
+				continue
+			}
+			// Max retries exceeded
+			return "", fmt.Errorf("rate limit exceeded after %d retries: %s, status: %d", maxRetries, string(body), resp.StatusCode)
+		}
+
+		// Other error - don't retry
 		return "", fmt.Errorf("failed to create blob: %s, status: %d", string(body), resp.StatusCode)
 	}
 
-	var blobResp models.GitHubBlobResponse
-	if err := json.NewDecoder(resp.Body).Decode(&blobResp); err != nil {
-		return "", fmt.Errorf("failed to decode blob response: %w", err)
-	}
-
-	return blobResp.SHA, nil
+	return "", fmt.Errorf("failed to create blob after %d attempts", maxRetries)
 }
 
 // createTree creates a tree on GitHub
@@ -1134,36 +1510,24 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	// Use installation-specific client if using GitHub App
+	// Use installation-specific client
 	// PRs are created on the base repository, so use the base repo's installation
-	var client *http.Client
-	if s.appTransport != nil {
-		// Get installation ID for the base repository (where the PR will be created)
-		installationID, err := s.GetInstallationIDForRepo(owner, repo)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get installation ID for %s/%s: %w", owner, repo, err)
-		}
-		client, err = s.getInstallationClient(installationID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get installation client: %w", err)
-		}
-
-		s.logger.Info("Creating PR using base repository's installation",
-			zap.String("owner", owner),
-			zap.String("repo", repo),
-			zap.Int64("installationID", installationID))
-
-		// Installation client's transport automatically adds Authorization header
-		// Do NOT set it manually here
-	} else {
-		// PAT mode - set Authorization header manually
-		token, err := s.getAuthTokenForRepo(owner, repo)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get auth token: %w", err)
-		}
-		req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
-		client = s.client
+	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation ID for %s/%s: %w", owner, repo, err)
 	}
+	client, err := s.getInstallationClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	s.logger.Info("Creating PR using base repository's installation",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int64("installationID", installationID))
+
+	// Installation client's transport automatically adds Authorization header
+	// Do NOT set it manually here
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1507,12 +1871,32 @@ func (s *GitHubServiceImpl) SwitchToBranch(directory, branchName string) error {
 // HasChanges checks if there are any uncommitted changes in the repository
 // Returns true if there are changes (modified, added, or deleted files)
 func (s *GitHubServiceImpl) HasChanges(directory string) (bool, error) {
-	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "HasChanges")
 
+	// Check for working tree changes
+	hasWorkingTreeChanges, err := s.hasWorkingTreeChanges(directory, fn)
+	if err != nil {
+		return false, err
+	}
+	if hasWorkingTreeChanges {
+		return true, nil
+	}
+
+	// Check for unpushed commits (e.g., merge commits created by AI)
+	hasUnpushedCommits, err := s.hasUnpushedCommits(directory, fn)
+	if err != nil {
+		return false, err
+	}
+
+	return hasUnpushedCommits, nil
+}
+
+// hasWorkingTreeChanges checks if there are uncommitted changes in the working tree
+func (s *GitHubServiceImpl) hasWorkingTreeChanges(directory string, fn zapcore.Field) (bool, error) {
 	// Use git status --porcelain to get machine-readable status
 	// Empty output means no changes
-	cmd := newGitCommand(s.executor("git", "status", "--porcelain"), directory, debugEnabled, true)
+	// Always capture stdout since we need to check if there's output
+	cmd := newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
 
 	if err := cmd.run(); err != nil {
 		return false, fmt.Errorf("failed to check git status: %w, stderr: %s", err, cmd.getStderr())
@@ -1520,10 +1904,55 @@ func (s *GitHubServiceImpl) HasChanges(directory string) (bool, error) {
 
 	s.logger.Debug("git status --porcelain", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-	// If stdout is empty, there are no changes
-	hasChanges := cmd.hasStdout()
+	// If stdout is empty, there are no working tree changes
+	return cmd.hasStdout(), nil
+}
 
-	return hasChanges, nil
+// hasUnpushedCommits checks if there are local commits that haven't been pushed to origin
+func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Field) (bool, error) {
+	// First, check if origin remote exists
+	remoteCmd := newGitCommand(s.executor("git", "remote", "get-url", "origin"), directory, false, false)
+	if err := remoteCmd.run(); err != nil {
+		// No origin remote configured - this is fine, means no unpushed commits to check
+		s.logger.Debug("No origin remote configured", fn)
+		return false, nil
+	}
+
+	// Get the current branch name
+	// Always capture stdout since we need the output
+	branchCmd := newGitCommand(s.executor("git", "rev-parse", "--abbrev-ref", "HEAD"), directory, true, true)
+	if err := branchCmd.run(); err != nil {
+		return false, fmt.Errorf("failed to get current branch: %w, stderr: %s", err, branchCmd.getStderr())
+	}
+
+	branchName := strings.TrimSpace(branchCmd.getStdout())
+	if branchName == "" {
+		return false, fmt.Errorf("unable to determine current branch")
+	}
+
+	s.logger.Debug("Current branch", fn, zap.String("branch", branchName))
+
+	// Check if the remote branch exists
+	// We don't need stdout here, just the exit code
+	remoteExistsCmd := newGitCommand(s.executor("git", "rev-parse", "--verify", fmt.Sprintf("origin/%s", branchName)), directory, false, false)
+	if err := remoteExistsCmd.run(); err != nil {
+		// Remote branch doesn't exist yet - this means we have unpushed commits (the entire branch is new)
+		s.logger.Debug("Remote branch does not exist, treating as unpushed commits", fn, zap.String("branch", branchName))
+		return true, nil
+	}
+
+	// Check for commits that exist locally but not on the remote
+	// git log origin/branch..HEAD will show commits in HEAD that aren't in origin/branch
+	// Always capture stdout since we need to check if there's output
+	logCmd := newGitCommand(s.executor("git", "log", fmt.Sprintf("origin/%s..HEAD", branchName), "--oneline"), directory, true, true)
+	if err := logCmd.run(); err != nil {
+		return false, fmt.Errorf("failed to check unpushed commits: %w, stderr: %s", err, logCmd.getStderr())
+	}
+
+	s.logger.Debug("git log origin/branch..HEAD", fn, zap.String("branch", branchName), zap.String("stdout", logCmd.getStdout()), zap.String("stderr", logCmd.getStderr()))
+
+	// If there's any output, we have unpushed commits
+	return logCmd.hasStdout(), nil
 }
 
 // PullChanges pulls the latest changes from the remote branch

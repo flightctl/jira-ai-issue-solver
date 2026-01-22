@@ -145,10 +145,10 @@ type GitHubBlobResponse struct {
 
 // GitHubTreeEntry represents a single entry in a tree
 type GitHubTreeEntry struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"` // "100644" for file, "100755" for executable, "040000" for subdirectory, "160000" for submodule, "120000" for symlink
-	Type string `json:"type"` // "blob", "tree", "commit"
-	SHA  string `json:"sha"`  // SHA of the blob or tree
+	Path string  `json:"path"`
+	Mode string  `json:"mode,omitempty"` // "100644" for file, "100755" for executable, "040000" for subdirectory, "160000" for submodule, "120000" for symlink
+	Type string  `json:"type,omitempty"` // "blob", "tree", "commit"
+	SHA  *string `json:"sha"`            // SHA of the blob or tree, or nil to delete the file
 }
 
 // GitHubTreeRequest represents a request to create a tree

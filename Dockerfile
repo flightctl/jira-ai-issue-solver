@@ -22,25 +22,27 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     .
 
 # Runtime stage
-FROM alpine:3.19
+FROM node:22-slim
 
 # Install necessary packages for the runtime
-RUN apk update && \
-    apk add --no-cache \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    bash \
     ca-certificates \
     curl \
     git \
-    nodejs \
-    npm \
-    openssh \
-    && rm -rf /var/cache/apk/*
+    openssh-client \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install AI CLI tools
-RUN npm install -g @google/gemini-cli@0.1.18 @anthropic-ai/claude-code
+# Using latest stable release (0.23.0) for reliability
+# Preview versions (0.24.x) have known PolicyEngine validation issues
+RUN npm install -g @google/gemini-cli@0.23.0 @anthropic-ai/claude-code
 
 # Create non-root user for security
-RUN addgroup -g 1001 appgroup && \
-    adduser -D -s /bin/sh -u 1001 -G appgroup appuser
+RUN groupadd -g 1001 appgroup && \
+    useradd -m -u 1001 -g appgroup -s /bin/bash appuser
 
 # Set working directory
 WORKDIR /app

@@ -301,10 +301,7 @@ type Config struct {
 
 	// GitHub configuration
 	GitHub struct {
-		// Legacy PAT authentication (deprecated, use GitHub App instead)
-		PersonalAccessToken string `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-
-		// GitHub App authentication (recommended)
+		// GitHub App authentication
 		AppID          int64  `yaml:"app_id" mapstructure:"app_id"`
 		PrivateKeyPath string `yaml:"private_key_path" mapstructure:"private_key_path"`
 
@@ -418,7 +415,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	// - JIRA_AI_JIRA_BASE_URL → jira.base_url
 	// - JIRA_AI_JIRA_USERNAME → jira.username
 	// - JIRA_AI_JIRA_GIT_PULL_REQUEST_FIELD_NAME → jira.git_pull_request_field_name
-	// - JIRA_AI_GITHUB_PERSONAL_ACCESS_TOKEN → github.personal_access_token
 
 	// Helper function to bind environment variables with error checking
 	// Panics on error since all keys are static strings and should never fail
@@ -441,7 +437,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("jira.project_keys")
 
 	// GitHub configuration
-	bindEnv("github.personal_access_token")
 	bindEnv("github.app_id")
 	bindEnv("github.private_key_path")
 	bindEnv("github.bot_username")
@@ -661,15 +656,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("github.pr_label", "ai-pr")
 	v.SetDefault("github.max_thread_depth", 5)
 	v.SetDefault("github.known_bot_usernames", []string{
-		"github-actions[bot]",
-		"dependabot[bot]",
-		"renovate[bot]",
+		"github-actions",
+		"dependabot",
+		"renovate",
 		"coderabbitai",
 		"sourcery-ai",
 		"copilot",
-		"deepsource-io[bot]",
+		"deepsource-io",
 		"codefactor-io",
-		"codeclimate[bot]",
+		"codeclimate",
 	})
 
 	// AI Provider defaults
@@ -762,26 +757,15 @@ func (c *Config) validate() error {
 		}
 	}
 
-	// GitHub validation - either PAT or App credentials required
-	hasPAT := c.GitHub.PersonalAccessToken != ""
-	hasAppCreds := c.GitHub.AppID > 0 && c.GitHub.PrivateKeyPath != ""
-
-	if !hasPAT && !hasAppCreds {
-		return errors.New("either github.personal_access_token or github app credentials (app_id, private_key_path) must be provided")
+	// GitHub validation - App credentials required
+	if c.GitHub.AppID <= 0 {
+		return errors.New("github.app_id must be a positive integer")
 	}
-
-	if hasPAT && hasAppCreds {
-		return errors.New("cannot use both github.personal_access_token and github app credentials - choose one authentication method")
+	if c.GitHub.PrivateKeyPath == "" {
+		return errors.New("github.private_key_path must be provided")
 	}
-
-	// Validate app credentials if provided
-	if hasAppCreds {
-		if c.GitHub.AppID <= 0 {
-			return errors.New("github.app_id must be a positive integer")
-		}
-		if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
-			return fmt.Errorf("github.private_key_path file does not exist: %s", c.GitHub.PrivateKeyPath)
-		}
+	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf("github.private_key_path file does not exist: %s", c.GitHub.PrivateKeyPath)
 	}
 
 	if c.GitHub.BotUsername == "" {
@@ -790,12 +774,20 @@ func (c *Config) validate() error {
 
 	// Validate bot email can be determined
 	if c.GetBotEmail() == "" {
-		return errors.New("github.bot_email is required (either set explicitly for PAT mode, or use GitHub App with app_id)")
+		return errors.New("github.bot_email is required (either set explicitly, or it will be auto-constructed from app_id)")
 	}
 
-	// Validate Jira assignee mapping if using GitHub App
-	if hasAppCreds && len(c.Jira.AssigneeToGitHubUsername) == 0 {
-		return errors.New("jira.assignee_to_github_username is required when using GitHub App (needed to map assignees to forks)")
+	// Validate Jira assignee mapping
+	if len(c.Jira.AssigneeToGitHubUsername) == 0 {
+		return errors.New("jira.assignee_to_github_username is required (needed to map assignees to forks)")
+	}
+
+	// Validate AI configuration
+	if c.AI.MaxRetries < 1 {
+		return errors.New("ai.max_retries must be at least 1")
+	}
+	if c.AI.RetryDelaySeconds < 0 {
+		return errors.New("ai.retry_delay_seconds must be non-negative")
 	}
 
 	return nil

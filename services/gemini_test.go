@@ -527,3 +527,131 @@ I've added a blank line after the import block in services/github.go to comply w
 		t.Error("Expected to find at least one _RESPONSE: marker")
 	}
 }
+
+// TestGeminiToolUsageInstructions tests that the tool usage instructions are properly formatted
+func TestGeminiToolUsageInstructions(t *testing.T) {
+	instructions := geminiToolUsageInstructions()
+
+	// Verify it's not empty
+	if instructions == "" {
+		t.Fatal("Tool usage instructions should not be empty")
+	}
+
+	// Verify it contains the critical keywords
+	expectedKeywords := []string{
+		"CRITICAL INSTRUCTIONS",
+		"MUST actually execute commands",
+		"DO NOT create any files named \"response.txt\"",
+		"DO NOT write responses to files",
+		"run_shell_command",
+		"ONLY provide the 'command' argument",
+	}
+
+	for _, keyword := range expectedKeywords {
+		if !strings.Contains(instructions, keyword) {
+			t.Errorf("Tool usage instructions missing expected keyword: %q", keyword)
+		}
+	}
+}
+
+// TestPreparePromptForGemini_IncludesToolInstructions tests that PreparePromptForGemini includes tool usage instructions
+func TestPreparePromptForGemini_IncludesToolInstructions(t *testing.T) {
+	// Create a minimal ticket
+	ticket := &models.JiraTicketResponse{
+		Key: "TEST-123",
+		Fields: models.JiraFields{
+			Summary:     "Test Summary",
+			Description: "Test Description",
+			Comment: models.JiraComments{
+				Comments: []models.JiraComment{},
+			},
+		},
+	}
+
+	prompt := PreparePromptForGemini(ticket)
+
+	// Verify the prompt starts with tool usage instructions
+	if !strings.HasPrefix(prompt, "CRITICAL INSTRUCTIONS") {
+		t.Error("Prompt should start with critical instructions")
+	}
+
+	// Verify critical keywords are present
+	if !strings.Contains(prompt, "run_shell_command") {
+		t.Error("Prompt should contain run_shell_command instructions")
+	}
+
+	// Verify the task content is still there
+	if !strings.Contains(prompt, "Test Summary") {
+		t.Error("Prompt should still contain the ticket summary")
+	}
+	if !strings.Contains(prompt, "Test Description") {
+		t.Error("Prompt should still contain the ticket description")
+	}
+}
+
+// TestPreparePromptForPRFeedbackGemini_IncludesToolInstructions tests that PR feedback prompts include tool usage instructions
+func TestPreparePromptForPRFeedbackGemini_IncludesToolInstructions(t *testing.T) {
+	// Create a minimal PR
+	pr := &models.GitHubPullRequest{
+		Title: "Test PR",
+		Body:  "Test PR Body",
+	}
+
+	// Create a minimal review
+	review := &models.GitHubReview{
+		User: models.GitHubUser{
+			Login: "testuser",
+		},
+		Body: "Please fix this",
+	}
+
+	// Create a temporary directory for the test
+	tempDir, err := os.MkdirTemp("", "gemini-pr-prompt-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Initialize a git repo with proper branches for the diff command
+	commands := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test User"},
+		{"git", "commit", "--allow-empty", "-m", "Initial commit"},
+		{"git", "branch", "-M", "main"},
+		{"git", "remote", "add", "origin", "https://github.com/test/test.git"},
+		// Set up origin/main as a remote tracking branch pointing to local main
+		{"git", "fetch", ".", "main:refs/remotes/origin/main"},
+	}
+
+	for _, cmdArgs := range commands {
+		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("Failed to run git command %v: %v", cmdArgs, err)
+		}
+	}
+
+	prompt, err := PreparePromptForPRFeedbackGemini(pr, review, tempDir)
+	if err != nil {
+		t.Fatalf("PreparePromptForPRFeedbackGemini failed: %v", err)
+	}
+
+	// Verify the prompt starts with tool usage instructions
+	if !strings.HasPrefix(prompt, "CRITICAL INSTRUCTIONS") {
+		t.Error("PR feedback prompt should start with critical instructions")
+	}
+
+	// Verify critical keywords are present
+	if !strings.Contains(prompt, "run_shell_command") {
+		t.Error("PR feedback prompt should contain run_shell_command instructions")
+	}
+
+	// Verify the PR content is still there
+	if !strings.Contains(prompt, "Test PR") {
+		t.Error("Prompt should still contain the PR title")
+	}
+	if !strings.Contains(prompt, "Please fix this") {
+		t.Error("Prompt should still contain the review body")
+	}
+}

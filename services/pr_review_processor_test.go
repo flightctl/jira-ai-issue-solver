@@ -65,7 +65,7 @@ func TestPRReviewProcessor_ExtractPRInfoFromURL(t *testing.T) {
 	}
 }
 
-func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
+func TestPRReviewProcessor_HasReviewFeedback(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
@@ -108,7 +108,7 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "no changes requested",
+			name: "commented review without body should not trigger feedback",
 			reviews: []models.GitHubReview{
 				{
 					User:  models.GitHubUser{Login: "reviewer1"},
@@ -117,6 +117,40 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 				{
 					User:  models.GitHubUser{Login: "reviewer2"},
 					State: "COMMENTED",
+					Body:  "", // Empty body - should not be considered feedback
+				},
+			},
+			want: false,
+		},
+		{
+			name: "commented review with body should trigger feedback",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "reviewer1"},
+					State: "COMMENTED",
+					Body:  "This looks good overall, but please address the minor issues mentioned in my inline comments",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "commented review with body (lowercase) should trigger feedback",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "reviewer1"},
+					State: "commented",
+					Body:  "Please make these changes",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "bot commented review should be ignored",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "ai-bot"},
+					State: "COMMENTED",
+					Body:  "I've processed this PR",
 				},
 			},
 			want: false,
@@ -130,9 +164,9 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := processor.hasRequestChangesReviews(tt.reviews)
+			got := processor.hasReviewFeedback(tt.reviews)
 			if got != tt.want {
-				t.Errorf("hasRequestChangesReviews() = %v, want %v", got, tt.want)
+				t.Errorf("hasReviewFeedback() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -281,13 +315,21 @@ func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
 			StartLine: 0,
 			CreatedAt: time.Now(),
 		},
+		{
+			User:      models.GitHubUser{Login: "reviewer4"},
+			Body:      "Outdated review comment - code changed since this was posted",
+			Path:      "src/database.go", // Has path
+			Line:      0,                 // But line is 0 (outdated)
+			StartLine: 0,
+			CreatedAt: time.Now(),
+		},
 	}
 
 	groupedFeedback := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
 
-	// Should have 3 groups: "src/main.go", "src/util.go", and "" (general)
-	if len(groupedFeedback.Groups) != 3 {
-		t.Errorf("Expected 3 groups, got %d", len(groupedFeedback.Groups))
+	// Should have 4 groups: "src/main.go", "src/util.go", "src/database.go", and "" (general)
+	if len(groupedFeedback.Groups) != 4 {
+		t.Errorf("Expected 4 groups, got %d", len(groupedFeedback.Groups))
 	}
 
 	// Test single-line comment formatting in src/main.go group
@@ -323,6 +365,16 @@ func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
 	// Verify we don't have ":0" anywhere in general comment
 	if strings.Contains(generalGroup.NewFeedback, "reviewer3 on :0") || strings.Contains(generalGroup.NewFeedback, "reviewer3 on 0") {
 		t.Error("General comment should not contain ':0' or spurious path/line references")
+	}
+
+	// Test outdated comment formatting in src/database.go group
+	dbGroup, ok := groupedFeedback.Groups["src/database.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/database.go'")
+	}
+	expectedOutdated := "**Comment by reviewer4 Outdated comment on src/database.go (code has changed since comment was made):**"
+	if !strings.Contains(dbGroup.NewFeedback, expectedOutdated) {
+		t.Errorf("Outdated comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedOutdated, dbGroup.NewFeedback)
 	}
 }
 
@@ -863,10 +915,11 @@ func TestPRReviewProcessor_CollectFeedback_ThreadedReplies(t *testing.T) {
 
 func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
 	config := &models.Config{}
+	// Config uses recommended format without [bot] suffixes
 	config.GitHub.KnownBotUsernames = []string{
-		"github-actions[bot]",
+		"github-actions",
 		"coderabbitai",
-		"dependabot[bot]",
+		"dependabot",
 	}
 	processor := &PRReviewProcessorImpl{
 		config: config,
@@ -890,6 +943,11 @@ func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
 		{
 			name:     "bot suffix",
 			username: "github-actions[bot]",
+			want:     true,
+		},
+		{
+			name:     "bot suffix normalization - config without [bot], username with [bot]",
+			username: "coderabbitai[bot]",
 			want:     true,
 		},
 		{
@@ -1001,7 +1059,7 @@ func TestPRReviewProcessor_ShouldSkipReply(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
 	config.GitHub.MaxThreadDepth = 3
-	config.GitHub.KnownBotUsernames = []string{"coderabbitai", "github-actions[bot]"}
+	config.GitHub.KnownBotUsernames = []string{"coderabbitai", "github-actions"}
 
 	processor := &PRReviewProcessorImpl{
 		config: config,

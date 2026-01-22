@@ -77,6 +77,8 @@ func TestTicketProcessor_ProcessTicket(t *testing.T) {
 		},
 	}
 	config.TempDir = "/tmp/test"
+	config.AI.MaxRetries = 5
+	config.AI.RetryDelaySeconds = 2
 
 	// Create ticket processor
 	processor := NewTicketProcessor(mockJiraService, mockGitHubService, mockClaudeService, config, logger)
@@ -96,10 +98,16 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "test-bot"
 	config.GitHub.BotEmail = "test@example.com"
-	config.GitHub.PersonalAccessToken = "test-token"
+	config.GitHub.AppID = 123456
 	config.GitHub.PRLabel = "ai-pr"
 	config.TempDir = "/tmp"
 	config.Jira.BaseURL = "https://your-domain.atlassian.net"
+	config.Jira.AssigneeToGitHubUsername = map[string]string{
+		"test@example.com": "test-user",
+	}
+	config.AI.GenerateDocumentation = false
+	config.AI.MaxRetries = 5
+	config.AI.RetryDelaySeconds = 2
 	config.Jira.Projects = []models.ProjectConfig{
 		{
 			ProjectKeys: models.ProjectKeys{"TEST"},
@@ -125,6 +133,10 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 			capturedCommitMessage = message
 			return nil
 		},
+		CommitChangesViaAPIFunc: func(owner, repo, branchName, commitMessage, repoDir, coAuthorName, coAuthorEmail string) (string, error) {
+			capturedCommitMessage = commitMessage
+			return "abc123", nil
+		},
 		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
 			capturedHead = head
 			capturedPRTitle = title
@@ -139,10 +151,30 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 			}, nil
 		},
 		ForkRepositoryFunc: func(owner, repo string) (string, error) {
-			return "https://github.com/test-bot/repo.git", nil
+			return "https://github.com/test-user/frontend.git", nil
 		},
-		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
-			return true, "https://github.com/test-bot/repo.git", nil
+		CheckForkExistsFunc: func(forkOwner, repo string) (exists bool, cloneURL string, err error) {
+			// Always return true with the appropriate fork URL
+			return true, "https://github.com/" + forkOwner + "/" + repo + ".git", nil
+		},
+		CheckForkExistsForUserFunc: func(owner, repo, forkOwner string) (bool, error) {
+			// Always return true to indicate the fork exists
+			return true, nil
+		},
+		GetInstallationIDForRepoFunc: func(owner, repo string) (int64, error) {
+			return 12345, nil
+		},
+		CloneRepositoryFunc: func(cloneURL, directory string) error {
+			return nil
+		},
+		CreateBranchFunc: func(directory, branchName string) error {
+			return nil
+		},
+		SwitchToBranchFunc: func(directory, branchName string) error {
+			return nil
+		},
+		PushChangesFunc: func(directory, branchName, forkOwner, repo string) error {
+			return nil
 		},
 		HasChangesFunc: func(directory string) (bool, error) {
 			return true, nil // Mock AI generates changes
@@ -155,6 +187,13 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 				Fields: models.JiraFields{
 					Summary:     "Test ticket",
 					Description: "Test description",
+					IssueType: models.JiraIssueType{
+						Name: "Bug",
+					},
+					Assignee: &models.JiraUser{
+						DisplayName:  "Test User",
+						EmailAddress: "test@example.com",
+					},
 					Components: []models.JiraComponent{
 						{
 							ID:   "1",
@@ -167,8 +206,21 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
 			return "customfield_10001", nil
 		},
+		UpdateTicketStatusFunc: func(key, status string) error {
+			return nil
+		},
+		UpdateTicketFieldFunc: func(key, fieldID string, value interface{}) error {
+			return nil
+		},
+		HasSecurityLevelFunc: func(key string) (bool, error) {
+			return false, nil
+		},
 	}
-	mockAI := &mocks.MockClaudeService{}
+	mockAI := &mocks.MockClaudeService{
+		GenerateCodeFunc: func(prompt, repoDir string) (*models.ClaudeResponse, error) {
+			return &models.ClaudeResponse{Result: "Code generated successfully"}, nil
+		},
+	}
 
 	processor := NewTicketProcessor(mockJira, mockGitHub, mockAI, config, logger)
 
@@ -179,7 +231,8 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 	}
 
 	// Verify that the head parameter was formatted correctly
-	expectedHead := "test-bot:TEST-123"
+	// Format is: forkOwner:branchName where branchName is botUsername/ticketKey
+	expectedHead := "test-user:test-bot/TEST-123"
 	if capturedHead != expectedHead {
 		t.Errorf("Expected head to be '%s', got '%s'", expectedHead, capturedHead)
 	}
@@ -217,10 +270,15 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "test-bot"
 	config.GitHub.BotEmail = "test@example.com"
-	config.GitHub.PersonalAccessToken = "test-token"
+	config.GitHub.AppID = 123456
 	config.GitHub.PRLabel = "ai-pr"
 	config.TempDir = "/tmp"
 	config.Jira.BaseURL = "https://your-domain.atlassian.net"
+	config.Jira.AssigneeToGitHubUsername = map[string]string{
+		"john.doe@example.com": "john-doe-github",
+	}
+	config.AI.MaxRetries = 5
+	config.AI.RetryDelaySeconds = 2
 	config.Jira.Projects = []models.ProjectConfig{
 		{
 			ProjectKeys: models.ProjectKeys{"TEST"},
@@ -245,6 +303,9 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 		CommitChangesFunc: func(directory, message string, coAuthorName, coAuthorEmail string) error {
 			return nil
 		},
+		CommitChangesViaAPIFunc: func(owner, repo, branchName, commitMessage, repoDir, coAuthorName, coAuthorEmail string) (string, error) {
+			return "abc123", nil
+		},
 		CreatePullRequestFunc: func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
 			capturedPRBody = body
 			return &models.GitHubCreatePRResponse{
@@ -257,10 +318,27 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 			}, nil
 		},
 		ForkRepositoryFunc: func(owner, repo string) (string, error) {
-			return "https://github.com/test-bot/repo.git", nil
+			return "https://github.com/john-doe-github/frontend.git", nil
 		},
-		CheckForkExistsFunc: func(owner, repo string) (exists bool, cloneURL string, err error) {
-			return true, "https://github.com/test-bot/repo.git", nil
+		CheckForkExistsFunc: func(forkOwner, repo string) (exists bool, cloneURL string, err error) {
+			// Always return true with the appropriate fork URL
+			return true, "https://github.com/" + forkOwner + "/" + repo + ".git", nil
+		},
+		CheckForkExistsForUserFunc: func(owner, repo, forkOwner string) (bool, error) {
+			// Always return true to indicate the fork exists
+			return true, nil
+		},
+		GetInstallationIDForRepoFunc: func(owner, repo string) (int64, error) {
+			return 12345, nil
+		},
+		CloneRepositoryFunc: func(cloneURL, directory string) error {
+			return nil
+		},
+		SwitchToBranchFunc: func(directory, branchName string) error {
+			return nil
+		},
+		PushChangesFunc: func(directory, branchName, forkOwner, repo string) error {
+			return nil
 		},
 		HasChangesFunc: func(directory string) (bool, error) {
 			return true, nil // Mock AI generates changes
@@ -290,7 +368,11 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 			return "customfield_10001", nil
 		},
 	}
-	mockAI := &mocks.MockClaudeService{}
+	mockAI := &mocks.MockClaudeService{
+		GenerateCodeFunc: func(prompt, repoDir string) (*models.ClaudeResponse, error) {
+			return &models.ClaudeResponse{Result: "Code generated successfully"}, nil
+		},
+	}
 
 	processor := NewTicketProcessor(mockJira, mockGitHub, mockAI, config, logger)
 
@@ -389,6 +471,8 @@ func TestTicketProcessor_ConfigurableStatusTransitions(t *testing.T) {
 		},
 	}
 	config.TempDir = "/tmp/test"
+	config.AI.MaxRetries = 5
+	config.AI.RetryDelaySeconds = 2
 
 	// Create ticket processor
 	processor := NewTicketProcessor(mockJiraService, mockGitHubService, mockClaudeService, config, zap.NewNop())

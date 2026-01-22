@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,12 +12,38 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
 )
+
+//go:embed templates/claude_prompt.tmpl
+var claudePromptTemplate string
+
+//go:embed templates/claude_pr_feedback_prompt.tmpl
+var claudePRFeedbackPromptTemplate string
+
+var (
+	claudePromptTmpl           *template.Template
+	claudePRFeedbackPromptTmpl *template.Template
+)
+
+func init() {
+	var err error
+
+	claudePromptTmpl, err = template.New("claude_prompt").Parse(claudePromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse Claude prompt template: %v", err))
+	}
+
+	claudePRFeedbackPromptTmpl, err = template.New("claude_pr_feedback_prompt").Parse(claudePRFeedbackPromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse Claude PR feedback prompt template: %v", err))
+	}
+}
 
 // getContentAsString safely converts content to string, handling both string and array types
 func getContentAsString(content interface{}) string {
@@ -365,61 +392,37 @@ func (s *ClaudeServiceImpl) GenerateCodeClaude(prompt string, repoDir string) (*
 }
 
 // PreparePrompt prepares a prompt for Claude CLI based on the Jira ticket
+type claudePromptData struct {
+	Ticket      *models.JiraTicketResponse
+	Comments    []models.JiraComment
+	HasComments bool
+}
+
 func PreparePrompt(ticket *models.JiraTicketResponse) string {
-	var sb strings.Builder
-
-	sb.WriteString("# Task\n\n")
-	sb.WriteString(fmt.Sprintf("## %s\n\n", ticket.Fields.Summary))
-	sb.WriteString(fmt.Sprintf("%s\n\n", ticket.Fields.Description))
-
-	// Add comments if available
-	if len(ticket.Fields.Comment.Comments) > 0 {
-		sb.WriteString("## Comments\n\n")
-		for _, comment := range ticket.Fields.Comment.Comments {
-			sb.WriteString(fmt.Sprintf("**%s** (%s):\n%s\n\n",
-				comment.Author.DisplayName,
-				comment.Created.Format("2006-01-02 15:04:05"),
-				comment.Body))
-		}
+	data := claudePromptData{
+		Ticket:      ticket,
+		Comments:    ticket.Fields.Comment.Comments,
+		HasComments: len(ticket.Fields.Comment.Comments) > 0,
 	}
 
-	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("1. First, examine any relevant *.md files (README.md, CONTRIBUTING.md, etc.) in the repository (these might be nested so search the entire repo!) to understand the project structure, testing conventions, and how to run tests.\n")
-	sb.WriteString("2. Analyze the task description and comments.\n")
-	sb.WriteString("3. Implement the necessary changes to fulfill the requirements.\n")
-	sb.WriteString("4. Write tests for the implemented functionality if appropriate.\n")
-	sb.WriteString("5. Update documentation if necessary.\n")
-	sb.WriteString("6. Make sure the project builds successfully before running tests.\n")
-	sb.WriteString("7. Review the markdown files (README.md, CONTRIBUTING.md, etc.) to understand how tests should be run for this project. These files might be nested inside directories, so search the entire repository structure.\n")
-	sb.WriteString("8. Verify your changes by running the relevant tests to ensure they work correctly.\n")
-	sb.WriteString("9. Provide a summary of the changes made.\n")
-	sb.WriteString("10. IMPORTANT: Do NOT perform any git operations (commit, push, pull, etc.). Git handling is managed by the system.\n\n")
+	var buf bytes.Buffer
+	if err := claudePromptTmpl.Execute(&buf, data); err != nil {
+		// Fallback to simple prompt on template error
+		return fmt.Sprintf("# Task\n\n## %s\n\n%s\n\n# Instructions\n\nImplement the changes described above.",
+			ticket.Fields.Summary, ticket.Fields.Description)
+	}
 
-	sb.WriteString("# Output Format\n\n")
-	sb.WriteString("Please provide your response in the following format:\n\n")
-	sb.WriteString("```\n")
-	sb.WriteString("## Summary\n")
-	sb.WriteString("<A brief summary of the changes made>\n\n")
-	sb.WriteString("## Changes Made\n")
-	sb.WriteString("<List of files modified and a description of the changes>\n\n")
-	sb.WriteString("## Testing\n")
-	sb.WriteString("<Description of how the changes were tested>\n")
-	sb.WriteString("```\n")
+	return buf.String()
+}
 
-	return sb.String()
+type claudePRFeedbackPromptData struct {
+	PR     *models.GitHubPullRequest
+	Review *models.GitHubReview
+	Diff   string
 }
 
 // PreparePromptForPRFeedback prepares a prompt for Claude CLI based on PR feedback
 func PreparePromptForPRFeedback(pr *models.GitHubPullRequest, review *models.GitHubReview, repoDir string) (string, error) {
-	var sb strings.Builder
-
-	sb.WriteString("# Pull Request Feedback\n\n")
-	sb.WriteString(fmt.Sprintf("## PR: %s\n\n", pr.Title))
-	sb.WriteString(fmt.Sprintf("%s\n\n", pr.Body))
-
-	sb.WriteString("## Review Feedback\n\n")
-	sb.WriteString(fmt.Sprintf("**%s**:\n%s\n\n", review.User.Login, review.Body))
-
 	// Get the diff of the PR
 	cmd := exec.Command("git", "diff", "origin/main...HEAD")
 	cmd.Dir = repoDir
@@ -433,34 +436,20 @@ func PreparePromptForPRFeedback(pr *models.GitHubPullRequest, review *models.Git
 		return "", fmt.Errorf("failed to get PR diff: %w, stderr: %s", err, stderr.String())
 	}
 
-	sb.WriteString("## Current Changes\n\n")
-	sb.WriteString("```diff\n")
-	sb.WriteString(stdout.String())
-	sb.WriteString("\n```\n\n")
+	data := claudePRFeedbackPromptData{
+		PR:     pr,
+		Review: review,
+		Diff:   stdout.String(),
+	}
 
-	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("1. Analyze the PR feedback and the current changes.\n")
-	sb.WriteString("2. Implement the necessary changes to address the feedback.\n")
-	sb.WriteString("3. Update tests if necessary.\n")
-	sb.WriteString("4. Update documentation if necessary.\n")
-	sb.WriteString("5. Make sure the project builds successfully before running tests.\n")
-	sb.WriteString("6. Review the markdown files (README.md, CONTRIBUTING.md, etc.) to understand how tests should be run for this project. These files might be nested inside directories, so search the entire repository structure.\n")
-	sb.WriteString("7. Verify your changes by running the relevant tests to ensure they work correctly.\n")
-	sb.WriteString("8. Provide a summary of the changes made.\n")
-	sb.WriteString("9. IMPORTANT: Do NOT perform any git operations (commit, push, pull, etc.). Git handling is managed by the system.\n\n")
+	var buf bytes.Buffer
+	if err := claudePRFeedbackPromptTmpl.Execute(&buf, data); err != nil {
+		// Fallback to simple prompt on template error
+		return fmt.Sprintf("# Pull Request Feedback\n\n## PR: %s\n\n%s\n\n## Review Feedback\n\n**%s**:\n%s\n\nPlease address the feedback.",
+			pr.Title, pr.Body, review.User.Login, review.Body), nil
+	}
 
-	sb.WriteString("# Output Format\n\n")
-	sb.WriteString("Please provide your response in the following format:\n\n")
-	sb.WriteString("```\n")
-	sb.WriteString("## Summary\n")
-	sb.WriteString("<A brief summary of the changes made>\n\n")
-	sb.WriteString("## Changes Made\n")
-	sb.WriteString("<List of files modified and a description of the changes>\n\n")
-	sb.WriteString("## Feedback Addressed\n")
-	sb.WriteString("<Description of how the feedback was addressed>\n")
-	sb.WriteString("```\n")
-
-	return sb.String(), nil
+	return buf.String(), nil
 }
 
 // GetChangedFiles gets a list of files changed in the current branch

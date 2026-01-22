@@ -1,0 +1,43 @@
+# Pull Request Feedback
+
+## PR: {{.PR.Title}}
+
+{{.PR.Body}}
+
+## Review Feedback
+
+**{{.Review.User.Login}}**:
+{{.Review.Body}}
+
+## Current Changes
+
+```diff
+{{.Diff}}
+```
+
+# Instructions
+
+1. Analyze the PR feedback and the current changes.
+2. Implement the necessary changes to address the feedback.
+3. Update tests if necessary.
+4. Update documentation if necessary.
+5. Make sure the project builds successfully before running tests.
+6. Review the markdown files (README.md, CONTRIBUTING.md, etc.) to understand how tests should be run for this project. These files might be nested inside directories, so search the entire repository structure.
+7. Verify your changes by running the relevant tests to ensure they work correctly.
+8. Provide a summary of the changes made.
+9. IMPORTANT: Do NOT perform any git operations (commit, push, pull, fetch, etc.). Git handling is managed by the system.
+
+# Output Format
+
+Please provide your response in the following format:
+
+```
+## Summary
+<A brief summary of the changes made>
+
+## Changes Made
+<List of files modified and a description of the changes>
+
+## Feedback Addressed
+<Description of how the feedback was addressed>
+```

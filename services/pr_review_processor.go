@@ -1,18 +1,34 @@
 package services
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"maps"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
+	"text/template"
 	"time"
 
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
 )
+
+//go:embed templates/pr_review_feedback_prompt.tmpl
+var prReviewFeedbackPromptTemplate string
+
+var prReviewFeedbackPromptTmpl *template.Template
+
+func init() {
+	var err error
+	prReviewFeedbackPromptTmpl, err = template.New("pr_review_feedback_prompt").Parse(prReviewFeedbackPromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse PR review feedback prompt template: %v", err))
+	}
+}
 
 // PRReviewProcessor defines the interface for processing PR review feedback
 type PRReviewProcessor interface {
@@ -134,10 +150,10 @@ func (p *PRReviewProcessorImpl) ProcessPRReviewFeedback(ticketKey string) error 
 	filteredReviews := p.filterReviewsByTimestamp(prDetails.Reviews, lastProcessedTime)
 	filteredComments := p.filterCommentsByTimestamp(prDetails.Comments, lastProcessedTime)
 
-	// Check if there are any "request changes" reviews in the filtered set
-	hasRequestChanges := p.hasRequestChangesReviews(filteredReviews)
-	if !hasRequestChanges && len(filteredComments) == 0 {
-		p.logger.Info("No new 'request changes' reviews or comments found for PR", zap.String("ticket", ticketKey), zap.Int("pr_number", prNumber), zap.Time("last_processed", lastProcessedTime))
+	// Check if there are any reviews with feedback (CHANGES_REQUESTED or COMMENTED with body)
+	hasReviewFeedback := p.hasReviewFeedback(filteredReviews)
+	if !hasReviewFeedback && len(filteredComments) == 0 {
+		p.logger.Info("No new review feedback or comments found for PR", zap.String("ticket", ticketKey), zap.Int("pr_number", prNumber), zap.Time("last_processed", lastProcessedTime))
 		return nil
 	}
 
@@ -321,14 +337,17 @@ func (p *PRReviewProcessorImpl) extractPRInfoFromURL(prURL string) (owner, repo 
 	return owner, repo, prNumber, nil
 }
 
-// hasRequestChangesReviews checks if there are any "request changes" reviews from non-bot users
-func (p *PRReviewProcessorImpl) hasRequestChangesReviews(reviews []models.GitHubReview) bool {
+// hasReviewFeedback checks if there are any reviews with actionable feedback from non-bot users
+// This includes "CHANGES_REQUESTED" reviews and "COMMENTED" reviews with a body
+func (p *PRReviewProcessorImpl) hasReviewFeedback(reviews []models.GitHubReview) bool {
 	for _, review := range reviews {
 		// Skip reviews from the bot itself to prevent infinite loops
 		if p.isOurBot(review.User.Login) {
 			continue
 		}
-		if strings.ToLower(review.State) == "changes_requested" {
+		state := strings.ToLower(review.State)
+		// Process CHANGES_REQUESTED reviews or COMMENTED reviews that have a body
+		if state == "changes_requested" || (state == "commented" && review.Body != "") {
 			return true
 		}
 	}
@@ -396,11 +415,20 @@ func (p *PRReviewProcessorImpl) buildGroupFeedbackString(path string, group *Fee
 	for commentID, comment := range group.CommentMap {
 		// Format comment location
 		var location string
-		if comment.Path == "" || comment.Line == 0 {
+		if comment.Path == "" {
+			// No path - general conversation comment
 			location = "General comment"
 			p.logger.Debug("New general conversation comment",
 				zap.String("user", comment.User.Login),
 				zap.String("id", commentID))
+		} else if comment.Line == 0 {
+			// Has path but no line - outdated review comment (code changed since comment was made)
+			location = fmt.Sprintf("Outdated comment on %s (code has changed since comment was made)", comment.Path)
+			p.logger.Debug("New outdated review comment",
+				zap.String("user", comment.User.Login),
+				zap.String("path", comment.Path),
+				zap.String("id", commentID),
+				zap.String("group", path))
 		} else if comment.StartLine > 0 && comment.StartLine != comment.Line {
 			location = fmt.Sprintf("on %s:%d-%d", comment.Path, comment.StartLine, comment.Line)
 			p.logger.Debug("New multi-line review comment",
@@ -529,11 +557,11 @@ func (p *PRReviewProcessorImpl) collectFeedback(reviews []models.GitHubReview, c
 
 			// Determine which group this comment belongs to
 			groupKey := ""
-			if comment.Path != "" && comment.Line > 0 {
-				// File-specific comment
+			if comment.Path != "" {
+				// File-specific comment (includes outdated comments where line is null/0)
 				groupKey = comment.Path
 			}
-			// else: general comment, stays in "" group
+			// else: general conversation comment (no path), stays in "" group
 
 			group := getGroup(groupKey)
 			group.CommentMap[commentID] = comment
@@ -597,6 +625,154 @@ func (p *PRReviewProcessorImpl) getRepositoryURLFromPR(pr *models.GitHubPRDetail
 	return pr.Head.Repo.CloneURL, nil
 }
 
+// processFeedbackGroupWithRetry processes a single feedback group with AI retry logic
+// Returns the parsed AI responses and whether processing succeeded
+func (p *PRReviewProcessorImpl) processFeedbackGroupWithRetry(
+	ticketKey, groupLabel, repoDir string,
+	pr *models.GitHubPRDetails,
+	feedbackData *FeedbackData,
+	summary string,
+	expectedIDs []string,
+) (map[string]string, bool, error) {
+	prompt := p.generateFeedbackPrompt(pr, feedbackData, summary)
+
+	maxRetries := p.config.AI.MaxRetries
+
+	p.logger.Info("Starting AI feedback processing with retry logic",
+		zap.String("ticket", ticketKey),
+		zap.String("group", groupLabel),
+		zap.Int("maxRetries", maxRetries),
+		zap.Int("expected_responses", len(expectedIDs)))
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		p.logger.Info("AI feedback processing attempt",
+			zap.String("ticket", ticketKey),
+			zap.String("group", groupLabel),
+			zap.Int("attempt", attempt),
+			zap.Int("maxRetries", maxRetries))
+
+		// Run AI service to generate code fixes and get the AI output
+		aiOutput, err := p.aiService.GenerateCode(prompt, repoDir)
+		if err != nil {
+			p.logger.Error("AI feedback processing failed",
+				zap.String("ticket", ticketKey),
+				zap.String("group", groupLabel),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			// Don't retry on hard errors - fail fast
+			return nil, false, fmt.Errorf("failed to generate code fixes: %w", err)
+		}
+
+		// Parse individual responses from AI output
+		aiOutputStr, ok := aiOutput.(string)
+		if !ok {
+			return nil, false, fmt.Errorf("AI output has unexpected type %T, expected string", aiOutput)
+		}
+
+		if aiOutputStr == "" {
+			p.logger.Warn("AI output is empty for group",
+				zap.String("group", groupLabel),
+				zap.String("attempt", fmt.Sprintf("%d/%d", attempt, maxRetries)))
+
+			// Retry if we have attempts remaining
+			if attempt < maxRetries {
+				retryDelay := time.Duration(p.config.AI.RetryDelaySeconds) * time.Second
+				p.logger.Info("Waiting before retry due to empty output",
+					zap.String("ticket", ticketKey),
+					zap.String("group", groupLabel),
+					zap.Duration("delay", retryDelay))
+				time.Sleep(retryDelay)
+				continue
+			}
+
+			// No more retries - return empty responses
+			return make(map[string]string), false, nil
+		}
+
+		// Parse responses for this group
+		groupResponses := p.parseCommentResponses(aiOutputStr, expectedIDs)
+
+		// Check if AI actually made any changes to the repository
+		hasChanges, err := p.githubService.HasChanges(repoDir)
+		if err != nil {
+			p.logger.Error("Failed to check for repository changes",
+				zap.String("ticket", ticketKey),
+				zap.String("group", groupLabel),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			// Don't fail - assume changes exist to be safe
+			hasChanges = true
+		}
+
+		// Check if we got the expected number of responses
+		responsesComplete := len(groupResponses) >= len(expectedIDs)
+		if !responsesComplete {
+			p.logger.Warn("AI did not provide all expected responses",
+				zap.String("ticket", ticketKey),
+				zap.String("group", groupLabel),
+				zap.Int("attempt", attempt),
+				zap.Int("expected", len(expectedIDs)),
+				zap.Int("received", len(groupResponses)))
+		}
+
+		// Retry if either condition fails: incomplete responses OR no changes made
+		if (!responsesComplete || !hasChanges) && attempt < maxRetries {
+			if !hasChanges {
+				p.logger.Warn("AI completed but made no repository changes",
+					zap.String("ticket", ticketKey),
+					zap.String("group", groupLabel),
+					zap.Int("attempt", attempt))
+			}
+
+			retryDelay := time.Duration(p.config.AI.RetryDelaySeconds) * time.Second
+			reasonParts := []string{}
+			if !responsesComplete {
+				reasonParts = append(reasonParts, "incomplete responses")
+			}
+			if !hasChanges {
+				reasonParts = append(reasonParts, "no changes")
+			}
+			p.logger.Info("Waiting before retry",
+				zap.String("ticket", ticketKey),
+				zap.String("group", groupLabel),
+				zap.String("reason", strings.Join(reasonParts, " and ")),
+				zap.Duration("delay", retryDelay))
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		// If we got here with incomplete responses or no changes on final attempt, warn but proceed
+		if !responsesComplete && attempt == maxRetries {
+			p.logger.Warn("Proceeding with partial AI responses after all retries",
+				zap.String("ticket", ticketKey),
+				zap.String("group", groupLabel),
+				zap.Int("received", len(groupResponses)),
+				zap.Int("expected", len(expectedIDs)))
+		}
+		if !hasChanges && attempt == maxRetries {
+			p.logger.Warn("Proceeding despite no repository changes after all retries",
+				zap.String("ticket", ticketKey),
+				zap.String("group", groupLabel))
+		}
+
+		// Success - we got responses (even if partial) or made changes
+		p.logger.Info("AI feedback processing completed",
+			zap.String("ticket", ticketKey),
+			zap.String("group", groupLabel),
+			zap.Int("attempt", attempt),
+			zap.Int("responses", len(groupResponses)),
+			zap.Bool("has_changes", hasChanges))
+		return groupResponses, true, nil
+	}
+
+	// Exhausted all retries without success
+	p.logger.Error("AI failed to generate responses after all retries",
+		zap.String("ticket", ticketKey),
+		zap.String("group", groupLabel),
+		zap.Int("attempts", maxRetries))
+	return make(map[string]string), false, nil
+}
+
 // applyFeedbackFixes applies the feedback fixes to the code, processing each file group separately
 // TODO: Add test coverage for error paths: AI service errors, type assertion failures, clone/checkout/pull failures
 func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr *models.GitHubPRDetails, groupedFeedback *GroupedFeedbackData, owner, repo string, prNumber int) error {
@@ -658,33 +834,6 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 			zap.Int("comments", len(feedbackData.CommentMap)),
 			zap.Int("reviews", len(feedbackData.ReviewCommentMap)))
 
-		// Generate a prompt for the AI service to fix the code based on this group's feedback
-		prompt := p.generateFeedbackPrompt(pr, feedbackData, groupedFeedback.Summary)
-
-		// Run AI service to generate code fixes and get the AI output
-		aiOutput, err := p.aiService.GenerateCode(prompt, repoDir)
-		if err != nil {
-			return fmt.Errorf("failed to generate code fixes for group '%s': %w", groupLabel, err)
-		}
-
-		// Parse individual responses from AI output
-		aiOutputStr, ok := aiOutput.(string)
-		if !ok {
-			return fmt.Errorf("AI output has unexpected type %T for group '%s', expected string", aiOutput, groupLabel)
-		}
-		if aiOutputStr == "" {
-			// Log the prompt (truncated) to help debug why AI didn't respond
-			truncatedPrompt := prompt
-			if len(prompt) > 500 {
-				truncatedPrompt = prompt[:500] + "... (truncated)"
-			}
-			p.logger.Warn("AI output is empty for group",
-				zap.String("group", groupLabel),
-				zap.String("prompt_preview", truncatedPrompt))
-			skippedGroups = append(skippedGroups, groupLabel)
-			continue
-		}
-
 		// Build list of expected IDs for this group
 		var expectedIDs []string
 		for id := range feedbackData.CommentMap {
@@ -696,8 +845,19 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 		// Sort for deterministic output in logs and tests
 		sort.Strings(expectedIDs)
 
-		// Parse responses for this group
-		groupResponses := p.parseCommentResponses(aiOutputStr, expectedIDs)
+		// Process feedback group with retry logic
+		groupResponses, succeeded, err := p.processFeedbackGroupWithRetry(
+			ticketKey, groupLabel, repoDir, pr, feedbackData,
+			groupedFeedback.Summary, expectedIDs)
+		if err != nil {
+			return fmt.Errorf("failed to process feedback group '%s': %w", groupLabel, err)
+		}
+
+		// If processing failed or no responses, skip this group
+		if !succeeded || len(groupResponses) == 0 {
+			skippedGroups = append(skippedGroups, groupLabel)
+			continue
+		}
 
 		// Add to accumulated responses
 		maps.Copy(allResponses, groupResponses)
@@ -721,21 +881,27 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 	// Use API commits for GitHub App (creates verified commits)
 	// Use CLI commits for PAT (requires git push separately)
 	if p.config.GitHub.AppID != 0 {
-		// GitHub App mode: Use API to create verified commit
+		// GitHub App mode: Create verified commit from local state
+		// This handles both working tree changes and local commits (including merge commits)
 		p.logger.Info("Creating verified commit via GitHub API for PR feedback",
 			zap.String("ticket", ticketKey),
 			zap.String("owner", forkOwner),
 			zap.String("repo", repo),
 			zap.String("branch", branchName))
 
-		commitSHA, err := p.githubService.CommitChangesViaAPI(forkOwner, repo, branchName, commitMessage, repoDir, coAuthorName, coAuthorEmail)
+		commitSHA, err := p.githubService.CreateVerifiedCommitFromLocal(forkOwner, repo, branchName, commitMessage, repoDir, coAuthorName, coAuthorEmail)
 		if err != nil {
-			return fmt.Errorf("failed to commit changes via API: %w", err)
+			return fmt.Errorf("failed to create verified commit: %w", err)
 		}
 
-		p.logger.Info("Successfully created verified commit for PR feedback",
-			zap.String("ticket", ticketKey),
-			zap.String("commit_sha", commitSHA))
+		if commitSHA != "" {
+			p.logger.Info("Successfully created verified commit for PR feedback",
+				zap.String("ticket", ticketKey),
+				zap.String("commit_sha", commitSHA))
+		} else {
+			p.logger.Info("No changes to commit for PR feedback",
+				zap.String("ticket", ticketKey))
+		}
 
 		// No push needed - commit is already on GitHub
 	} else {
@@ -784,10 +950,14 @@ func (p *PRReviewProcessorImpl) applyFeedbackFixes(ticketKey, forkURL string, pr
 }
 
 // isKnownBot checks if a username matches a known bot pattern
+// Normalizes usernames by stripping [bot] suffix to handle GitHub Apps that append it
 func (p *PRReviewProcessorImpl) isKnownBot(username string) bool {
-	usernameLower := strings.ToLower(username)
+	// Normalize: strip [bot] suffix and lowercase for comparison
+	normalizedUsername := strings.ToLower(strings.TrimSuffix(username, "[bot]"))
+
 	for _, botUsername := range p.config.GitHub.KnownBotUsernames {
-		if strings.ToLower(botUsername) == usernameLower {
+		normalizedBot := strings.ToLower(strings.TrimSuffix(botUsername, "[bot]"))
+		if normalizedBot == normalizedUsername {
 			return true
 		}
 	}
@@ -901,8 +1071,8 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 		// Format response with bot marker
 		replyBody := fmt.Sprintf("🤖 %s", response)
 
-		// For line-based review comments (have Path), use threaded reply
-		if comment.Path != "" && comment.Line > 0 {
+		// For line-based review comments (have Path, including outdated ones), use threaded reply
+		if comment.Path != "" {
 			err := p.githubService.ReplyToPRComment(owner, repo, prNumber, comment.ID, replyBody)
 			if err != nil {
 				failCount++
@@ -973,98 +1143,36 @@ func (p *PRReviewProcessorImpl) postIndividualReplies(owner, repo string, prNumb
 }
 
 // generateFeedbackPrompt generates a prompt for the AI service to fix code based on feedback
+type prReviewFeedbackPromptData struct {
+	PR                    *models.GitHubPRDetails
+	Summary               string
+	NewFeedback           string
+	ToolUsageInstructions string
+}
+
 func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedbackData *FeedbackData, summary string) string {
-	var prompt strings.Builder
-
-	prompt.WriteString("You are an expert software engineer addressing pull request review feedback.\n\n")
-
-	// PR context in structured XML
-	prompt.WriteString("<pr_context>\n")
-	prompt.WriteString(fmt.Sprintf("<title>%s</title>\n", pr.Title))
-	prompt.WriteString(fmt.Sprintf("<url>%s</url>\n\n", pr.HTMLURL))
-
-	prompt.WriteString("<description>\n")
-	if pr.Body != "" {
-		prompt.WriteString(pr.Body)
-	} else {
-		prompt.WriteString("(No description provided)")
-	}
-	prompt.WriteString("\n</description>\n\n")
-
-	prompt.WriteString("<changed_files>\n")
-	for _, file := range pr.Files {
-		prompt.WriteString(fmt.Sprintf("<file path=\"%s\" status=\"%s\" additions=\"%d\" deletions=\"%d\">\n",
-			file.Filename, file.Status, file.Additions, file.Deletions))
-		if file.Patch != "" {
-			prompt.WriteString("<diff>\n")
-			prompt.WriteString(file.Patch)
-			prompt.WriteString("\n</diff>\n")
-		}
-		prompt.WriteString("</file>\n\n")
-	}
-	prompt.WriteString("</changed_files>\n")
-	prompt.WriteString("</pr_context>\n\n")
-
-	// Include summary of previously addressed items if available
-	if summary != "" {
-		prompt.WriteString("<previously_addressed>\n")
-		prompt.WriteString(summary)
-		prompt.WriteString("</previously_addressed>\n\n")
+	toolInstructions := ""
+	// Add critical tool usage instructions for Gemini (only applies when using Gemini provider)
+	if p.config != nil && p.config.AIProvider == "gemini" {
+		toolInstructions = geminiToolUsageInstructions()
 	}
 
-	// Include NEW feedback with IDs
-	prompt.WriteString("<new_feedback>\n")
-	prompt.WriteString(feedbackData.NewFeedback)
-	prompt.WriteString("</new_feedback>\n\n")
+	data := prReviewFeedbackPromptData{
+		PR:                    pr,
+		Summary:               summary,
+		NewFeedback:           feedbackData.NewFeedback,
+		ToolUsageInstructions: toolInstructions,
+	}
 
-	// Clear task definition with testing emphasis
-	prompt.WriteString("<task>\n")
-	prompt.WriteString("Your task is to:\n\n")
-	prompt.WriteString("1. Read and understand each piece of feedback marked with COMMENT_X or REVIEW_X\n")
-	prompt.WriteString("2. Apply the necessary code fixes to address each concern\n")
-	prompt.WriteString("3. Update or add tests to verify your changes work correctly\n")
-	prompt.WriteString("4. Provide a brief response (1-3 sentences) for each item explaining what you changed\n\n")
+	var buf bytes.Buffer
+	if err := prReviewFeedbackPromptTmpl.Execute(&buf, data); err != nil {
+		// Fallback to simple prompt on template error
+		p.logger.Error("Failed to execute PR review feedback prompt template", zap.Error(err))
+		return fmt.Sprintf("You are an expert software engineer addressing pull request review feedback.\n\n<pr_context>\n<title>%s</title>\n\n<new_feedback>\n%s\n</new_feedback>\n\nPlease address the feedback.",
+			pr.Title, feedbackData.NewFeedback)
+	}
 
-	prompt.WriteString("Response format - for each feedback item, use this exact structure:\n\n")
-	prompt.WriteString("<response_format>\n")
-	prompt.WriteString("COMMENT_1_RESPONSE:\n")
-	prompt.WriteString("Brief explanation of what you changed to address this feedback.\n")
-	prompt.WriteString("\n")
-	prompt.WriteString("COMMENT_2_RESPONSE:\n")
-	prompt.WriteString("Brief explanation of your fix.\n")
-	prompt.WriteString("\n")
-	prompt.WriteString("REVIEW_1_RESPONSE:\n")
-	prompt.WriteString("Brief explanation addressing the review feedback.\n")
-	prompt.WriteString("\n")
-	prompt.WriteString("</response_format>\n\n")
-
-	prompt.WriteString("Requirements for each response:\n")
-	prompt.WriteString("- Start with the exact ID followed by _RESPONSE: (e.g., COMMENT_1_RESPONSE:)\n")
-	prompt.WriteString("- Keep responses concise: 1-3 sentences explaining what changed\n")
-	prompt.WriteString("- End each response with a blank line\n")
-	prompt.WriteString("- Provide a response for every feedback item listed above\n")
-	prompt.WriteString("- Do not just write 'Fixed' or 'Done' - explain what you actually changed\n")
-	prompt.WriteString("</task>\n\n")
-
-	// Testing guidance for feedback fixes
-	prompt.WriteString("<testing_guidance>\n")
-	prompt.WriteString("When making changes based on feedback:\n\n")
-	prompt.WriteString("- If the feedback requests new functionality: add tests covering the new behavior\n")
-	prompt.WriteString("- If the feedback identifies a bug: add a test that would have caught it (regression test)\n")
-	prompt.WriteString("- If the feedback requests refactoring: ensure existing tests still pass and cover edge cases\n")
-	prompt.WriteString("- If the feedback points out missing error handling: add tests for those error scenarios\n\n")
-	prompt.WriteString("Your tests should verify the fix addresses the reviewer's concern.\n")
-	prompt.WriteString("</testing_guidance>\n\n")
-
-	prompt.WriteString("<approach>\n")
-	prompt.WriteString("First, briefly outline your plan for addressing the feedback:\n\n")
-	prompt.WriteString("1. Summarize what the reviewers are asking for\n")
-	prompt.WriteString("2. Identify which files need changes (implementation and tests)\n")
-	prompt.WriteString("3. Describe your fix strategy and test coverage plan\n\n")
-	prompt.WriteString("Then implement the fixes, update/add tests, and provide your responses in the format specified above.\n")
-	prompt.WriteString("</approach>\n")
-
-	return prompt.String()
+	return buf.String()
 }
 
 // parseCommentResponses extracts individual comment responses from AI output

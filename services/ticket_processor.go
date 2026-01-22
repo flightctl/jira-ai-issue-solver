@@ -1,14 +1,30 @@
 package services
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"strings"
+	"text/template"
 	"time"
 
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
 )
+
+//go:embed templates/ticket_prompt.tmpl
+var ticketPromptTemplate string
+
+var promptTemplate *template.Template
+
+func init() {
+	var err error
+	promptTemplate, err = template.New("ticket_prompt").Parse(ticketPromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse ticket prompt template: %v", err))
+	}
+}
 
 // TicketProcessor defines the interface for processing Jira tickets
 type TicketProcessor interface {
@@ -268,8 +284,9 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
-	// Create a new branch
-	branchName := ticketKey
+	// Create a new branch with bot username prefix to avoid conflicts with human-created branches
+	// (e.g., "bugs-buddy-jira-ai-issue-solver/EDM-2747")
+	branchName := fmt.Sprintf("%s/%s", p.config.GitHub.BotUsername, ticketKey)
 	err = p.githubService.CreateBranch(repoDir, branchName)
 	if err != nil {
 		p.logger.Error("Failed to create branch",
@@ -304,9 +321,6 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	// AI systems can sometimes be non-deterministic or fail silently without making changes
 	var hasChanges bool
 	maxRetries := p.config.AI.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 5 // Fallback to safe default
-	}
 
 	p.logger.Info("Starting AI code generation with retry logic",
 		zap.String("ticket", ticketKey),
@@ -537,98 +551,41 @@ func (p *TicketProcessorImpl) handleFailure(ticketKey, errorMessage string) {
 }
 
 // generatePrompt generates a prompt for AI based on the ticket
+// ticketPromptData holds the data for rendering the ticket prompt template
+type ticketPromptData struct {
+	Ticket      *models.JiraTicketResponse
+	Comments    []models.JiraComment
+	HasComments bool
+}
+
 func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) string {
-	var prompt strings.Builder
-
-	prompt.WriteString("You are an expert software engineer tasked with implementing changes to resolve a Jira ticket.\n\n")
-
-	// Ticket information in structured XML format
-	prompt.WriteString("<ticket>\n")
-	prompt.WriteString(fmt.Sprintf("<key>%s</key>\n", ticket.Key))
-	prompt.WriteString(fmt.Sprintf("<type>%s</type>\n", ticket.Fields.IssueType.Name))
-	prompt.WriteString(fmt.Sprintf("<summary>%s</summary>\n\n", ticket.Fields.Summary))
-
-	prompt.WriteString("<description>\n")
-	if ticket.Fields.Description != "" {
-		prompt.WriteString(ticket.Fields.Description)
-	} else {
-		prompt.WriteString("(No detailed description provided - use summary and comments to understand requirements)")
-	}
-	prompt.WriteString("\n</description>\n\n")
-
-	// Add comments if available, filtering out bot comments
-	if len(ticket.Fields.Comment.Comments) > 0 {
-		hasNonBotComments := false
-		var commentsBuilder strings.Builder
-		commentsBuilder.WriteString("<comments>\n")
-
-		for _, comment := range ticket.Fields.Comment.Comments {
-			// Skip comments made by our Jira bot
-			if comment.Author.Name == p.config.Jira.Username {
-				continue
-			}
-			hasNonBotComments = true
-			commentsBuilder.WriteString(fmt.Sprintf("<comment author=\"%s\" date=\"%s\">\n%s\n</comment>\n\n",
-				comment.Author.DisplayName,
-				comment.Created,
-				comment.Body))
+	// Filter out bot comments
+	var nonBotComments []models.JiraComment
+	for _, comment := range ticket.Fields.Comment.Comments {
+		// Skip comments made by our Jira bot
+		if comment.Author.Name == p.config.Jira.Username {
+			continue
 		}
-		commentsBuilder.WriteString("</comments>\n\n")
-
-		if hasNonBotComments {
-			prompt.WriteString(commentsBuilder.String())
-		}
+		nonBotComments = append(nonBotComments, comment)
 	}
 
-	prompt.WriteString("</ticket>\n\n")
+	// Prepare template data
+	data := ticketPromptData{
+		Ticket:      ticket,
+		Comments:    nonBotComments,
+		HasComments: len(nonBotComments) > 0,
+	}
 
-	// Clear task definition with strong testing emphasis
-	prompt.WriteString("<task>\n")
-	prompt.WriteString("Your task is to implement the changes described in this ticket:\n\n")
-	prompt.WriteString("1. Analyze the requirements and identify all files that need to be modified or created\n")
-	prompt.WriteString("2. Review the codebase structure and follow existing patterns (consult CLAUDE.md or GEMINI.md if available)\n")
-	prompt.WriteString("3. Implement the necessary code changes using the project's coding conventions\n")
-	prompt.WriteString("4. Write comprehensive unit tests for your changes (see testing requirements below)\n")
-	prompt.WriteString("5. Ensure all changes pass the project's linting and formatting checks\n")
-	prompt.WriteString("</task>\n\n")
+	// Execute template
+	var buf bytes.Buffer
+	if err := promptTemplate.Execute(&buf, data); err != nil {
+		// Fallback to a basic prompt if template execution fails
+		p.logger.Error("Failed to execute prompt template", zap.Error(err))
+		return fmt.Sprintf("Implement the changes described in Jira ticket %s: %s\n\n%s",
+			ticket.Key, ticket.Fields.Summary, ticket.Fields.Description)
+	}
 
-	// Explicit testing requirements
-	prompt.WriteString("<testing_requirements>\n")
-	prompt.WriteString("Write comprehensive unit tests for all new or modified functionality:\n\n")
-	prompt.WriteString("- Test the contract/behavior, not implementation details\n")
-	prompt.WriteString("- Cover happy path cases (expected successful operations)\n")
-	prompt.WriteString("- Cover error cases (invalid input, edge conditions, failures)\n")
-	prompt.WriteString("- Cover boundary conditions (empty inputs, nil values, limits)\n")
-	prompt.WriteString("- Use descriptive test names that explain the scenario and expected outcome\n")
-	prompt.WriteString("- Mock external dependencies (databases, APIs, file systems) but not internal logic\n\n")
-	prompt.WriteString("If modifying existing code with tests:\n")
-	prompt.WriteString("- Ensure existing tests still pass after your changes\n")
-	prompt.WriteString("- Add new tests for any new behavior or edge cases you've introduced\n")
-	prompt.WriteString("- Update tests if the contract/behavior intentionally changed\n\n")
-	prompt.WriteString("If adding new code without existing tests:\n")
-	prompt.WriteString("- Create a new test file following the project's test naming conventions\n")
-	prompt.WriteString("- Provide thorough coverage of the new functionality\n")
-	prompt.WriteString("</testing_requirements>\n\n")
-
-	// Graceful degradation
-	prompt.WriteString("<unclear_requirements>\n")
-	prompt.WriteString("If any requirements are unclear or ambiguous:\n\n")
-	prompt.WriteString("- State what clarification would be helpful\n")
-	prompt.WriteString("- Proceed with the most reasonable interpretation based on the context\n")
-	prompt.WriteString("- Document any assumptions you make in your implementation\n")
-	prompt.WriteString("</unclear_requirements>\n\n")
-
-	// Structured approach
-	prompt.WriteString("<approach>\n")
-	prompt.WriteString("Before making changes, briefly outline:\n\n")
-	prompt.WriteString("1. Your understanding of what needs to be done\n")
-	prompt.WriteString("2. Which files you'll modify or create (both implementation and test files)\n")
-	prompt.WriteString("3. Your high-level implementation strategy\n")
-	prompt.WriteString("4. What test scenarios you'll cover\n\n")
-	prompt.WriteString("Then proceed with the implementation and tests.\n")
-	prompt.WriteString("</approach>\n")
-
-	return prompt.String()
+	return buf.String()
 }
 
 // redactPRContentForSecurity creates redacted PR title and body when ticket has security level

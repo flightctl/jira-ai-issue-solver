@@ -1,42 +1,58 @@
 package models
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
 
-// getValidGitHubConfig returns a valid GitHub configuration for testing (using PAT)
+// createTempKeyFile creates a temporary key file for testing
+func createTempKeyFile(t *testing.T) string {
+	tmpKeyFile, err := os.CreateTemp("", "test_key_*.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpKeyFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return tmpKeyFile.Name()
+}
+
+// getValidGitHubConfig returns a valid GitHub configuration for testing
 func getValidGitHubConfig() struct {
-	PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-	AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-	PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-	BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-	BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-	TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-	PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-	SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-	MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-	KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+	AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+	PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+	BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+	BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+	TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+	PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+	SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+	MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+	KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 } {
 	return struct {
-		PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-		AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-		PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-		BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-		BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-		TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-		PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-		SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-		MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-		KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+		AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+		PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+		TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 	}{
-		PersonalAccessToken: "ghp_test123",
-		BotEmail:            "test@example.com",
-		BotUsername:         "test-bot",
+		AppID:          123456,
+		PrivateKeyPath: "/tmp/test_key.pem",
+		BotEmail:       "test@example.com",
+		BotUsername:    "test-bot",
 	}
 }
 
 func TestConfig_validateStatusTransitions(t *testing.T) {
+	// Create a temporary private key file for tests
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
 	tests := []struct {
 		name    string
 		config  Config
@@ -57,6 +73,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					BaseURL:  "https://example.com",
 					Username: "testuser",
 					APIToken: "testtoken",
+					AssigneeToGitHubUsername: map[string]string{
+						"alice@example.com": "alice",
+					},
 					Projects: []ProjectConfig{
 						{
 							ProjectKeys: ProjectKeys{"PROJ1"},
@@ -71,7 +90,30 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						},
 					},
 				},
-				GitHub: getValidGitHubConfig(),
+				GitHub: struct {
+					AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+				}{
+					AppID:          123456,
+					PrivateKeyPath: tmpKeyPath,
+					BotUsername:    "test-bot",
+				},
+				AI: struct {
+					GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+					MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
+					RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
+				}{
+					GenerateDocumentation: true,
+					MaxRetries:            5,
+					RetryDelaySeconds:     2,
+				},
 			},
 			wantErr: false,
 		},
@@ -243,8 +285,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 }
 
 func TestLoadConfig_WithStatusTransitions(t *testing.T) {
+	// Create a temporary private key file
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
 	// Create a temporary config file
-	configContent := `
+	configContent := fmt.Sprintf(`
 logging:
   level: info
   format: console
@@ -253,6 +299,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  assignee_to_github_username:
+    alice@example.com: alice
   projects:
     - project_keys:
         - "PROJ1"
@@ -264,11 +312,11 @@ jira:
       component_to_repo:
         test: https://github.com/test/repo.git
 github:
-  personal_access_token: "ghp_test123"
   app_id: 123456
+  private_key_path: "%s"
   bot_username: "test-bot"
   target_branch: "develop"
-`
+`, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -312,8 +360,12 @@ github:
 }
 
 func TestLoadConfig_WithDefaultTargetBranch(t *testing.T) {
+	// Create a temporary private key file
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
 	// Create a temporary config file without target_branch (should default to "main")
-	configContent := `
+	configContent := fmt.Sprintf(`
 logging:
   level: info
   format: console
@@ -322,6 +374,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  assignee_to_github_username:
+    alice@example.com: alice
   projects:
     - project_keys:
         - "PROJ1"
@@ -333,10 +387,10 @@ jira:
       component_to_repo:
         test: https://github.com/test/repo.git
 github:
-  personal_access_token: "ghp_test123"
   app_id: 123456
+  private_key_path: "%s"
   bot_username: "test-bot"
-`
+`, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -363,8 +417,12 @@ github:
 }
 
 func TestLoadConfig_ComponentToRepoCaseSensitivity(t *testing.T) {
+	// Create a temporary private key file
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
 	// Create a temporary config file with mixed case component names
-	configContent := `
+	configContent := fmt.Sprintf(`
 logging:
   level: info
   format: console
@@ -373,6 +431,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  assignee_to_github_username:
+    alice@example.com: alice
   projects:
     - project_keys:
         - "PROJ1"
@@ -387,10 +447,10 @@ jira:
         Backend: https://github.com/your-org/backend.git
         backend: https://github.com/your-org/backend-lowercase.git
 github:
-  personal_access_token: "ghp_test123"
   app_id: 123456
+  private_key_path: "%s"
   bot_username: "test-bot"
-`
+`, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -430,8 +490,12 @@ github:
 }
 
 func TestLoadConfig_WithTicketTypeSpecificStatusTransitions(t *testing.T) {
+	// Create a temporary private key file
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
 	// Create a temporary config file with ticket-type-specific status transitions
-	configContent := `
+	configContent := fmt.Sprintf(`
 logging:
   level: info
   format: console
@@ -440,6 +504,8 @@ jira:
   base_url: "https://example.com"
   username: "testuser"
   api_token: "testtoken"
+  assignee_to_github_username:
+    alice@example.com: alice
   projects:
     - project_keys:
         - "PROJ1"
@@ -455,11 +521,11 @@ jira:
       component_to_repo:
         test: https://github.com/test/repo.git
 github:
-  personal_access_token: "ghp_test123"
   app_id: 123456
+  private_key_path: "%s"
   bot_username: "test-bot"
   target_branch: "develop"
-`
+`, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -591,8 +657,12 @@ func TestTicketTypeStatusTransitions_GetStatusTransitions(t *testing.T) {
 }
 
 func TestLoadConfig_WithAIConfiguration(t *testing.T) {
+	// Create a temporary private key file
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
 	// Create a temporary config file
-	configContent := `
+	configContent := fmt.Sprintf(`
 ai_provider: claude
 ai:
   generate_documentation: false
@@ -603,6 +673,8 @@ jira:
   base_url: https://test.atlassian.net
   username: test-user
   api_token: test-token
+  assignee_to_github_username:
+    alice@example.com: alice
   projects:
     - project_keys:
         - "PROJ1"
@@ -614,10 +686,10 @@ jira:
       component_to_repo:
         "test-component": "https://github.com/test/repo"
 github:
-  personal_access_token: "ghp_test123"
   app_id: 123456
+  private_key_path: "%s"
   bot_username: "test-bot"
-`
+`, tmpKeyPath)
 
 	tempFile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -703,76 +775,31 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					},
 				},
 				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot[bot]",
 				},
+				AI: struct {
+					GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+					MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
+					RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
+				}{
+					GenerateDocumentation: true,
+					MaxRetries:            5,
+					RetryDelaySeconds:     2,
+				},
 			},
 			wantErr: false,
-		},
-		{
-			name: "GitHub App and PAT both configured (should fail)",
-			config: Config{
-				AIProvider: "claude",
-				Logging: struct {
-					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
-					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
-				}{
-					Level:  LogLevelInfo,
-					Format: LogFormatConsole,
-				},
-				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
-					AssigneeToGitHubUsername: map[string]string{
-						"alice@example.com": "alice",
-					},
-					Projects: []ProjectConfig{
-						{
-							ProjectKeys: ProjectKeys{"PROJ1"},
-							StatusTransitions: TicketTypeStatusTransitions{
-								"Bug": StatusTransitions{
-									Todo:       "To Do",
-									InProgress: "In Progress",
-									InReview:   "In Review",
-								},
-							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
-						},
-					},
-				},
-				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
-				}{
-					PersonalAccessToken: "ghp_test123",
-					AppID:               123456,
-					PrivateKeyPath:      tempKeyFile.Name(),
-					BotUsername:         "test-bot",
-				},
-			},
-			wantErr: true,
-			errMsg:  "cannot use both github.personal_access_token and github app credentials",
 		},
 		{
 			name: "GitHub App without app_id (should fail)",
@@ -804,23 +831,22 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					},
 				},
 				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 				}{
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot",
 				},
 			},
 			wantErr: true,
-			errMsg:  "either github.personal_access_token or github app credentials",
+			errMsg:  "github.app_id must be a positive integer",
 		},
 		{
 			name: "GitHub App with non-existent private key file (should fail)",
@@ -855,16 +881,15 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					},
 				},
 				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: "/non/existent/path/key.pem",
@@ -905,16 +930,15 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					},
 				},
 				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
+					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
+					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
+					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
+					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
+					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
@@ -922,103 +946,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "jira.assignee_to_github_username is required when using GitHub App",
-		},
-		{
-			name: "valid PAT authentication (should still work)",
-			config: Config{
-				AIProvider: "claude",
-				Logging: struct {
-					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
-					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
-				}{
-					Level:  LogLevelInfo,
-					Format: LogFormatConsole,
-				},
-				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
-					Projects: []ProjectConfig{
-						{
-							ProjectKeys: ProjectKeys{"PROJ1"},
-							StatusTransitions: TicketTypeStatusTransitions{
-								"Bug": StatusTransitions{
-									Todo:       "To Do",
-									InProgress: "In Progress",
-									InReview:   "In Review",
-								},
-							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
-						},
-					},
-				},
-				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
-				}{
-					PersonalAccessToken: "ghp_test123",
-					AppID:               123456,
-					BotUsername:         "test-bot",
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "neither PAT nor App credentials (should fail)",
-			config: Config{
-				AIProvider: "claude",
-				Logging: struct {
-					Level  LogLevel  `yaml:"level" mapstructure:"level" default:"info"`
-					Format LogFormat `yaml:"format" mapstructure:"format" default:"console"`
-				}{
-					Level:  LogLevelInfo,
-					Format: LogFormatConsole,
-				},
-				Jira: JiraConfig{
-					BaseURL:  "https://example.com",
-					Username: "testuser",
-					APIToken: "testtoken",
-					Projects: []ProjectConfig{
-						{
-							ProjectKeys: ProjectKeys{"PROJ1"},
-							StatusTransitions: TicketTypeStatusTransitions{
-								"Bug": StatusTransitions{
-									Todo:       "To Do",
-									InProgress: "In Progress",
-									InReview:   "In Review",
-								},
-							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
-						},
-					},
-				},
-				GitHub: struct {
-					PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-					AppID               int64    `yaml:"app_id" mapstructure:"app_id"`
-					PrivateKeyPath      string   `yaml:"private_key_path" mapstructure:"private_key_path"`
-					BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-					BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-					PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-					SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
-					MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
-					KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
-				}{
-					AppID:       123456,
-					BotUsername: "test-bot",
-				},
-			},
-			wantErr: true,
-			errMsg:  "either github.personal_access_token or github app credentials",
+			errMsg:  "jira.assignee_to_github_username is required",
 		},
 	}
 
@@ -1126,6 +1054,104 @@ github:
 		if actualUsername != expectedUsername {
 			t.Errorf("For email %s: expected username %s, got %s", email, expectedUsername, actualUsername)
 		}
+	}
+}
+
+func TestConfig_validateAIConfiguration(t *testing.T) {
+	tests := []struct {
+		name          string
+		maxRetries    int
+		retryDelay    int
+		expectedError string
+	}{
+		{
+			name:          "valid config with default values",
+			maxRetries:    5,
+			retryDelay:    2,
+			expectedError: "",
+		},
+		{
+			name:          "valid config with minimum values",
+			maxRetries:    1,
+			retryDelay:    0,
+			expectedError: "",
+		},
+		{
+			name:          "valid config with high values",
+			maxRetries:    10,
+			retryDelay:    10,
+			expectedError: "",
+		},
+		{
+			name:          "invalid max_retries zero",
+			maxRetries:    0,
+			retryDelay:    2,
+			expectedError: "ai.max_retries must be at least 1",
+		},
+		{
+			name:          "invalid max_retries negative",
+			maxRetries:    -1,
+			retryDelay:    2,
+			expectedError: "ai.max_retries must be at least 1",
+		},
+		{
+			name:          "invalid retry_delay_seconds negative",
+			maxRetries:    5,
+			retryDelay:    -1,
+			expectedError: "ai.retry_delay_seconds must be non-negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyPath := createTempKeyFile(t)
+			defer func() { _ = os.Remove(keyPath) }()
+
+			config := &Config{}
+			config.AIProvider = "claude"
+			config.Logging.Level = "info"
+			config.Logging.Format = "console"
+			config.Jira.BaseURL = "https://test.atlassian.net"
+			config.Jira.Username = "test@example.com"
+			config.Jira.APIToken = "test-token"
+			config.Jira.AssigneeToGitHubUsername = map[string]string{
+				"test@example.com": "test-user",
+			}
+			config.Jira.Projects = []ProjectConfig{
+				{
+					ProjectKeys: ProjectKeys{"TEST"},
+					StatusTransitions: TicketTypeStatusTransitions{
+						"default": StatusTransitions{
+							Todo:       "To Do",
+							InProgress: "In Progress",
+							InReview:   "In Review",
+						},
+					},
+					ComponentToRepo: ComponentToRepoMap{
+						"component1": "https://github.com/test/repo1.git",
+					},
+				},
+			}
+			config.GitHub.AppID = 123456
+			config.GitHub.PrivateKeyPath = keyPath
+			config.GitHub.BotUsername = "test-bot"
+			config.AI.MaxRetries = tt.maxRetries
+			config.AI.RetryDelaySeconds = tt.retryDelay
+
+			err := config.validate()
+
+			if tt.expectedError == "" {
+				if err != nil {
+					t.Errorf("Expected no error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("Expected error containing '%s', got nil", tt.expectedError)
+				} else if !contains(err.Error(), tt.expectedError) {
+					t.Errorf("Expected error containing '%s', got: %v", tt.expectedError, err)
+				}
+			}
+		})
 	}
 }
 
