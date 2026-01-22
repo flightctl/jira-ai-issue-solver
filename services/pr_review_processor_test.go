@@ -975,6 +975,67 @@ func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
 	}
 }
 
+func TestPRReviewProcessor_IsOurBot(t *testing.T) {
+	tests := []struct {
+		name              string
+		configBotUsername string
+		testUsername      string
+		want              bool
+	}{
+		{
+			name:              "exact match without suffix",
+			configBotUsername: "my-bot",
+			testUsername:      "my-bot",
+			want:              true,
+		},
+		{
+			name:              "config without suffix, input with suffix",
+			configBotUsername: "my-bot",
+			testUsername:      "my-bot[bot]",
+			want:              true,
+		},
+		{
+			name:              "config with suffix, input without suffix",
+			configBotUsername: "my-bot[bot]",
+			testUsername:      "my-bot",
+			want:              true,
+		},
+		{
+			name:              "both with suffix",
+			configBotUsername: "my-bot[bot]",
+			testUsername:      "my-bot[bot]",
+			want:              true,
+		},
+		{
+			name:              "case insensitive match",
+			configBotUsername: "My-Bot",
+			testUsername:      "my-bot[bot]",
+			want:              true,
+		},
+		{
+			name:              "not our bot",
+			configBotUsername: "my-bot",
+			testUsername:      "other-bot",
+			want:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &models.Config{}
+			config.GitHub.BotUsername = tt.configBotUsername
+			processor := &PRReviewProcessorImpl{
+				config: config,
+			}
+
+			got := processor.isOurBot(tt.testUsername)
+			if got != tt.want {
+				t.Errorf("isOurBot(%q) = %v, want %v", tt.testUsername, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRReviewProcessor_CalculateThreadDepth(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
