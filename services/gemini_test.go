@@ -568,7 +568,10 @@ func TestPreparePromptForGemini_IncludesToolInstructions(t *testing.T) {
 		},
 	}
 
-	prompt := PreparePromptForGemini(ticket)
+	prompt, err := PreparePromptForGemini(ticket)
+	if err != nil {
+		t.Fatalf("PreparePromptForGemini failed: %v", err)
+	}
 
 	// Verify the prompt starts with tool usage instructions
 	if !strings.HasPrefix(prompt, "CRITICAL INSTRUCTIONS") {

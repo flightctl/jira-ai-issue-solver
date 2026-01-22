@@ -224,8 +224,17 @@ func (s *GeminiServiceImpl) addToGitExclude(repoDir, entry string) error {
 		return fmt.Errorf("failed to read .git/info/exclude: %w", err)
 	}
 
-	// Only append if the entry doesn't already exist
-	if !strings.Contains(string(existingContent), entry) {
+	// Only append if the entry doesn't already exist (check line-by-line for exact match)
+	entryToAdd := strings.TrimSpace(entry)
+	alreadyExists := false
+	for _, line := range strings.Split(string(existingContent), "\n") {
+		if strings.TrimSpace(line) == entryToAdd {
+			alreadyExists = true
+			break
+		}
+	}
+
+	if !alreadyExists {
 		// #nosec G302 G304 - excludePath is validated (constructed from repoDir + hardcoded paths), 0600 is appropriate for git files
 		f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {
@@ -321,6 +330,7 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	// Use a channel to make Wait() cancellable
 	waitDone := make(chan error, 1)
 	go func() {
+		defer close(waitDone)
 		waitDone <- cmd.Wait()
 	}()
 
@@ -452,7 +462,7 @@ type geminiPromptData struct {
 	ToolUsageInstructions string
 }
 
-func PreparePromptForGemini(ticket *models.JiraTicketResponse) string {
+func PreparePromptForGemini(ticket *models.JiraTicketResponse) (string, error) {
 	data := geminiPromptData{
 		Ticket:                ticket,
 		Comments:              ticket.Fields.Comment.Comments,
@@ -462,12 +472,10 @@ func PreparePromptForGemini(ticket *models.JiraTicketResponse) string {
 
 	var buf bytes.Buffer
 	if err := geminiPromptTmpl.Execute(&buf, data); err != nil {
-		// Fallback to simple prompt on template error
-		return fmt.Sprintf("# Task\n\n## %s\n\n%s\n\n# Instructions\n\nImplement the changes described above.",
-			ticket.Fields.Summary, ticket.Fields.Description)
+		return "", fmt.Errorf("failed to execute Gemini prompt template: %w", err)
 	}
 
-	return buf.String()
+	return buf.String(), nil
 }
 
 type geminiPRFeedbackPromptData struct {
@@ -501,9 +509,7 @@ func PreparePromptForPRFeedbackGemini(pr *models.GitHubPullRequest, review *mode
 
 	var buf bytes.Buffer
 	if err := geminiPRFeedbackPromptTmpl.Execute(&buf, data); err != nil {
-		// Fallback to simple prompt on template error
-		return fmt.Sprintf("# Pull Request Feedback\n\n## PR: %s\n\n%s\n\n## Review Feedback\n\n**%s**:\n%s\n\nPlease address the feedback.",
-			pr.Title, pr.Body, review.User.Login, review.Body), nil
+		return "", fmt.Errorf("failed to execute PR feedback prompt template: %w", err)
 	}
 
 	return buf.String(), nil

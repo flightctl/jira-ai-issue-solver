@@ -777,17 +777,47 @@ func (c *Config) validate() error {
 		return errors.New("github.bot_email is required (either set explicitly, or it will be auto-constructed from app_id)")
 	}
 
-	// Validate Jira assignee mapping
+	// Validate Jira assignee mapping (required for GitHub App fork-based workflow)
 	if len(c.Jira.AssigneeToGitHubUsername) == 0 {
-		return errors.New("jira.assignee_to_github_username is required (needed to map assignees to forks)")
+		return errors.New("jira.assignee_to_github_username is required: GitHub App mode creates PRs against assignee forks, so all ticket assignees must map to GitHub usernames - tickets must be assigned before processing")
+	}
+
+	// Validate bot username doesn't contain characters that could cause issues
+	invalidChars := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|", "\n", "\r", "\t"}
+	for _, char := range invalidChars {
+		if strings.Contains(c.GitHub.BotUsername, char) {
+			return fmt.Errorf("github.bot_username contains invalid character %q - bot username will be used in branch names and must be git-safe", char)
+		}
+	}
+
+	// Validate known bot usernames don't contain problematic characters
+	for _, botUsername := range c.GitHub.KnownBotUsernames {
+		for _, char := range invalidChars {
+			if strings.Contains(botUsername, char) {
+				return fmt.Errorf("github.known_bot_usernames contains username %q with invalid character %q", botUsername, char)
+			}
+		}
 	}
 
 	// Validate AI configuration
 	if c.AI.MaxRetries < 1 {
 		return errors.New("ai.max_retries must be at least 1")
 	}
+	if c.AI.MaxRetries > 10 {
+		return errors.New("ai.max_retries must not exceed 10 (to prevent excessive retries and long hangs)")
+	}
 	if c.AI.RetryDelaySeconds < 0 {
 		return errors.New("ai.retry_delay_seconds must be non-negative")
+	}
+	if c.AI.RetryDelaySeconds > 300 {
+		return errors.New("ai.retry_delay_seconds must not exceed 300 seconds (5 minutes)")
+	}
+
+	// Validate total retry time is reasonable (max 30 minutes total)
+	maxTotalRetryTime := c.AI.MaxRetries * c.AI.RetryDelaySeconds
+	if maxTotalRetryTime > 1800 {
+		return fmt.Errorf("ai config would cause excessive retry time: max_retries(%d) * retry_delay_seconds(%d) = %d seconds (max allowed: 1800 seconds / 30 minutes)",
+			c.AI.MaxRetries, c.AI.RetryDelaySeconds, maxTotalRetryTime)
 	}
 
 	return nil

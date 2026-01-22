@@ -30,6 +30,20 @@ func init() {
 	}
 }
 
+// sanitizeTemplateInput removes XML/HTML tags and escapes special characters to prevent template injection
+// This prevents malicious PR titles, bodies, or comments from manipulating AI behavior
+func sanitizeTemplateInput(input string) string {
+	// Remove XML/HTML tags to prevent tag injection
+	tagRegex := regexp.MustCompile(`<[^>]*>`)
+	sanitized := tagRegex.ReplaceAllString(input, "")
+
+	// Escape remaining angle brackets
+	sanitized = strings.ReplaceAll(sanitized, "<", "&lt;")
+	sanitized = strings.ReplaceAll(sanitized, ">", "&gt;")
+
+	return sanitized
+}
+
 // PRReviewProcessor defines the interface for processing PR review feedback
 type PRReviewProcessor interface {
 	// ProcessPRReviewFeedback processes feedback for tickets in "In Review" status
@@ -64,11 +78,12 @@ func NewPRReviewProcessor(
 
 // isOurBot checks if a GitHub username matches our bot, handling the [bot] suffix for GitHub Apps
 // GitHub Apps post comments with a [bot] suffix (e.g., "username[bot]"), but PATs don't.
-// This helper normalizes the comparison so config can use just the base username.
+// This helper normalizes both the input and config to handle [bot] suffix in either place.
 func (p *PRReviewProcessorImpl) isOurBot(githubUsername string) bool {
-	// Strip [bot] suffix if present (GitHub Apps add this automatically)
+	// Strip [bot] suffix from both input and config (matches isKnownBot pattern)
 	cleanUsername := strings.TrimSuffix(githubUsername, "[bot]")
-	return strings.EqualFold(cleanUsername, p.config.GitHub.BotUsername)
+	cleanConfig := strings.TrimSuffix(p.config.GitHub.BotUsername, "[bot]")
+	return strings.EqualFold(cleanUsername, cleanConfig)
 }
 
 // FeedbackData holds structured feedback information for a single group
@@ -634,7 +649,10 @@ func (p *PRReviewProcessorImpl) processFeedbackGroupWithRetry(
 	summary string,
 	expectedIDs []string,
 ) (map[string]string, bool, error) {
-	prompt := p.generateFeedbackPrompt(pr, feedbackData, summary)
+	prompt, err := p.generateFeedbackPrompt(pr, feedbackData, summary)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to generate feedback prompt: %w", err)
+	}
 
 	maxRetries := p.config.AI.MaxRetries
 
@@ -1150,29 +1168,32 @@ type prReviewFeedbackPromptData struct {
 	ToolUsageInstructions string
 }
 
-func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedbackData *FeedbackData, summary string) string {
+func (p *PRReviewProcessorImpl) generateFeedbackPrompt(pr *models.GitHubPRDetails, feedbackData *FeedbackData, summary string) (string, error) {
 	toolInstructions := ""
 	// Add critical tool usage instructions for Gemini (only applies when using Gemini provider)
 	if p.config != nil && p.config.AIProvider == "gemini" {
 		toolInstructions = geminiToolUsageInstructions()
 	}
 
+	// Create a sanitized copy of PR data to prevent template injection attacks
+	sanitizedPR := *pr
+	sanitizedPR.Title = sanitizeTemplateInput(pr.Title)
+	sanitizedPR.Body = sanitizeTemplateInput(pr.Body)
+	sanitizedPR.HTMLURL = sanitizeTemplateInput(pr.HTMLURL)
+
 	data := prReviewFeedbackPromptData{
-		PR:                    pr,
+		PR:                    &sanitizedPR,
 		Summary:               summary,
-		NewFeedback:           feedbackData.NewFeedback,
+		NewFeedback:           sanitizeTemplateInput(feedbackData.NewFeedback),
 		ToolUsageInstructions: toolInstructions,
 	}
 
 	var buf bytes.Buffer
 	if err := prReviewFeedbackPromptTmpl.Execute(&buf, data); err != nil {
-		// Fallback to simple prompt on template error
-		p.logger.Error("Failed to execute PR review feedback prompt template", zap.Error(err))
-		return fmt.Sprintf("You are an expert software engineer addressing pull request review feedback.\n\n<pr_context>\n<title>%s</title>\n\n<new_feedback>\n%s\n</new_feedback>\n\nPlease address the feedback.",
-			pr.Title, feedbackData.NewFeedback)
+		return "", fmt.Errorf("failed to execute PR review feedback prompt template: %w", err)
 	}
 
-	return buf.String()
+	return buf.String(), nil
 }
 
 // parseCommentResponses extracts individual comment responses from AI output

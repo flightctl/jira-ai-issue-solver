@@ -408,7 +408,10 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 	}
 	summary := "Previously addressed (for context only - do not re-fix):\n- Old issue was fixed\n"
 
-	prompt := processor.generateFeedbackPrompt(pr, feedbackData, summary)
+	prompt, err := processor.generateFeedbackPrompt(pr, feedbackData, summary)
+	if err != nil {
+		t.Fatalf("generateFeedbackPrompt failed: %v", err)
+	}
 
 	// Check that prompt contains expected content
 	if !strings.Contains(prompt, "Test PR") {

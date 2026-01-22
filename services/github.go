@@ -116,6 +116,10 @@ const (
 	// maxPaginationPages is the safety limit for API pagination
 	// 100 pages * 100 items per page = 10,000 items max
 	maxPaginationPages = 100
+
+	// maxMergeCommitFiles is the safety limit for files in a single merge commit
+	// Prevents DoS and OOM when processing commits with thousands of files
+	maxMergeCommitFiles = 1000
 )
 
 // GitHubServiceImpl implements the GitHubService interface
@@ -816,7 +820,8 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 }
 
 // getLocalParentSHAs gets the parent commit SHAs from local HEAD
-// Returns 1 parent for normal commits, 2 parents for merge commits
+// Returns 1 parent for normal commits, 2 parents for merge commits.
+// Octopus merges (3+ parents) are not supported and will return an error.
 func (s *GitHubServiceImpl) getLocalParentSHAs(directory string) ([]string, error) {
 	// Get parent SHAs (one per line)
 	cmd := newGitCommand(s.executor("git", "rev-parse", "HEAD^@"), directory, true, true)
@@ -838,8 +843,13 @@ func (s *GitHubServiceImpl) getLocalParentSHAs(directory string) ([]string, erro
 		}
 	}
 
-	if len(parents) == 0 {
+	// Validate parent count
+	parentCount := len(parents)
+	if parentCount == 0 {
 		return nil, fmt.Errorf("failed to parse parent SHAs")
+	}
+	if parentCount > 2 {
+		return nil, fmt.Errorf("octopus merges (3+ parents) are not supported - found %d parents", parentCount)
 	}
 
 	return parents, nil
@@ -1066,6 +1076,11 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 	var treeEntries []models.GitHubTreeEntry
 	lines := strings.Split(strings.TrimSpace(cmd.getStdout()), "\n")
 
+	// Check file count limit to prevent DoS and OOM
+	if len(lines) > maxMergeCommitFiles {
+		return nil, fmt.Errorf("merge commit has %d files, exceeds limit of %d - refusing to process to prevent resource exhaustion", len(lines), maxMergeCommitFiles)
+	}
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -1264,8 +1279,28 @@ func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (stri
 			return blobResp.SHA, nil
 		}
 
-		// Check if it's a rate limit error
-		if resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "secondary rate limit") {
+		// Check for rate limit errors
+		// Primary rate limits: HTTP 429
+		// Secondary rate limits: HTTP 403 with "rate limit" in error message
+		isRateLimit := resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "rate limit"))
+
+		if isRateLimit {
+			// Check if Retry-After header is present
+			retryAfter := resp.Header.Get("Retry-After")
+			if retryAfter != "" {
+				s.logger.Warn("Rate limit hit with Retry-After header",
+					zap.String("retry_after", retryAfter),
+					zap.Int("attempt", attempt),
+					zap.Int("status_code", resp.StatusCode))
+			}
+
+			// Log rate limit headers for debugging
+			s.logger.Debug("Rate limit headers",
+				zap.String("x-ratelimit-remaining", resp.Header.Get("X-RateLimit-Remaining")),
+				zap.String("x-ratelimit-reset", resp.Header.Get("X-RateLimit-Reset")),
+				zap.Int("status_code", resp.StatusCode))
+
 			if attempt < maxRetries {
 				// Will retry after backoff
 				continue

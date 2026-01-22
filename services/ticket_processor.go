@@ -152,15 +152,16 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 
 	if p.config.GitHub.AppID != 0 {
 		// GitHub App mode: use assignee's fork
+		// All tickets must be assigned because we create PRs against the assignee's fork
 		if ticket.Fields.Assignee == nil {
-			p.handleFailure(ticketKey, "Ticket has no assignee (required for GitHub App workflow)")
-			return fmt.Errorf("ticket %s has no assignee", ticketKey)
+			p.handleFailure(ticketKey, "Ticket has no assignee. GitHub App mode requires tickets to be assigned - the bot creates PRs against the assignee's fork. Please assign this ticket to a team member who has forked the repository.")
+			return fmt.Errorf("ticket %s has no assignee (required in GitHub App mode)", ticketKey)
 		}
 
 		assigneeEmail := ticket.Fields.Assignee.EmailAddress
 		githubUsername, ok := p.config.Jira.AssigneeToGitHubUsername[assigneeEmail]
 		if !ok {
-			p.handleFailure(ticketKey, fmt.Sprintf("No GitHub username mapping found for assignee %s", assigneeEmail))
+			p.handleFailure(ticketKey, fmt.Sprintf("No GitHub username mapping found for assignee %s. Add this mapping to config: jira.assignee_to_github_username.%s=%q", assigneeEmail, assigneeEmail, "<github-username>"))
 			return fmt.Errorf("no GitHub username mapping found for assignee %s (add to config: jira.assignee_to_github_username)", assigneeEmail)
 		}
 
@@ -315,7 +316,10 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// Generate a prompt for AI
-	prompt := p.generatePrompt(ticket)
+	prompt, err := p.generatePrompt(ticket)
+	if err != nil {
+		return fmt.Errorf("failed to generate prompt for ticket %s: %w", ticket.Key, err)
+	}
 
 	// Run AI service to generate code changes with retry logic
 	// AI systems can sometimes be non-deterministic or fail silently without making changes
@@ -558,7 +562,7 @@ type ticketPromptData struct {
 	HasComments bool
 }
 
-func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) string {
+func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) (string, error) {
 	// Filter out bot comments
 	var nonBotComments []models.JiraComment
 	for _, comment := range ticket.Fields.Comment.Comments {
@@ -579,13 +583,10 @@ func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) 
 	// Execute template
 	var buf bytes.Buffer
 	if err := promptTemplate.Execute(&buf, data); err != nil {
-		// Fallback to a basic prompt if template execution fails
-		p.logger.Error("Failed to execute prompt template", zap.Error(err))
-		return fmt.Sprintf("Implement the changes described in Jira ticket %s: %s\n\n%s",
-			ticket.Key, ticket.Fields.Summary, ticket.Fields.Description)
+		return "", fmt.Errorf("failed to execute ticket prompt template: %w", err)
 	}
 
-	return buf.String()
+	return buf.String(), nil
 }
 
 // redactPRContentForSecurity creates redacted PR title and body when ticket has security level

@@ -398,7 +398,7 @@ type claudePromptData struct {
 	HasComments bool
 }
 
-func PreparePrompt(ticket *models.JiraTicketResponse) string {
+func PreparePrompt(ticket *models.JiraTicketResponse) (string, error) {
 	data := claudePromptData{
 		Ticket:      ticket,
 		Comments:    ticket.Fields.Comment.Comments,
@@ -407,12 +407,10 @@ func PreparePrompt(ticket *models.JiraTicketResponse) string {
 
 	var buf bytes.Buffer
 	if err := claudePromptTmpl.Execute(&buf, data); err != nil {
-		// Fallback to simple prompt on template error
-		return fmt.Sprintf("# Task\n\n## %s\n\n%s\n\n# Instructions\n\nImplement the changes described above.",
-			ticket.Fields.Summary, ticket.Fields.Description)
+		return "", fmt.Errorf("failed to execute Claude prompt template: %w", err)
 	}
 
-	return buf.String()
+	return buf.String(), nil
 }
 
 type claudePRFeedbackPromptData struct {
@@ -444,9 +442,7 @@ func PreparePromptForPRFeedback(pr *models.GitHubPullRequest, review *models.Git
 
 	var buf bytes.Buffer
 	if err := claudePRFeedbackPromptTmpl.Execute(&buf, data); err != nil {
-		// Fallback to simple prompt on template error
-		return fmt.Sprintf("# Pull Request Feedback\n\n## PR: %s\n\n%s\n\n## Review Feedback\n\n**%s**:\n%s\n\nPlease address the feedback.",
-			pr.Title, pr.Body, review.User.Login, review.Body), nil
+		return "", fmt.Errorf("failed to execute PR feedback prompt template: %w", err)
 	}
 
 	return buf.String(), nil
