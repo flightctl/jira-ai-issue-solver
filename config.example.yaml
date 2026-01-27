@@ -85,9 +85,10 @@ github:
   private_key_path: "/path/to/your-github-app-private-key.pem"  # Path to the .pem file downloaded when creating the app
 
   # Bot username (REQUIRED)
-  # Use the GitHub App name with [bot] suffix (e.g., "jira-ai-issue-solver[bot]")
+  # Use the GitHub App name WITHOUT [bot] suffix (e.g., "bugs-buddy-jira-ai-issue-solver")
+  # The [bot] suffix is added automatically in email construction
   # Note: bot_email is automatically constructed from app_id and bot_username
-  bot_username: jira-ai-issue-solver[bot]
+  bot_username: your-github-app-name
 
   target_branch: main
   pr_label: ai-pr
