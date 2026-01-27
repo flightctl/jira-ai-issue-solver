@@ -379,9 +379,12 @@ The bot automatically retries up to 5 times (configurable):
 
 ```yaml
 ai:
-  max_retries: 5              # Increase if needed (max 10)
+  max_retries: 5              # Number of retry attempts if AI generates no changes
   retry_delay_seconds: 2      # Delay between retries
 ```
+
+Note: Total retry time is constrained to 30 minutes maximum
+(`max_retries × retry_delay_seconds ≤ 1800 seconds`).
 
 If retries are exhausted, the ticket fails with an error message. Check:
 
@@ -393,18 +396,22 @@ If retries are exhausted, the ticket fails with an error message. Check:
 
 ### GitHub API Limits
 
-**GitHub App (recommended):**
+**GitHub-imposed limits (not user-configurable):**
 
-- 5,000 requests/hour per installation
-- 12,500 requests/hour for app-level calls
-- Higher limits than user accounts
+GitHub enforces the following rate limits for GitHub Apps:
 
-**Best Practices:**
+- 5,000 requests/hour per installation (for repository-specific operations)
+- 12,500 requests/hour for app-level calls (e.g., listing installations)
+- Higher limits than user accounts with Personal Access Tokens
+
+These limits cannot be changed. Users must work within these constraints.
+
+**Best Practices for staying within limits:**
 
 - Cache installation tokens (implemented by default)
 - Batch operations where possible
 - Monitor rate limit headers in responses
-- Adjust scan intervals based on usage
+- Adjust scan intervals based on usage (increase `jira.interval_seconds` to reduce API calls)
 
 ### Concurrent Processing
 

@@ -341,7 +341,7 @@ type Config struct {
 	// AI configuration
 	AI struct {
 		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-		MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`                 // Maximum number of times to retry AI code generation if no changes are detected
+		MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`                 // Maximum number of times to retry AI code generation if no changes are detected. Total retry time is constrained by max_retries * retry_delay_seconds <= 1800 seconds (30 minutes).
 		RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"` // Delay in seconds between AI retries
 	} `yaml:"ai" mapstructure:"ai"`
 
@@ -802,9 +802,6 @@ func (c *Config) validate() error {
 	// Validate AI configuration
 	if c.AI.MaxRetries < 1 {
 		return errors.New("ai.max_retries must be at least 1")
-	}
-	if c.AI.MaxRetries > 10 {
-		return errors.New("ai.max_retries must not exceed 10 (to prevent excessive retries and long hangs)")
 	}
 	if c.AI.RetryDelaySeconds < 0 {
 		return errors.New("ai.retry_delay_seconds must be non-negative")
