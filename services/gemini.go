@@ -1,21 +1,46 @@
 package services
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
+	"text/template"
 	"time"
 
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
 )
+
+//go:embed templates/gemini_prompt.tmpl
+var geminiPromptTemplate string
+
+//go:embed templates/gemini_pr_feedback_prompt.tmpl
+var geminiPRFeedbackPromptTemplate string
+
+var (
+	geminiPromptTmpl           *template.Template
+	geminiPRFeedbackPromptTmpl *template.Template
+)
+
+func init() {
+	var err error
+
+	geminiPromptTmpl, err = template.New("gemini_prompt").Parse(geminiPromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse Gemini prompt template: %v", err))
+	}
+
+	geminiPRFeedbackPromptTmpl, err = template.New("gemini_pr_feedback_prompt").Parse(geminiPRFeedbackPromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse Gemini PR feedback prompt template: %v", err))
+	}
+}
 
 // GeminiService interface for code generation using Gemini CLI
 type GeminiService interface {
@@ -46,7 +71,13 @@ func NewGeminiService(config *models.Config, logger *zap.Logger, executor ...mod
 
 // GenerateCode implements the AIService interface
 func (s *GeminiServiceImpl) GenerateCode(prompt string, repoDir string) (interface{}, error) {
-	return s.GenerateCodeGemini(prompt, repoDir)
+	resp, err := s.GenerateCodeGemini(prompt, repoDir)
+	if err != nil {
+		return nil, err
+	}
+	// Return the Result string for compatibility with consumers that expect string output
+	// (e.g., PR review processor that parses comment responses)
+	return resp.Result, nil
 }
 
 // GenerateDocumentation implements the AIService interface
@@ -144,10 +175,102 @@ IMPORTANT: Verify that you actually created and wrote GEMINI.md at the root of t
 	return nil
 }
 
+// ensureGeminiSettings creates .gemini/settings.json in the repository if it doesn't exist
+// This configures gemini-cli to allow shell command execution
+func (s *GeminiServiceImpl) ensureGeminiSettings(repoDir string) error {
+	geminiDir := filepath.Join(repoDir, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0750); err != nil {
+		return fmt.Errorf("failed to create .gemini directory: %w", err)
+	}
+
+	settingsPath := filepath.Join(geminiDir, "settings.json")
+	settingsContent := `{
+  "tools": {
+    "allowed": ["run_shell_command"]
+  }
+}
+`
+	if err := os.WriteFile(settingsPath, []byte(settingsContent), 0600); err != nil {
+		return fmt.Errorf("failed to write .gemini/settings.json: %w", err)
+	}
+	s.logger.Debug("Created .gemini/settings.json", zap.String("path", settingsPath))
+	return nil
+}
+
+// addToGitExclude adds an entry to .git/info/exclude (local ignore, never committed)
+func (s *GeminiServiceImpl) addToGitExclude(repoDir, entry string) error {
+	// Use .git/info/exclude instead of .gitignore so we don't modify tracked files
+	gitDir := filepath.Join(repoDir, ".git")
+
+	// Check if this is a git repository
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		// Not a git repo, skip silently (happens in tests)
+		s.logger.Debug("Skipping git exclude, not a git repository", zap.String("dir", repoDir))
+		return nil
+	}
+
+	// Ensure .git/info directory exists
+	infoDir := filepath.Join(gitDir, "info")
+	if err := os.MkdirAll(infoDir, 0750); err != nil {
+		return fmt.Errorf("failed to create .git/info directory: %w", err)
+	}
+
+	excludePath := filepath.Join(infoDir, "exclude")
+
+	// Check if exclude file exists and if it already contains the entry
+	// #nosec G304 - excludePath is constructed from validated repoDir and hardcoded git paths, not user input
+	existingContent, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read .git/info/exclude: %w", err)
+	}
+
+	// Only append if the entry doesn't already exist (check line-by-line for exact match)
+	entryToAdd := strings.TrimSpace(entry)
+	alreadyExists := false
+	for _, line := range strings.Split(string(existingContent), "\n") {
+		if strings.TrimSpace(line) == entryToAdd {
+			alreadyExists = true
+			break
+		}
+	}
+
+	if !alreadyExists {
+		// #nosec G302 G304 - excludePath is validated (constructed from repoDir + hardcoded paths), 0600 is appropriate for git files
+		f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return fmt.Errorf("failed to open .git/info/exclude: %w", err)
+		}
+		defer func() {
+			if closeErr := f.Close(); closeErr != nil {
+				s.logger.Warn("Failed to close .git/info/exclude", zap.Error(closeErr))
+			}
+		}()
+
+		// Ensure entry ends with newline
+		if !strings.HasSuffix(entry, "\n") {
+			entry += "\n"
+		}
+
+		if _, err := f.WriteString(entry); err != nil {
+			return fmt.Errorf("failed to write to .git/info/exclude: %w", err)
+		}
+		s.logger.Debug("Added entry to .git/info/exclude", zap.String("entry", strings.TrimSpace(entry)))
+	}
+	return nil
+}
+
 // GenerateCodeGemini generates code using Gemini CLI
 func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*models.GeminiResponse, error) {
-	// Build command arguments based on configuration
 	s.logger.Info("Generating code with Gemini", zap.String("repo_dir", repoDir), zap.String("prompt", prompt))
+
+	// Set up Gemini configuration files
+	if err := s.ensureGeminiSettings(repoDir); err != nil {
+		return nil, err
+	}
+	// Add .gemini/ to local git exclude (doesn't modify tracked files)
+	if err := s.addToGitExclude(repoDir, ".gemini/"); err != nil {
+		return nil, err
+	}
 
 	args := []string{"--debug", "--y"}
 	// Add model if configured
@@ -162,6 +285,8 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	if s.config.Gemini.Sandbox {
 		args = append(args, "-s")
 	}
+	// Note: --allowed-tools flag is not available in published npm versions of gemini-cli
+	// YOLO mode (--y) automatically approves all tools
 	// Add prompt
 	args = append(args, "-p", prompt)
 
@@ -170,8 +295,8 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Create the command with context
-	cmd := exec.CommandContext(ctx, s.config.Gemini.CLIPath, args...)
+	// Create the command using the executor (allows for testing)
+	cmd := s.executor(s.config.Gemini.CLIPath, args...)
 	cmd.Dir = repoDir
 
 	// Print the actual command being executed
@@ -186,163 +311,182 @@ func (s *GeminiServiceImpl) GenerateCodeGemini(prompt string, repoDir string) (*
 	// Set Gemini API key if configured
 	if s.config.Gemini.APIKey != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("GEMINI_API_KEY=%s", s.config.Gemini.APIKey))
-		s.logger.Debug("Gemini API key set", zap.String("api_key", s.config.Gemini.APIKey))
+		s.logger.Debug("Gemini API key configured")
 	} else {
 		s.logger.Debug("Gemini API key not set")
 	}
 
-	// Create pipes for stdout and stderr
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
+	// Capture stdout and stderr using buffers to avoid pipe race conditions
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	// Start the command
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start Gemini CLI: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2) // We have two goroutines for logging (stdout and stderr)
-
-	// Log stdout concurrently
-	go func() {
-		defer func() {
-			s.logger.Debug("Gemini stdout logging goroutine finished")
-			wg.Done()
-		}()
-		scanner := bufio.NewScanner(stdoutPipe)
-		// Increase buffer size to handle large output
-		buf := make([]byte, 1024*1024) // 1MB buffer
-		scanner.Buffer(buf, 1024*1024)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-
-			// Log each line for debugging in real-time
-			cleaned := strings.ReplaceAll(line, "Flushing log events to Clearcut.", "")
-			cleaned = strings.TrimSpace(cleaned)
-			if cleaned != "" {
-				s.logger.Debug(cleaned)
-			}
-		}
-	}()
-
-	// Log stderr concurrently
-	go func() {
-		defer func() {
-			s.logger.Debug("Gemini stderr logging goroutine finished")
-			wg.Done()
-		}()
-		scanner := bufio.NewScanner(stderrPipe)
-		// Increase buffer size to handle large output
-		buf := make([]byte, 1024*1024) // 1MB buffer
-		scanner.Buffer(buf, 1024*1024)
-		for scanner.Scan() {
-			s.logger.Debug("=== Gemini stderr ===\n" + scanner.Text() + "\n===================")
-		}
-	}()
-
 	// Wait for the command to finish or for the timeout to be reached
-	err = cmd.Wait()
-	s.logger.Debug("Gemini CLI finished")
+	// Use a channel to make Wait() cancellable
+	waitDone := make(chan error, 1)
+	go func() {
+		defer close(waitDone)
+		waitDone <- cmd.Wait()
+	}()
 
-	// Wait for the logging goroutines to finish
-	// This ensures we capture all output before the function exits
-	wg.Wait()
-	s.logger.Debug("Gemini CLI logging goroutines finished")
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+		// Command completed normally (or with error)
+		s.logger.Debug("Gemini CLI finished")
+	case <-ctx.Done():
+		// Timeout reached - kill the process
+		s.logger.Warn("Gemini CLI timeout reached, killing process",
+			zap.Int("timeout_seconds", s.config.Gemini.Timeout))
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		// Wait a bit for kill to complete, then return timeout error
+		select {
+		case <-waitDone:
+		case <-time.After(5 * time.Second):
+			s.logger.Error("Gemini process did not exit after kill signal")
+		}
+		return nil, fmt.Errorf("gemini CLI timed out after %d seconds", s.config.Gemini.Timeout)
+	}
+
+	// Get the captured output
+	stdoutData := stdoutBuf.Bytes()
+	stderrData := stderrBuf.Bytes()
+
+	// Log stdout for debugging
+	if len(stdoutData) > 0 {
+		lines := strings.Split(string(stdoutData), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				cleaned := strings.ReplaceAll(trimmed, "Flushing log events to Clearcut.", "")
+				cleaned = strings.TrimSpace(cleaned)
+				if cleaned != "" {
+					s.logger.Debug(cleaned)
+				}
+			}
+		}
+	}
+	s.logger.Debug("Gemini stdout captured", zap.Int("bytes_read", len(stdoutData)))
+
+	// Log stderr for debugging
+	if len(stderrData) > 0 {
+		s.logger.Debug("=== Gemini stderr ===\n" + string(stderrData) + "\n===================")
+	}
+	s.logger.Debug("Gemini stderr captured", zap.Int("bytes_read", len(stderrData)))
 
 	// Print the command exit code if possible
 	exitCode := -1
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		if status, ok := exitErr.Sys().(interface{ ExitStatus() int }); ok {
 			exitCode = status.ExitStatus()
 		}
 		s.logger.Debug("Gemini CLI exited with code", zap.Int("exit_code", exitCode))
-	} else if err == nil {
+	} else if waitErr == nil {
 		// If no error, exit code is 0
 		exitCode = 0
 		s.logger.Debug("Gemini CLI exited with code", zap.Int("exit_code", exitCode))
 	}
 
-	if err != nil {
+	if waitErr != nil {
 		// The context being canceled will result in an error
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("gemini CLI timed out after %d seconds", s.config.Gemini.Timeout)
 		}
-		return nil, fmt.Errorf("gemini CLI failed: %w", err)
+		return nil, fmt.Errorf("gemini CLI failed: %w", waitErr)
 	}
 
-	// Create response indicating completion
+	// Create response with the actual accumulated output
+	finalOutput := string(stdoutData)
 	response := &models.GeminiResponse{
 		Type:    "assistant",
 		IsError: false,
-		Result:  "done",
+		Result:  finalOutput,
 		Message: &models.GeminiMessage{
 			Type:    "message",
 			Role:    "assistant",
 			Model:   s.config.Gemini.Model,
-			Content: "done",
+			Content: finalOutput,
 		},
 	}
 
-	s.logger.Debug("Capturing final Gemini response...")
+	s.logger.Debug("Capturing final Gemini response...",
+		zap.Int("output_length", len(finalOutput)))
 	s.logger.Debug("Output processing complete. Final response captured.")
 	return response, nil
 }
 
+// geminiToolUsageInstructions returns critical instructions for Gemini CLI tool usage
+// This is added at the start of every prompt to ensure Gemini uses tools correctly
+func geminiToolUsageInstructions() string {
+	return `CRITICAL INSTRUCTIONS - READ FIRST:
+
+**EXECUTION REQUIREMENTS:**
+1. You MUST actually execute commands using the run_shell_command tool - DO NOT just describe what you would do
+2. DO NOT create any files named "response.txt" or similar - your responses should be text output, not files
+3. DO NOT write responses to files - provide them as text in your output
+4. ACTUALLY run the commands - this is not a simulation or planning exercise
+
+**FORBIDDEN GIT OPERATIONS - DO NOT EXECUTE:**
+- DO NOT run: git push
+- DO NOT run: git pull
+- DO NOT run: git fetch
+These operations are handled by the system. You may use OTHER git commands (merge, add, commit, status, etc.) but NEVER push/pull/fetch.
+
+**Tool Usage:**
+When using run_shell_command:
+- ONLY provide the 'command' argument
+- Do NOT provide a 'description' argument
+- Example: run_shell_command(command="git merge origin/main")
+
+**Response Format:**
+After executing the commands, provide your response as text output in the required format.
+DO NOT create files with your responses.
+
+---
+
+`
+}
+
 // PreparePrompt prepares a prompt for Gemini CLI based on the Jira ticket
-func PreparePromptForGemini(ticket *models.JiraTicketResponse) string {
-	var sb strings.Builder
+type geminiPromptData struct {
+	Ticket                *models.JiraTicketResponse
+	Comments              []models.JiraComment
+	HasComments           bool
+	ToolUsageInstructions string
+}
 
-	sb.WriteString("# Task\n\n")
-	sb.WriteString(fmt.Sprintf("## %s\n\n", ticket.Fields.Summary))
-	sb.WriteString(fmt.Sprintf("%s\n\n", ticket.Fields.Description))
-
-	// Add comments if available
-	if len(ticket.Fields.Comment.Comments) > 0 {
-		sb.WriteString("## Comments\n\n")
-		for _, comment := range ticket.Fields.Comment.Comments {
-			sb.WriteString(fmt.Sprintf("**%s** (%s):\n%s\n\n",
-				comment.Author.DisplayName,
-				comment.Created.Format("2006-01-02 15:04:05"),
-				comment.Body))
-		}
+func PreparePromptForGemini(ticket *models.JiraTicketResponse) (string, error) {
+	data := geminiPromptData{
+		Ticket:                ticket,
+		Comments:              ticket.Fields.Comment.Comments,
+		HasComments:           len(ticket.Fields.Comment.Comments) > 0,
+		ToolUsageInstructions: geminiToolUsageInstructions(),
 	}
 
-	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("1. First, examine any relevant *.md files (README.md, CONTRIBUTING.md, etc.) in the repository (these might be nested so search the entire repo!) to understand the project structure, testing conventions, and how to run tests.\n")
-	sb.WriteString("2. Analyze the task description and comments.\n")
-	sb.WriteString("3. Implement the necessary changes to fulfill the requirements.\n")
-	sb.WriteString("4. Write tests for the implemented functionality if appropriate.\n")
-	sb.WriteString("5. Update documentation if necessary.\n")
-	sb.WriteString("6. Make sure the project builds successfully before running tests.\n")
-	sb.WriteString("7. Review the markdown files (README.md, CONTRIBUTING.md, etc.) to understand how tests should be run for this project. These files might be nested inside directories, so search the entire repository structure.\n")
-	sb.WriteString("8. Verify your changes by running the relevant tests to ensure they work correctly.\n")
-	sb.WriteString("9. Provide a summary of the changes made.\n")
-	sb.WriteString("10. IMPORTANT: Do NOT perform any git operations (commit, push, pull, etc.). Git handling is managed by the system.\n\n")
+	var buf bytes.Buffer
+	if err := geminiPromptTmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute Gemini prompt template: %w", err)
+	}
 
-	return sb.String()
+	return buf.String(), nil
+}
+
+type geminiPRFeedbackPromptData struct {
+	PR                    *models.GitHubPullRequest
+	Review                *models.GitHubReview
+	Diff                  string
+	ToolUsageInstructions string
 }
 
 // PreparePromptForPRFeedbackGemini prepares a prompt for Gemini CLI based on PR feedback
 func PreparePromptForPRFeedbackGemini(pr *models.GitHubPullRequest, review *models.GitHubReview, repoDir string) (string, error) {
-	var sb strings.Builder
-
-	sb.WriteString("# Pull Request Feedback\n\n")
-	sb.WriteString(fmt.Sprintf("## PR: %s\n\n", pr.Title))
-	sb.WriteString(fmt.Sprintf("%s\n\n", pr.Body))
-
-	sb.WriteString("## Review Feedback\n\n")
-	sb.WriteString(fmt.Sprintf("**%s**:\n%s\n\n", review.User.Login, review.Body))
-
 	// Get the diff of the PR
 	cmd := exec.Command("git", "diff", "origin/main...HEAD")
 	cmd.Dir = repoDir
@@ -356,32 +500,17 @@ func PreparePromptForPRFeedbackGemini(pr *models.GitHubPullRequest, review *mode
 		return "", fmt.Errorf("failed to get PR diff: %w, stderr: %s", err, stderr.String())
 	}
 
-	sb.WriteString("## Current Changes\n\n")
-	sb.WriteString("```diff\n")
-	sb.WriteString(stdout.String())
-	sb.WriteString("\n```\n\n")
+	data := geminiPRFeedbackPromptData{
+		PR:                    pr,
+		Review:                review,
+		Diff:                  stdout.String(),
+		ToolUsageInstructions: geminiToolUsageInstructions(),
+	}
 
-	sb.WriteString("# Instructions\n\n")
-	sb.WriteString("1. Analyze the PR feedback and the current changes.\n")
-	sb.WriteString("2. Implement the necessary changes to address the feedback.\n")
-	sb.WriteString("3. Update tests if necessary.\n")
-	sb.WriteString("4. Update documentation if necessary.\n")
-	sb.WriteString("5. Make sure the project builds successfully before running tests.\n")
-	sb.WriteString("6. Review the markdown files (README.md, CONTRIBUTING.md, etc.) to understand how tests should be run for this project. These files might be nested inside directories, so search the entire repository structure.\n")
-	sb.WriteString("7. Verify your changes by running the relevant tests to ensure they work correctly.\n")
-	sb.WriteString("8. Provide a summary of the changes made.\n")
-	sb.WriteString("9. IMPORTANT: Do NOT perform any git operations (commit, push, pull, etc.). Git handling is managed by the system.\n\n")
+	var buf bytes.Buffer
+	if err := geminiPRFeedbackPromptTmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute PR feedback prompt template: %w", err)
+	}
 
-	sb.WriteString("# Output Format\n\n")
-	sb.WriteString("Please provide your response in the following format:\n\n")
-	sb.WriteString("```\n")
-	sb.WriteString("## Summary\n")
-	sb.WriteString("<A brief summary of the changes made>\n\n")
-	sb.WriteString("## Changes Made\n")
-	sb.WriteString("<List of files modified and a description of the changes>\n\n")
-	sb.WriteString("## Feedback Addressed\n")
-	sb.WriteString("<Description of how the feedback was addressed>\n")
-	sb.WriteString("```\n")
-
-	return sb.String(), nil
+	return buf.String(), nil
 }

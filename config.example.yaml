@@ -13,7 +13,16 @@ jira:
   username: your-username
   api_token: your-jira-api-token
   interval_seconds: 300
-  
+
+  # Map Jira assignee email/username to GitHub username
+  # Required when using GitHub App authentication
+  # The bot will use the assignee's fork instead of its own fork
+  # NOTE: Email addresses MUST be quoted to avoid YAML parsing errors
+  assignee_to_github_username:
+    "alice@yourcompany.com": alice
+    "bob.smith@yourcompany.com": bob-github
+    "charlie@yourcompany.com": charlie123
+
   # Project-specific configurations
   # Each project can have its own settings for components, status transitions, etc.
   projects:
@@ -67,14 +76,43 @@ jira:
         # FlightCtl: https://github.com/your-org/flightctl.git
         # flightctl: https://github.com/your-org/flightctl-lowercase.git
 
-# GitHub Configuration
+# GitHub Configuration - GitHub App Authentication (Required)
 github:
-  personal_access_token: your-personal-access-token-here
-  bot_username: your-org-ai-bot
-  bot_email: ai-bot@your-org.com
+  # GitHub App credentials (REQUIRED)
+  # Create a GitHub App at: https://github.com/settings/apps/new
+  # See GITHUB_APP_ADMIN_SETUP.md for detailed setup instructions
+  app_id: 123456  # Your GitHub App ID from https://github.com/settings/apps/YOUR-APP-NAME
+  private_key_path: "/path/to/your-github-app-private-key.pem"  # Path to the .pem file downloaded when creating the app
+
+  # Bot username (REQUIRED)
+  # Use the GitHub App name WITHOUT [bot] suffix (e.g., "bugs-buddy-jira-ai-issue-solver")
+  # The [bot] suffix is added automatically in email construction
+  # Note: bot_email is automatically constructed from app_id and bot_username
+  bot_username: your-github-app-name
+
   target_branch: main
   pr_label: ai-pr
-  # ssh_key_path: "/path/to/ssh_signing_key"  # Optional: Path to SSH private key for commit signing
+
+  # Optional: Path to SSH private key for commit signing
+  # ssh_key_path: "/path/to/ssh_signing_key"
+
+  # Bot loop prevention settings
+  max_thread_depth: 5  # Maximum depth of bot reply threads (prevents infinite loops)
+
+  # List of known bot usernames to ignore (prevents bot-to-bot conversations)
+  # Add any additional code review bots your team uses
+  # NOTE: Do NOT include [bot] suffixes - they are automatically handled
+  # (e.g., use "github-actions" not "github-actions[bot]")
+  known_bot_usernames:
+    - "github-actions"
+    - "dependabot"
+    - "renovate"
+    - "coderabbitai"
+    - "sourcery-ai"
+    - "copilot"
+    - "deepsource-io"
+    - "codefactor-io"
+    - "codeclimate"
 
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
@@ -90,6 +128,9 @@ claude:
   dangerously_skip_permissions: true
   allowed_tools: "Bash Edit"
   disallowed_tools: "Python"
+  # API key for headless/container environments (get from https://console.anthropic.com/settings/keys)
+  # If not set, Claude CLI will use interactive login (only works in non-container environments)
+  api_key: "your-anthropic-api-key-here"  # sk-ant-api03-...
 
 # Gemini CLI Configuration (used when ai_provider: gemini)
 gemini:
@@ -98,6 +139,7 @@ gemini:
   model: "gemini-2.5-pro"
   all_files: false
   sandbox: false
+  # Note: YOLO mode (enabled by default) automatically approves all tool usage
   api_key: "your-gemini-api-key-here"
 
 # Temporary Directory

@@ -1,14 +1,30 @@
 package services
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"strings"
+	"text/template"
 	"time"
 
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
 )
+
+//go:embed templates/ticket_prompt.tmpl
+var ticketPromptTemplate string
+
+var promptTemplate *template.Template
+
+func init() {
+	var err error
+	promptTemplate, err = template.New("ticket_prompt").Parse(ticketPromptTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse ticket prompt template: %v", err))
+	}
+}
 
 // TicketProcessor defines the interface for processing Jira tickets
 type TicketProcessor interface {
@@ -43,6 +59,8 @@ func NewTicketProcessor(
 }
 
 // ProcessTicket processes a Jira ticket
+//
+//nolint:gocyclo // High complexity is inherent to workflow orchestration
 func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	p.logger.Info("Processing ticket", zap.String("ticket", ticketKey))
 
@@ -107,19 +125,11 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	p.logger.Info("Retrieved status transitions for ticket",
 		zap.String("ticket", ticketKey),
 		zap.String("ticket_type", ticketType),
-		zap.String("in_progress_status", statusTransitions.InProgress),
 		zap.String("in_review_status", statusTransitions.InReview))
 
-	// Update the ticket status to the configured "In Progress" status
-	err = p.jiraService.UpdateTicketStatus(ticketKey, statusTransitions.InProgress)
-	if err != nil {
-		p.logger.Error("Failed to update ticket status",
-			zap.String("ticket", ticketKey),
-			zap.String("target_status", statusTransitions.InProgress),
-			zap.String("ticket_type", ticketType),
-			zap.Error(err))
-		// Continue processing even if status update fails
-	}
+	// Note: We don't update to "In Progress" status here
+	// All work is done first, then we transition directly to "In Review" on success
+	// This prevents tickets from getting stuck in "In Progress" if something fails
 
 	// Extract owner and repo from the repository URL
 	owner, repo, err := ExtractRepoInfo(repoURL)
@@ -136,36 +146,119 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		zap.String("owner", owner),
 		zap.String("repo", repo))
 
-	// Check if a fork already exists
-	exists, forkURL, err := p.githubService.CheckForkExists(owner, repo)
-	if err != nil {
-		p.logger.Error("Failed to check if fork exists",
-			zap.String("ticket", ticketKey),
-			zap.String("owner", owner),
-			zap.String("repo", repo),
-			zap.Error(err))
-		p.handleFailure(ticketKey, fmt.Sprintf("Failed to check if fork exists: %v", err))
-		return err
-	}
+	// Determine which fork to use based on authentication method
+	var forkOwner string
+	var forkURL string
 
-	if !exists {
-		// Create a fork
-		forkURL, err = p.githubService.ForkRepository(owner, repo)
+	if p.config.GitHub.AppID != 0 {
+		// GitHub App mode: use assignee's fork
+		// All tickets must be assigned because we create PRs against the assignee's fork
+		if ticket.Fields.Assignee == nil {
+			p.handleFailure(ticketKey, "Ticket has no assignee. GitHub App mode requires tickets to be assigned - the bot creates PRs against the assignee's fork. Please assign this ticket to a team member who has forked the repository.")
+			return fmt.Errorf("ticket %s has no assignee (required in GitHub App mode)", ticketKey)
+		}
+
+		assigneeEmail := ticket.Fields.Assignee.EmailAddress
+		githubUsername, ok := p.config.Jira.AssigneeToGitHubUsername[assigneeEmail]
+		if !ok {
+			p.handleFailure(ticketKey, fmt.Sprintf("No GitHub username mapping found for assignee %s. Add this mapping to config: jira.assignee_to_github_username.%s=%q", assigneeEmail, assigneeEmail, "<github-username>"))
+			return fmt.Errorf("no GitHub username mapping found for assignee %s (add to config: jira.assignee_to_github_username)", assigneeEmail)
+		}
+
+		forkOwner = githubUsername
+		p.logger.Info("Using assignee's fork (GitHub App mode)",
+			zap.String("ticket", ticketKey),
+			zap.String("assignee", assigneeEmail),
+			zap.String("githubUsername", githubUsername))
+
+		// Check if assignee's fork exists
+		exists, err := p.githubService.CheckForkExistsForUser(owner, repo, forkOwner)
 		if err != nil {
-			p.logger.Error("Failed to create fork",
+			p.logger.Error("Failed to check if fork exists",
+				zap.String("ticket", ticketKey),
+				zap.String("forkOwner", forkOwner),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to check if fork exists: %v", err))
+			return err
+		}
+
+		if !exists {
+			message := fmt.Sprintf(
+				"Setup Required: The assignee (%s) needs to:\n"+
+					"1. Fork the repository %s/%s on GitHub\n"+
+					"2. Install the GitHub App on their fork\n\n"+
+					"Please contact your GitHub administrator if you need help with this setup.",
+				assigneeEmail, owner, repo)
+			p.handleFailure(ticketKey, message)
+			return fmt.Errorf("fork %s/%s does not exist", forkOwner, repo)
+		}
+
+		// Verify GitHub App is installed on the fork
+		_, err = p.githubService.GetInstallationIDForRepo(forkOwner, repo)
+		if err != nil {
+			message := fmt.Sprintf(
+				"GitHub App Installation Required: The assignee (%s) has forked the repository but needs to:\n"+
+					"1. Install the GitHub App on their fork %s/%s\n\n"+
+					"Installation instructions:\n"+
+					"- Go to https://github.com/%s/%s/settings/installations\n"+
+					"- Install the app to enable automated code generation\n\n"+
+					"Error details: %v",
+				assigneeEmail, forkOwner, repo, forkOwner, repo, err)
+			p.handleFailure(ticketKey, message)
+			return fmt.Errorf("GitHub App not installed on fork %s/%s: %w", forkOwner, repo, err)
+		}
+
+		// Get fork clone URL
+		forkURL, err = p.githubService.GetForkCloneURLForUser(owner, repo, forkOwner)
+		if err != nil {
+			p.logger.Error("Failed to get fork clone URL",
+				zap.String("ticket", ticketKey),
+				zap.String("forkOwner", forkOwner),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to get fork clone URL: %v", err))
+			return err
+		}
+
+		p.logger.Info("Using assignee's fork",
+			zap.String("ticket", ticketKey),
+			zap.String("fork", fmt.Sprintf("%s/%s", forkOwner, repo)))
+	} else {
+		// PAT mode: use bot's fork (legacy behavior)
+		forkOwner = p.config.GitHub.BotUsername
+		p.logger.Info("Using bot's fork (PAT mode)", zap.String("ticket", ticketKey))
+
+		// Check if a fork already exists
+		var exists bool
+		exists, forkURL, err = p.githubService.CheckForkExists(owner, repo)
+		if err != nil {
+			p.logger.Error("Failed to check if fork exists",
 				zap.String("ticket", ticketKey),
 				zap.String("owner", owner),
 				zap.String("repo", repo),
 				zap.Error(err))
-			p.handleFailure(ticketKey, fmt.Sprintf("Failed to create fork: %v", err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to check if fork exists: %v", err))
 			return err
 		}
-		p.logger.Info("Fork created successfully, waiting for fork to be ready",
-			zap.String("ticket", ticketKey),
-			zap.String("fork_url", forkURL))
 
-		// Wait for the fork to be ready by checking if it exists
-		time.Sleep(10 * time.Second)
+		if !exists {
+			// Create a fork
+			forkURL, err = p.githubService.ForkRepository(owner, repo)
+			if err != nil {
+				p.logger.Error("Failed to create fork",
+					zap.String("ticket", ticketKey),
+					zap.String("owner", owner),
+					zap.String("repo", repo),
+					zap.Error(err))
+				p.handleFailure(ticketKey, fmt.Sprintf("Failed to create fork: %v", err))
+				return err
+			}
+			p.logger.Info("Fork created successfully, waiting for fork to be ready",
+				zap.String("ticket", ticketKey),
+				zap.String("fork_url", forkURL))
+
+			// Wait for the fork to be ready
+			time.Sleep(10 * time.Second)
+		}
 	}
 
 	// Clone the repository
@@ -192,8 +285,9 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		return err
 	}
 
-	// Create a new branch
-	branchName := ticketKey
+	// Create a new branch with bot username prefix to avoid conflicts with human-created branches
+	// (e.g., "bugs-buddy-jira-ai-issue-solver/EDM-2747")
+	branchName := fmt.Sprintf("%s/%s", p.config.GitHub.BotUsername, ticketKey)
 	err = p.githubService.CreateBranch(repoDir, branchName)
 	if err != nil {
 		p.logger.Error("Failed to create branch",
@@ -221,18 +315,82 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 			zap.String("ai_provider", p.config.AIProvider))
 	}
 
-	// Generate a prompt for Claude CLI
-	prompt := p.generatePrompt(ticket)
-
-	// Run AI service to generate code changes
-	_, err = p.aiService.GenerateCode(prompt, repoDir)
+	// Generate a prompt for AI
+	prompt, err := p.generatePrompt(ticket)
 	if err != nil {
-		p.logger.Error("Failed to generate code changes",
+		return fmt.Errorf("failed to generate prompt for ticket %s: %w", ticket.Key, err)
+	}
+
+	// Run AI service to generate code changes with retry logic
+	// AI systems can sometimes be non-deterministic or fail silently without making changes
+	var hasChanges bool
+	maxRetries := p.config.AI.MaxRetries
+
+	p.logger.Info("Starting AI code generation with retry logic",
+		zap.String("ticket", ticketKey),
+		zap.Int("maxRetries", maxRetries))
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		p.logger.Info("AI code generation attempt",
 			zap.String("ticket", ticketKey),
-			zap.String("repo_dir", repoDir),
-			zap.Error(err))
-		p.handleFailure(ticketKey, fmt.Sprintf("Failed to generate code changes: %v", err))
-		return err
+			zap.Int("attempt", attempt),
+			zap.Int("maxRetries", maxRetries))
+
+		// Run AI service
+		_, err = p.aiService.GenerateCode(prompt, repoDir)
+		if err != nil {
+			p.logger.Error("AI code generation failed",
+				zap.String("ticket", ticketKey),
+				zap.Int("attempt", attempt),
+				zap.String("repo_dir", repoDir),
+				zap.Error(err))
+			// Don't retry on hard errors - fail fast
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to generate code changes: %v", err))
+			return err
+		}
+
+		// Check if AI actually made any changes
+		hasChanges, err = p.githubService.HasChanges(repoDir)
+		if err != nil {
+			p.logger.Error("Failed to check for changes",
+				zap.String("ticket", ticketKey),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			// Don't fail - assume changes exist to be safe
+			hasChanges = true
+			break
+		}
+
+		if hasChanges {
+			p.logger.Info("AI successfully generated code changes",
+				zap.String("ticket", ticketKey),
+				zap.Int("attempt", attempt))
+			break
+		}
+
+		// No changes detected
+		p.logger.Warn("AI completed but made no changes",
+			zap.String("ticket", ticketKey),
+			zap.Int("attempt", attempt),
+			zap.Int("maxRetries", maxRetries))
+
+		// If we haven't reached max retries, wait before trying again
+		if attempt < maxRetries {
+			retryDelay := time.Duration(p.config.AI.RetryDelaySeconds) * time.Second
+			p.logger.Info("Waiting before retry",
+				zap.String("ticket", ticketKey),
+				zap.Duration("delay", retryDelay))
+			time.Sleep(retryDelay)
+		}
+	}
+
+	// After all retries, check if we got changes
+	if !hasChanges {
+		p.logger.Error("AI failed to generate any changes after all retries",
+			zap.String("ticket", ticketKey),
+			zap.Int("attempts", maxRetries))
+		p.handleFailure(ticketKey, fmt.Sprintf("AI generated no code changes after %d attempts. This may indicate the ticket requirements are unclear or the AI system is experiencing issues.", maxRetries))
+		return fmt.Errorf("AI generated no code changes after %d attempts", maxRetries)
 	}
 
 	// Get assignee info for co-author
@@ -247,26 +405,56 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	if hasSecurityLevel {
 		commitMessage = fmt.Sprintf("%s: Security-related changes", ticketKey)
 	}
-	err = p.githubService.CommitChanges(repoDir, commitMessage, coAuthorName, coAuthorEmail)
-	if err != nil {
-		p.logger.Error("Failed to commit changes",
-			zap.String("ticket", ticketKey),
-			zap.String("repo_dir", repoDir),
-			zap.Error(err))
-		p.handleFailure(ticketKey, fmt.Sprintf("Failed to commit changes: %v", err))
-		return err
-	}
 
-	// Push the changes
-	err = p.githubService.PushChanges(repoDir, branchName)
-	if err != nil {
-		p.logger.Error("Failed to push changes",
+	// Use API commits for GitHub App (creates verified commits)
+	// Use CLI commits for PAT (requires git push separately)
+	if p.config.GitHub.AppID != 0 {
+		// GitHub App mode: Use API to create verified commit
+		p.logger.Info("Creating verified commit via GitHub API",
 			zap.String("ticket", ticketKey),
-			zap.String("repo_dir", repoDir),
-			zap.String("branch_name", branchName),
-			zap.Error(err))
-		p.handleFailure(ticketKey, fmt.Sprintf("Failed to push changes: %v", err))
-		return err
+			zap.String("owner", forkOwner),
+			zap.String("repo", repo),
+			zap.String("branch", branchName))
+
+		commitSHA, err := p.githubService.CommitChangesViaAPI(forkOwner, repo, branchName, commitMessage, repoDir, coAuthorName, coAuthorEmail)
+		if err != nil {
+			p.logger.Error("Failed to commit changes via API",
+				zap.String("ticket", ticketKey),
+				zap.String("repo_dir", repoDir),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to commit changes: %v", err))
+			return err
+		}
+
+		p.logger.Info("Successfully created verified commit",
+			zap.String("ticket", ticketKey),
+			zap.String("commit_sha", commitSHA))
+
+		// No push needed - commit is already on GitHub
+	} else {
+		// PAT mode: Use git CLI commit + push
+		err = p.githubService.CommitChanges(repoDir, commitMessage, coAuthorName, coAuthorEmail)
+		if err != nil {
+			p.logger.Error("Failed to commit changes",
+				zap.String("ticket", ticketKey),
+				zap.String("repo_dir", repoDir),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to commit changes: %v", err))
+			return err
+		}
+
+		// Push the changes
+		err = p.githubService.PushChanges(repoDir, branchName, forkOwner, repo)
+		if err != nil {
+			p.logger.Error("Failed to push changes",
+				zap.String("ticket", ticketKey),
+				zap.String("repo_dir", repoDir),
+				zap.String("branch_name", branchName),
+				zap.String("forkOwner", forkOwner),
+				zap.Error(err))
+			p.handleFailure(ticketKey, fmt.Sprintf("Failed to push changes: %v", err))
+			return err
+		}
 	}
 
 	// Create PR content (redact if security level is set)
@@ -284,7 +472,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// When creating a pull request from a fork, the head parameter should be in the format "forkOwner:branchName"
-	head := fmt.Sprintf("%s:%s", p.config.GitHub.BotUsername, branchName)
+	head := fmt.Sprintf("%s:%s", forkOwner, branchName)
 	pr, err := p.githubService.CreatePullRequest(owner, repo, prTitle, prBody, head, p.config.GitHub.TargetBranch)
 	if err != nil {
 		p.logger.Error("Failed to create pull request",
@@ -366,29 +554,39 @@ func (p *TicketProcessorImpl) handleFailure(ticketKey, errorMessage string) {
 
 }
 
-// generatePrompt generates a prompt for Claude CLI based on the ticket
-func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) string {
-	prompt := fmt.Sprintf("Please help me fix the issue described in Jira ticket %s.\n\n", ticket.Key)
-	prompt += fmt.Sprintf("Summary: %s\n\n", ticket.Fields.Summary)
-	prompt += fmt.Sprintf("Description: %s\n\n", ticket.Fields.Description)
+// generatePrompt generates a prompt for AI based on the ticket
+// ticketPromptData holds the data for rendering the ticket prompt template
+type ticketPromptData struct {
+	Ticket      *models.JiraTicketResponse
+	Comments    []models.JiraComment
+	HasComments bool
+}
 
-	// Add comments if available, filtering out bot comments
-	if ticket.Fields.Comment.Comments != nil {
-		prompt += "Comments:\n"
-		for _, comment := range ticket.Fields.Comment.Comments {
-			// Skip comments made by our Jira bot
-			if comment.Author.Name == p.config.Jira.Username {
-				continue
-			}
-			prompt += fmt.Sprintf("- %s: %s\n", comment.Author.DisplayName, comment.Body)
+func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) (string, error) {
+	// Filter out bot comments
+	var nonBotComments []models.JiraComment
+	for _, comment := range ticket.Fields.Comment.Comments {
+		// Skip comments made by our Jira bot
+		if comment.Author.Name == p.config.Jira.Username {
+			continue
 		}
-		prompt += "\n"
+		nonBotComments = append(nonBotComments, comment)
 	}
 
-	prompt += "Please analyze the codebase and implement the necessary changes to fix this issue. " +
-		"Make sure to follow the existing code style and patterns in the codebase."
+	// Prepare template data
+	data := ticketPromptData{
+		Ticket:      ticket,
+		Comments:    nonBotComments,
+		HasComments: len(nonBotComments) > 0,
+	}
 
-	return prompt
+	// Execute template
+	var buf bytes.Buffer
+	if err := promptTemplate.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute ticket prompt template: %w", err)
+	}
+
+	return buf.String(), nil
 }
 
 // redactPRContentForSecurity creates redacted PR title and body when ticket has security level

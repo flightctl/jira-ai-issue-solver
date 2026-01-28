@@ -117,8 +117,11 @@ func main() {
 		Logger.Warn("Jira configuration not provided - Jira services will be disabled")
 	}
 
-	// Check if GitHub configuration is provided
-	if config.GitHub.PersonalAccessToken != "" && config.GitHub.BotUsername != "" && config.GitHub.BotEmail != "" {
+	// Check if GitHub App configuration is provided
+	hasGitHubApp := config.GitHub.AppID != 0 && config.GitHub.PrivateKeyPath != ""
+	hasCommonFields := config.GitHub.BotUsername != ""
+
+	if hasGitHubApp && hasCommonFields {
 		githubService = services.NewGitHubService(config, Logger)
 		Logger.Info("GitHub service initialized")
 	} else {

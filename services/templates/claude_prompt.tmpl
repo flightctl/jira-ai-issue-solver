@@ -1,0 +1,38 @@
+# Task
+
+## {{.Ticket.Fields.Summary}}
+
+{{.Ticket.Fields.Description}}
+
+{{if .HasComments}}## Comments
+
+{{range .Comments}}**{{.Author.DisplayName}}** ({{.Created.Format "2006-01-02 15:04:05"}}):
+{{.Body}}
+
+{{end}}{{end}}# Instructions
+
+1. First, examine any relevant *.md files (README.md, CONTRIBUTING.md, etc.) in the repository (these might be nested so search the entire repo!) to understand the project structure, testing conventions, and how to run tests.
+2. Analyze the task description and comments.
+3. Implement the necessary changes to fulfill the requirements.
+4. Write tests for the implemented functionality if appropriate.
+5. Update documentation if necessary.
+6. Make sure the project builds successfully before running tests.
+7. Review the markdown files (README.md, CONTRIBUTING.md, etc.) to understand how tests should be run for this project. These files might be nested inside directories, so search the entire repository structure.
+8. Verify your changes by running the relevant tests to ensure they work correctly.
+9. Provide a summary of the changes made.
+10. IMPORTANT: Do NOT perform any git operations (commit, push, pull, fetch, etc.). Git handling is managed by the system.
+
+# Output Format
+
+Please provide your response in the following format:
+
+```
+## Summary
+<A brief summary of the changes made>
+
+## Changes Made
+<List of files modified and a description of the changes>
+
+## Testing
+<Description of how the changes were tested>
+```

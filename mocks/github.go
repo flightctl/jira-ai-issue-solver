@@ -6,23 +6,29 @@ import (
 
 // MockGitHubService is a mock implementation of the GitHubService interface
 type MockGitHubService struct {
-	CloneRepositoryFunc      func(repoURL, directory string) error
-	CreateBranchFunc         func(directory, branchName string) error
-	CommitChangesFunc        func(directory, message string, coAuthorName, coAuthorEmail string) error
-	PushChangesFunc          func(directory, branchName string) error
-	CreatePullRequestFunc    func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error)
-	ForkRepositoryFunc       func(owner, repo string) (string, error)
-	CheckForkExistsFunc      func(owner, repo string) (exists bool, cloneURL string, err error)
-	ResetForkFunc            func(forkCloneURL, directory string) error
-	SyncForkWithUpstreamFunc func(owner, repo string) error
-	SwitchToTargetBranchFunc func(directory string) error
-	SwitchToBranchFunc       func(directory, branchName string) error
-	PullChangesFunc          func(directory, branchName string) error
-	AddPRCommentFunc         func(owner, repo string, prNumber int, body string) error
-	ListPRCommentsFunc       func(owner, repo string, prNumber int) ([]models.GitHubPRComment, error)
-	ReplyToPRCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
-	GetPRDetailsFunc         func(owner, repo string, prNumber int) (*models.GitHubPRDetails, error)
-	ListPRReviewsFunc        func(owner, repo string, prNumber int) ([]models.GitHubReview, error)
+	CloneRepositoryFunc               func(repoURL, directory string) error
+	CreateBranchFunc                  func(directory, branchName string) error
+	CommitChangesFunc                 func(directory, message string, coAuthorName, coAuthorEmail string) error
+	PushChangesFunc                   func(directory, branchName string, forkOwner, repo string) error
+	CreatePullRequestFunc             func(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error)
+	ForkRepositoryFunc                func(owner, repo string) (string, error)
+	CheckForkExistsFunc               func(owner, repo string) (exists bool, cloneURL string, err error)
+	ResetForkFunc                     func(forkCloneURL, directory string) error
+	SyncForkWithUpstreamFunc          func(owner, repo string) error
+	SwitchToTargetBranchFunc          func(directory string) error
+	SwitchToBranchFunc                func(directory, branchName string) error
+	HasChangesFunc                    func(directory string) (bool, error)
+	PullChangesFunc                   func(directory, branchName string) error
+	AddPRCommentFunc                  func(owner, repo string, prNumber int, body string) error
+	ListPRCommentsFunc                func(owner, repo string, prNumber int) ([]models.GitHubPRComment, error)
+	ReplyToPRCommentFunc              func(owner, repo string, prNumber int, commentID int64, body string) error
+	GetPRDetailsFunc                  func(owner, repo string, prNumber int) (*models.GitHubPRDetails, error)
+	ListPRReviewsFunc                 func(owner, repo string, prNumber int) ([]models.GitHubReview, error)
+	GetInstallationIDForRepoFunc      func(owner, repo string) (int64, error)
+	CheckForkExistsForUserFunc        func(owner, repo, forkOwner string) (bool, error)
+	GetForkCloneURLForUserFunc        func(owner, repo, forkOwner string) (string, error)
+	CommitChangesViaAPIFunc           func(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
+	CreateVerifiedCommitFromLocalFunc func(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
 }
 
 // CloneRepository is the mock implementation of GitHubService's CloneRepository method
@@ -50,9 +56,9 @@ func (m *MockGitHubService) CommitChanges(directory, message string, coAuthorNam
 }
 
 // PushChanges is the mock implementation of GitHubService's PushChanges method
-func (m *MockGitHubService) PushChanges(directory, branchName string) error {
+func (m *MockGitHubService) PushChanges(directory, branchName string, forkOwner, repo string) error {
 	if m.PushChangesFunc != nil {
-		return m.PushChangesFunc(directory, branchName)
+		return m.PushChangesFunc(directory, branchName, forkOwner, repo)
 	}
 	return nil
 }
@@ -113,6 +119,14 @@ func (m *MockGitHubService) SwitchToBranch(directory, branchName string) error {
 	return nil
 }
 
+// HasChanges is the mock implementation of GitHubService's HasChanges method
+func (m *MockGitHubService) HasChanges(directory string) (bool, error) {
+	if m.HasChangesFunc != nil {
+		return m.HasChangesFunc(directory)
+	}
+	return false, nil
+}
+
 // PullChanges is the mock implementation of GitHubService's PullChanges method
 func (m *MockGitHubService) PullChanges(directory, branchName string) error {
 	if m.PullChangesFunc != nil {
@@ -159,4 +173,44 @@ func (m *MockGitHubService) ReplyToPRComment(owner, repo string, prNumber int, c
 		return m.ReplyToPRCommentFunc(owner, repo, prNumber, commentID, body)
 	}
 	return nil
+}
+
+// GetInstallationIDForRepo is the mock implementation of GitHubService's GetInstallationIDForRepo method
+func (m *MockGitHubService) GetInstallationIDForRepo(owner, repo string) (int64, error) {
+	if m.GetInstallationIDForRepoFunc != nil {
+		return m.GetInstallationIDForRepoFunc(owner, repo)
+	}
+	return 0, nil
+}
+
+// CheckForkExistsForUser is the mock implementation of GitHubService's CheckForkExistsForUser method
+func (m *MockGitHubService) CheckForkExistsForUser(owner, repo, forkOwner string) (bool, error) {
+	if m.CheckForkExistsForUserFunc != nil {
+		return m.CheckForkExistsForUserFunc(owner, repo, forkOwner)
+	}
+	return false, nil
+}
+
+// GetForkCloneURLForUser is the mock implementation of GitHubService's GetForkCloneURLForUser method
+func (m *MockGitHubService) GetForkCloneURLForUser(owner, repo, forkOwner string) (string, error) {
+	if m.GetForkCloneURLForUserFunc != nil {
+		return m.GetForkCloneURLForUserFunc(owner, repo, forkOwner)
+	}
+	return "", nil
+}
+
+// CommitChangesViaAPI is the mock implementation of GitHubService's CommitChangesViaAPI method
+func (m *MockGitHubService) CommitChangesViaAPI(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+	if m.CommitChangesViaAPIFunc != nil {
+		return m.CommitChangesViaAPIFunc(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
+	}
+	return "mock-commit-sha", nil
+}
+
+// CreateVerifiedCommitFromLocal is the mock implementation of GitHubService's CreateVerifiedCommitFromLocal method
+func (m *MockGitHubService) CreateVerifiedCommitFromLocal(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+	if m.CreateVerifiedCommitFromLocalFunc != nil {
+		return m.CreateVerifiedCommitFromLocalFunc(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
+	}
+	return "mock-verified-commit-sha", nil
 }

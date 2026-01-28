@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 
@@ -274,11 +275,12 @@ type ProjectConfig struct {
 }
 
 type JiraConfig struct {
-	BaseURL         string          `yaml:"base_url" mapstructure:"base_url"`
-	Username        string          `yaml:"username" mapstructure:"username"`
-	APIToken        string          `yaml:"api_token" mapstructure:"api_token"`
-	IntervalSeconds int             `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
-	Projects        []ProjectConfig `yaml:"projects" mapstructure:"projects"`
+	BaseURL                  string            `yaml:"base_url" mapstructure:"base_url"`
+	Username                 string            `yaml:"username" mapstructure:"username"`
+	APIToken                 string            `yaml:"api_token" mapstructure:"api_token"`
+	IntervalSeconds          int               `yaml:"interval_seconds" mapstructure:"interval_seconds" default:"300"`
+	AssigneeToGitHubUsername map[string]string `yaml:"assignee_to_github_username" mapstructure:"assignee_to_github_username"`
+	Projects                 []ProjectConfig   `yaml:"projects" mapstructure:"projects"`
 }
 
 // Config represents the application configuration
@@ -299,14 +301,18 @@ type Config struct {
 
 	// GitHub configuration
 	GitHub struct {
-		PersonalAccessToken string   `yaml:"personal_access_token" mapstructure:"personal_access_token"`
-		BotUsername         string   `yaml:"bot_username" mapstructure:"bot_username"`
-		BotEmail            string   `yaml:"bot_email" mapstructure:"bot_email"`
-		TargetBranch        string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
-		PRLabel             string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-		SSHKeyPath          string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
-		MaxThreadDepth      int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
-		KnownBotUsernames   []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
+		// GitHub App authentication
+		AppID          int64  `yaml:"app_id" mapstructure:"app_id"`
+		PrivateKeyPath string `yaml:"private_key_path" mapstructure:"private_key_path"`
+
+		// Common fields
+		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
+		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"` // Optional: auto-constructed for GitHub App mode
+		TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
+		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
+		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
+		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
+		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
@@ -319,6 +325,7 @@ type Config struct {
 		DangerouslySkipPermissions bool   `yaml:"dangerously_skip_permissions" mapstructure:"dangerously_skip_permissions" default:"false"`
 		AllowedTools               string `yaml:"allowed_tools" mapstructure:"allowed_tools" default:"Bash Edit"`
 		DisallowedTools            string `yaml:"disallowed_tools" mapstructure:"disallowed_tools" default:"Python"`
+		APIKey                     string `yaml:"api_key" mapstructure:"api_key"` // Anthropic API key for headless/container environments
 	} `yaml:"claude" mapstructure:"claude"`
 
 	// Gemini CLI configuration
@@ -334,6 +341,8 @@ type Config struct {
 	// AI configuration
 	AI struct {
 		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
+		MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`                 // Maximum number of times to retry AI code generation if no changes are detected. Total retry time is constrained by max_retries * retry_delay_seconds <= 1800 seconds (30 minutes).
+		RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"` // Delay in seconds between AI retries
 	} `yaml:"ai" mapstructure:"ai"`
 
 	// Temporary directory for cloning repositories
@@ -369,6 +378,24 @@ func (c *Config) GetAllProjectKeys() []string {
 	return allKeys
 }
 
+// GetBotEmail returns the bot email, constructing it from app_id and bot_username for GitHub App mode if not explicitly set
+// For GitHub App: {app_id}+{bot_username}[bot]@users.noreply.github.com
+// For PAT mode: uses the explicitly configured bot_email
+func (c *Config) GetBotEmail() string {
+	// If bot_email is explicitly set, use it (PAT mode or manual override)
+	if c.GitHub.BotEmail != "" {
+		return c.GitHub.BotEmail
+	}
+
+	// For GitHub App mode, construct from app_id and bot_username
+	if c.GitHub.AppID > 0 {
+		return fmt.Sprintf("%d+%s[bot]@users.noreply.github.com", c.GitHub.AppID, c.GitHub.BotUsername)
+	}
+
+	// Fallback: return empty string (will be caught by validation)
+	return ""
+}
+
 // LoadConfig loads configuration from multiple sources with Viper
 // Priority order: Environment variables > Config file > .env file > Defaults
 func LoadConfig(configPath string) (*Config, error) {
@@ -388,7 +415,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	// - JIRA_AI_JIRA_BASE_URL → jira.base_url
 	// - JIRA_AI_JIRA_USERNAME → jira.username
 	// - JIRA_AI_JIRA_GIT_PULL_REQUEST_FIELD_NAME → jira.git_pull_request_field_name
-	// - JIRA_AI_GITHUB_PERSONAL_ACCESS_TOKEN → github.personal_access_token
 
 	// Helper function to bind environment variables with error checking
 	// Panics on error since all keys are static strings and should never fail
@@ -404,13 +430,15 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("jira.username")
 	bindEnv("jira.api_token")
 	bindEnv("jira.interval_seconds")
+	bindEnv("jira.assignee_to_github_username")
 	bindEnv("jira.disable_error_comments")
 	bindEnv("jira.git_pull_request_field_name")
 	bindEnv("jira.status_transitions")
 	bindEnv("jira.project_keys")
 
 	// GitHub configuration
-	bindEnv("github.personal_access_token")
+	bindEnv("github.app_id")
+	bindEnv("github.private_key_path")
 	bindEnv("github.bot_username")
 	bindEnv("github.bot_email")
 	bindEnv("github.target_branch")
@@ -439,6 +467,8 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// AI configuration
 	bindEnv("ai.generate_documentation")
+	bindEnv("ai.max_retries")
+	bindEnv("ai.retry_delay_seconds")
 
 	// Server configuration
 	bindEnv("server.port")
@@ -626,15 +656,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("github.pr_label", "ai-pr")
 	v.SetDefault("github.max_thread_depth", 5)
 	v.SetDefault("github.known_bot_usernames", []string{
-		"github-actions[bot]",
-		"dependabot[bot]",
-		"renovate[bot]",
+		"github-actions",
+		"dependabot",
+		"renovate",
 		"coderabbitai",
 		"sourcery-ai",
 		"copilot",
-		"deepsource-io[bot]",
+		"deepsource-io",
 		"codefactor-io",
-		"codeclimate[bot]",
+		"codeclimate",
 	})
 
 	// AI Provider defaults
@@ -656,6 +686,8 @@ func setDefaults(v *viper.Viper) {
 
 	// AI defaults
 	v.SetDefault("ai.generate_documentation", true)
+	v.SetDefault("ai.max_retries", 5)
+	v.SetDefault("ai.retry_delay_seconds", 2)
 
 	// Temp directory defaults
 	v.SetDefault("temp_dir", "/tmp/jira-ai-issue-solver")
@@ -725,17 +757,64 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.GitHub.PersonalAccessToken != "" || c.GitHub.BotUsername != "" || c.GitHub.BotEmail != "" {
-		// If any GitHub config is provided, validate all required fields
-		if c.GitHub.PersonalAccessToken == "" {
-			return errors.New("github.personal_access_token is required when GitHub configuration is provided")
+	// GitHub validation - App credentials required
+	if c.GitHub.AppID <= 0 {
+		return errors.New("github.app_id must be a positive integer")
+	}
+	if c.GitHub.PrivateKeyPath == "" {
+		return errors.New("github.private_key_path must be provided")
+	}
+	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf("github.private_key_path file does not exist: %s", c.GitHub.PrivateKeyPath)
+	}
+
+	if c.GitHub.BotUsername == "" {
+		return errors.New("github.bot_username is required")
+	}
+
+	// Validate bot email can be determined
+	if c.GetBotEmail() == "" {
+		return errors.New("github.bot_email is required (either set explicitly, or it will be auto-constructed from app_id)")
+	}
+
+	// Validate Jira assignee mapping (required for GitHub App fork-based workflow)
+	if len(c.Jira.AssigneeToGitHubUsername) == 0 {
+		return errors.New("jira.assignee_to_github_username is required: GitHub App mode creates PRs against assignee forks, so all ticket assignees must map to GitHub usernames - tickets must be assigned before processing")
+	}
+
+	// Validate bot username doesn't contain characters that could cause issues
+	invalidChars := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|", "\n", "\r", "\t"}
+	for _, char := range invalidChars {
+		if strings.Contains(c.GitHub.BotUsername, char) {
+			return fmt.Errorf("github.bot_username contains invalid character %q - bot username will be used in branch names and must be git-safe", char)
 		}
-		if c.GitHub.BotUsername == "" {
-			return errors.New("github.bot_username is required when GitHub configuration is provided")
+	}
+
+	// Validate known bot usernames don't contain problematic characters
+	for _, botUsername := range c.GitHub.KnownBotUsernames {
+		for _, char := range invalidChars {
+			if strings.Contains(botUsername, char) {
+				return fmt.Errorf("github.known_bot_usernames contains username %q with invalid character %q", botUsername, char)
+			}
 		}
-		if c.GitHub.BotEmail == "" {
-			return errors.New("github.bot_email is required when GitHub configuration is provided")
-		}
+	}
+
+	// Validate AI configuration
+	if c.AI.MaxRetries < 1 {
+		return errors.New("ai.max_retries must be at least 1")
+	}
+	if c.AI.RetryDelaySeconds < 0 {
+		return errors.New("ai.retry_delay_seconds must be non-negative")
+	}
+	if c.AI.RetryDelaySeconds > 300 {
+		return errors.New("ai.retry_delay_seconds must not exceed 300 seconds (5 minutes)")
+	}
+
+	// Validate total retry time is reasonable (max 30 minutes total)
+	maxTotalRetryTime := c.AI.MaxRetries * c.AI.RetryDelaySeconds
+	if maxTotalRetryTime > 1800 {
+		return fmt.Errorf("ai config would cause excessive retry time: max_retries(%d) * retry_delay_seconds(%d) = %d seconds (max allowed: 1800 seconds / 30 minutes)",
+			c.AI.MaxRetries, c.AI.RetryDelaySeconds, maxTotalRetryTime)
 	}
 
 	return nil

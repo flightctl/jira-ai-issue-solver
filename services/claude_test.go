@@ -17,13 +17,15 @@ func TestGenerateCode(t *testing.T) {
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	t.Run("Successful code generation", func(t *testing.T) {
+		expectedResult := "Generated code here"
 		mockClaude := &mocks.MockClaudeService{
 			GenerateCodeFunc: func(prompt string, repoDir string) (*models.ClaudeResponse, error) {
 				return &models.ClaudeResponse{
 					Type:    "assistant",
 					IsError: false,
+					Result:  expectedResult,
 					Message: &models.ClaudeMessage{
-						Content: []models.ClaudeContent{{Type: "text", Text: "Generated code here"}},
+						Content: []models.ClaudeContent{{Type: "text", Text: expectedResult}},
 						Usage:   models.ClaudeUsage{InputTokens: 100, OutputTokens: 200, ServiceTier: "claude-3-opus-20240229"},
 					},
 				}, nil
@@ -34,38 +36,24 @@ func TestGenerateCode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GenerateCode returned an error: %v", err)
 		}
-		response, ok := result.(*models.ClaudeResponse)
+		// The mock's GenerateCode method returns the Result field as a string
+		resultStr, ok := result.(string)
 		if !ok {
-			t.Fatalf("Expected *models.ClaudeResponse, got %T", result)
+			t.Fatalf("Expected string, got %T", result)
 		}
-		if response.Type != "assistant" {
-			t.Errorf("Expected type assistant, got %s", response.Type)
-		}
-		if response.IsError {
-			t.Errorf("Expected IsError false, got true")
-		}
-		if response.Message == nil || len(response.Message.Content) == 0 {
-			t.Errorf("Expected message with content, but got nil or empty content")
-		} else {
-			if response.Message.Content[0].Text != "Generated code here" {
-				t.Errorf("Expected content 'Generated code here', got '%s'", response.Message.Content[0].Text)
-			}
-			if response.Message.Usage.InputTokens != 100 {
-				t.Errorf("Expected InputTokens 100, got %d", response.Message.Usage.InputTokens)
-			}
-			if response.Message.Usage.OutputTokens != 200 {
-				t.Errorf("Expected OutputTokens 200, got %d", response.Message.Usage.OutputTokens)
-			}
+		if resultStr != expectedResult {
+			t.Errorf("Expected '%s', got '%s'", expectedResult, resultStr)
 		}
 	})
 
 	t.Run("Error response from Claude", func(t *testing.T) {
+		expectedResult := "Error: something went wrong"
 		mockClaude := &mocks.MockClaudeService{
 			GenerateCodeFunc: func(prompt string, repoDir string) (*models.ClaudeResponse, error) {
 				return &models.ClaudeResponse{
 					Type:    "assistant",
 					IsError: true,
-					Result:  "Error: something went wrong",
+					Result:  expectedResult,
 				}, nil
 			},
 		}
@@ -74,15 +62,44 @@ func TestGenerateCode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GenerateCode returned an error: %v", err)
 		}
-		response, ok := result.(*models.ClaudeResponse)
+		// The mock's GenerateCode method returns the Result field as a string
+		resultStr, ok := result.(string)
 		if !ok {
-			t.Fatalf("Expected *models.ClaudeResponse, got %T", result)
+			t.Fatalf("Expected string, got %T", result)
 		}
-		if !response.IsError {
-			t.Errorf("Expected IsError true, got false")
+		if resultStr != expectedResult {
+			t.Errorf("Expected '%s', got '%s'", expectedResult, resultStr)
 		}
-		if response.Result != "Error: something went wrong" {
-			t.Errorf("Expected error message, got '%s'", response.Result)
+	})
+
+	t.Run("Mock extracts Result field correctly", func(t *testing.T) {
+		expectedResult := "Test output"
+		mockClaude := &mocks.MockClaudeService{
+			GenerateCodeFunc: func(prompt string, repoDir string) (*models.ClaudeResponse, error) {
+				return &models.ClaudeResponse{
+					Type:    "completion",
+					IsError: false,
+					Result:  expectedResult,
+					// Other fields that should be ignored by the mock
+					SessionID:    "test-session",
+					NumTurns:     5,
+					TotalCostUsd: 0.01,
+				}, nil
+			},
+		}
+		var ai services.AIService = mockClaude
+		result, err := ai.GenerateCode("prompt", tempDir)
+		if err != nil {
+			t.Fatalf("GenerateCode returned an error: %v", err)
+		}
+
+		// Should return the Result field as a string, not the full ClaudeResponse
+		resultStr, ok := result.(string)
+		if !ok {
+			t.Fatalf("Expected string (extracted Result field), got %T", result)
+		}
+		if resultStr != expectedResult {
+			t.Errorf("Expected '%s', got '%s'", expectedResult, resultStr)
 		}
 	})
 }

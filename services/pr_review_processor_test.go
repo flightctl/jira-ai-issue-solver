@@ -1,6 +1,7 @@
 package services
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +65,7 @@ func TestPRReviewProcessor_ExtractPRInfoFromURL(t *testing.T) {
 	}
 }
 
-func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
+func TestPRReviewProcessor_HasReviewFeedback(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
 	processor := &PRReviewProcessorImpl{
@@ -107,7 +108,7 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "no changes requested",
+			name: "commented review without body should not trigger feedback",
 			reviews: []models.GitHubReview{
 				{
 					User:  models.GitHubUser{Login: "reviewer1"},
@@ -116,6 +117,40 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 				{
 					User:  models.GitHubUser{Login: "reviewer2"},
 					State: "COMMENTED",
+					Body:  "", // Empty body - should not be considered feedback
+				},
+			},
+			want: false,
+		},
+		{
+			name: "commented review with body should trigger feedback",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "reviewer1"},
+					State: "COMMENTED",
+					Body:  "This looks good overall, but please address the minor issues mentioned in my inline comments",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "commented review with body (lowercase) should trigger feedback",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "reviewer1"},
+					State: "commented",
+					Body:  "Please make these changes",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "bot commented review should be ignored",
+			reviews: []models.GitHubReview{
+				{
+					User:  models.GitHubUser{Login: "ai-bot"},
+					State: "COMMENTED",
+					Body:  "I've processed this PR",
 				},
 			},
 			want: false,
@@ -129,9 +164,9 @@ func TestPRReviewProcessor_HasRequestChangesReviews(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := processor.hasRequestChangesReviews(tt.reviews)
+			got := processor.hasReviewFeedback(tt.reviews)
 			if got != tt.want {
-				t.Errorf("hasRequestChangesReviews() = %v, want %v", got, tt.want)
+				t.Errorf("hasReviewFeedback() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -182,6 +217,7 @@ func TestPRReviewProcessor_CollectFeedback(t *testing.T) {
 	// Check that groupedFeedback structure is correct
 	if groupedFeedback == nil {
 		t.Fatal("groupedFeedback should not be nil")
+		return
 	}
 
 	// Should have 2 groups: "" (general) and "src/main.go"
@@ -279,13 +315,21 @@ func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
 			StartLine: 0,
 			CreatedAt: time.Now(),
 		},
+		{
+			User:      models.GitHubUser{Login: "reviewer4"},
+			Body:      "Outdated review comment - code changed since this was posted",
+			Path:      "src/database.go", // Has path
+			Line:      0,                 // But line is 0 (outdated)
+			StartLine: 0,
+			CreatedAt: time.Now(),
+		},
 	}
 
 	groupedFeedback := processor.collectFeedback([]models.GitHubReview{}, comments, time.Time{})
 
-	// Should have 3 groups: "src/main.go", "src/util.go", and "" (general)
-	if len(groupedFeedback.Groups) != 3 {
-		t.Errorf("Expected 3 groups, got %d", len(groupedFeedback.Groups))
+	// Should have 4 groups: "src/main.go", "src/util.go", "src/database.go", and "" (general)
+	if len(groupedFeedback.Groups) != 4 {
+		t.Errorf("Expected 4 groups, got %d", len(groupedFeedback.Groups))
 	}
 
 	// Test single-line comment formatting in src/main.go group
@@ -322,6 +366,16 @@ func TestPRReviewProcessor_CollectFeedback_CommentFormatting(t *testing.T) {
 	if strings.Contains(generalGroup.NewFeedback, "reviewer3 on :0") || strings.Contains(generalGroup.NewFeedback, "reviewer3 on 0") {
 		t.Error("General comment should not contain ':0' or spurious path/line references")
 	}
+
+	// Test outdated comment formatting in src/database.go group
+	dbGroup, ok := groupedFeedback.Groups["src/database.go"]
+	if !ok {
+		t.Fatal("Should have a group for 'src/database.go'")
+	}
+	expectedOutdated := "**Comment by reviewer4 Outdated comment on src/database.go (code has changed since comment was made):**"
+	if !strings.Contains(dbGroup.NewFeedback, expectedOutdated) {
+		t.Errorf("Outdated comment not formatted correctly.\nExpected to contain: %s\nGot: %s", expectedOutdated, dbGroup.NewFeedback)
+	}
 }
 
 func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
@@ -354,7 +408,10 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 	}
 	summary := "Previously addressed (for context only - do not re-fix):\n- Old issue was fixed\n"
 
-	prompt := processor.generateFeedbackPrompt(pr, feedbackData, summary)
+	prompt, err := processor.generateFeedbackPrompt(pr, feedbackData, summary)
+	if err != nil {
+		t.Fatalf("generateFeedbackPrompt failed: %v", err)
+	}
 
 	// Check that prompt contains expected content
 	if !strings.Contains(prompt, "Test PR") {
@@ -369,7 +426,7 @@ func TestPRReviewProcessor_GenerateFeedbackPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "Please fix the formatting") {
 		t.Error("Prompt should contain feedback")
 	}
-	if !strings.Contains(prompt, "Apply the necessary fixes") {
+	if !strings.Contains(prompt, "Apply the necessary code fixes") {
 		t.Error("Prompt should contain instructions")
 	}
 	if !strings.Contains(prompt, "Previously addressed") {
@@ -524,7 +581,8 @@ func TestPRReviewProcessor_UpdateProcessingTimestamp(t *testing.T) {
 		githubService: mockGitHub,
 		config:        config,
 	}
-	err := processor.updateProcessingTimestamp("owner", "repo", 1, "TEST-123")
+	testTimestamp := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	err := processor.updateProcessingTimestamp("owner", "repo", 1, "TEST-123", testTimestamp)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -860,10 +918,11 @@ func TestPRReviewProcessor_CollectFeedback_ThreadedReplies(t *testing.T) {
 
 func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
 	config := &models.Config{}
+	// Config uses recommended format without [bot] suffixes
 	config.GitHub.KnownBotUsernames = []string{
-		"github-actions[bot]",
+		"github-actions",
 		"coderabbitai",
-		"dependabot[bot]",
+		"dependabot",
 	}
 	processor := &PRReviewProcessorImpl{
 		config: config,
@@ -890,6 +949,11 @@ func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "bot suffix normalization - config without [bot], username with [bot]",
+			username: "coderabbitai[bot]",
+			want:     true,
+		},
+		{
 			name:     "not a bot",
 			username: "human-reviewer",
 			want:     false,
@@ -906,6 +970,67 @@ func TestPRReviewProcessor_IsKnownBot(t *testing.T) {
 			got := processor.isKnownBot(tt.username)
 			if got != tt.want {
 				t.Errorf("isKnownBot(%q) = %v, want %v", tt.username, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRReviewProcessor_IsOurBot(t *testing.T) {
+	tests := []struct {
+		name              string
+		configBotUsername string
+		testUsername      string
+		want              bool
+	}{
+		{
+			name:              "exact match without suffix",
+			configBotUsername: "my-bot",
+			testUsername:      "my-bot",
+			want:              true,
+		},
+		{
+			name:              "config without suffix, input with suffix",
+			configBotUsername: "my-bot",
+			testUsername:      "my-bot[bot]",
+			want:              true,
+		},
+		{
+			name:              "config with suffix, input without suffix",
+			configBotUsername: "my-bot[bot]",
+			testUsername:      "my-bot",
+			want:              true,
+		},
+		{
+			name:              "both with suffix",
+			configBotUsername: "my-bot[bot]",
+			testUsername:      "my-bot[bot]",
+			want:              true,
+		},
+		{
+			name:              "case insensitive match",
+			configBotUsername: "My-Bot",
+			testUsername:      "my-bot[bot]",
+			want:              true,
+		},
+		{
+			name:              "not our bot",
+			configBotUsername: "my-bot",
+			testUsername:      "other-bot",
+			want:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &models.Config{}
+			config.GitHub.BotUsername = tt.configBotUsername
+			processor := &PRReviewProcessorImpl{
+				config: config,
+			}
+
+			got := processor.isOurBot(tt.testUsername)
+			if got != tt.want {
+				t.Errorf("isOurBot(%q) = %v, want %v", tt.testUsername, got, tt.want)
 			}
 		})
 	}
@@ -998,7 +1123,7 @@ func TestPRReviewProcessor_ShouldSkipReply(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.BotUsername = "ai-bot"
 	config.GitHub.MaxThreadDepth = 3
-	config.GitHub.KnownBotUsernames = []string{"coderabbitai", "github-actions[bot]"}
+	config.GitHub.KnownBotUsernames = []string{"coderabbitai", "github-actions"}
 
 	processor := &PRReviewProcessorImpl{
 		config: config,
@@ -1117,5 +1242,194 @@ func TestPRReviewProcessor_ShouldSkipReply(t *testing.T) {
 				t.Errorf("shouldSkipReply() reason = %q, want to contain %q", gotReason, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestPRReviewProcessor_TimestampCapturedAtStart validates that the processing timestamp
+// is captured at the START of processing, not the END. This ensures comments made during
+// processing (which can take 30+ seconds) are included in the next scan, fixing the race
+// condition where comments made between fetching and timestamp update would be missed.
+func TestPRReviewProcessor_TimestampCapturedAtStart(t *testing.T) {
+	startTime := time.Now().UTC()
+
+	// Track when updateProcessingTimestamp is called and capture the timestamp
+	var capturedTimestamp time.Time
+	var timestampCaptured bool
+
+	mockGitHub := &mocks.MockGitHubService{
+		GetPRDetailsFunc: func(owner, repo string, prNumber int) (*models.GitHubPRDetails, error) {
+			return &models.GitHubPRDetails{
+				Number: prNumber,
+				Head: models.GitHubRef{
+					Ref: "test-branch",
+					Repo: models.GitHubRepository{
+						CloneURL: "https://github.com/test/repo.git",
+						Owner: models.GitHubUser{
+							Login: "test-owner",
+						},
+					},
+				},
+				Reviews: []models.GitHubReview{
+					{
+						ID:          1,
+						User:        models.GitHubUser{Login: "reviewer"},
+						Body:        "Please fix this",
+						State:       "CHANGES_REQUESTED",
+						SubmittedAt: startTime.Add(1 * time.Second),
+					},
+				},
+				Comments: []models.GitHubPRComment{},
+				Files: []models.GitHubPRFile{
+					{
+						Filename:  "test.go",
+						Status:    "modified",
+						Additions: 10,
+						Deletions: 5,
+						Patch:     "+some changes",
+					},
+				},
+			}, nil
+		},
+		ListPRCommentsFunc: func(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+			return []models.GitHubPRComment{}, nil
+		},
+		AddPRCommentFunc: func(owner, repo string, prNumber int, body string) error {
+			// Extract timestamp from comment body using regex
+			re := regexp.MustCompile(`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)`)
+			matches := re.FindStringSubmatch(body)
+			if len(matches) > 1 {
+				var err error
+				capturedTimestamp, err = time.Parse(time.RFC3339, matches[1])
+				if err == nil {
+					timestampCaptured = true
+				} else {
+					t.Logf("Failed to parse timestamp: %v (raw: %s)", err, matches[1])
+				}
+			} else {
+				t.Logf("No timestamp found in comment body: %s", body)
+			}
+			return nil
+		},
+		CloneRepositoryFunc: func(repoURL, directory string) error {
+			// Simulate processing taking time
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		},
+		SwitchToBranchFunc: func(directory, branchName string) error {
+			return nil
+		},
+		CommitChangesFunc: func(directory, message, coAuthorName, coAuthorEmail string) error {
+			return nil
+		},
+		PushChangesFunc: func(directory, branchName, forkOwner, repo string) error {
+			return nil
+		},
+		ReplyToPRCommentFunc: func(owner, repo string, prNumber int, commentID int64, body string) error {
+			return nil
+		},
+	}
+
+	mockJira := &mocks.MockJiraService{
+		GetTicketFunc: func(ticketKey string) (*models.JiraTicketResponse, error) {
+			return &models.JiraTicketResponse{
+				Key: ticketKey,
+				Fields: models.JiraFields{
+					Summary:     "Test ticket",
+					Description: "Test description",
+					IssueType: models.JiraIssueType{
+						Name: "Bug",
+					},
+					Assignee: &models.JiraUser{
+						DisplayName:  "Test User",
+						EmailAddress: "test@example.com",
+					},
+				},
+			}, nil
+		},
+		GetFieldIDByNameFunc: func(fieldName string) (string, error) {
+			return "customfield_12345", nil
+		},
+		GetTicketWithExpandedFieldsFunc: func(ticketKey string) (map[string]interface{}, map[string]string, error) {
+			return map[string]interface{}{
+				"customfield_12345": "https://github.com/test/repo/pull/123",
+			}, map[string]string{}, nil
+		},
+		HasSecurityLevelFunc: func(ticketKey string) (bool, error) {
+			return false, nil
+		},
+	}
+
+	mockClaude := &mocks.MockClaudeService{
+		GenerateCodeFunc: func(prompt, repoDir string) (*models.ClaudeResponse, error) {
+			// Simulate AI processing time to ensure timestamp is captured at START not END.
+			// Combined with CloneRepositoryFunc delay (100ms), total processing is ~200ms.
+			time.Sleep(100 * time.Millisecond)
+			return &models.ClaudeResponse{
+				Type:    "completion",
+				IsError: false,
+				Result:  "REVIEW_1_RESPONSE:\nFixed the issue as requested.\n\n",
+			}, nil
+		},
+	}
+
+	config := &models.Config{}
+	config.GitHub.BotUsername = "test-bot"
+	config.Jira.Projects = []models.ProjectConfig{
+		{
+			ProjectKeys:             models.ProjectKeys{"TEST"},
+			GitPullRequestFieldName: "Git Pull Request",
+			DisableErrorComments:    false,
+			ComponentToRepo:         map[string]string{"test": "https://github.com/test/repo"},
+			StatusTransitions: models.TicketTypeStatusTransitions{
+				"bug": {
+					Todo:       "TODO",
+					InProgress: "IN_PROGRESS",
+					InReview:   "IN_REVIEW",
+				},
+			},
+		},
+	}
+	config.TempDir = t.TempDir()
+
+	logger := zap.NewNop()
+	processor := NewPRReviewProcessor(mockJira, mockGitHub, mockClaude, config, logger)
+
+	// Run processing
+	err := processor.ProcessPRReviewFeedback("TEST-123")
+	if err != nil {
+		t.Fatalf("ProcessPRReviewFeedback failed: %v", err)
+	}
+
+	// Verify timestamp was captured
+	if !timestampCaptured {
+		t.Fatal("Timestamp was not captured from PR comment")
+	}
+
+	// Verify timestamp is from START of processing, not END
+	// The captured timestamp should be very close to startTime (within tolerance)
+	// because it's captured at the START, not after the 200ms of simulated processing
+	endTime := time.Now().UTC()
+
+	// Calculate time differences
+	// If timestamp was captured at END: timeSinceStart ≈ 200ms, timeSinceEnd ≈ 0ms
+	// If timestamp was captured at START: timeSinceStart ≈ 0ms, timeSinceEnd ≈ 200ms
+	timeSinceStart := capturedTimestamp.Sub(startTime)
+	timeSinceEnd := endTime.Sub(capturedTimestamp)
+
+	// The key invariant: timestamp should be MUCH closer to start than to end
+	// This assertion is robust to CI timing variance
+	if timeSinceStart > timeSinceEnd {
+		t.Errorf("Timestamp appears to be from END of processing (since start: %v, since end: %v), should be from START",
+			timeSinceStart, timeSinceEnd)
+	}
+
+	// Sanity check: should be reasonably close to start (allow generous overhead for slow CI)
+	if timeSinceStart > 5*time.Second {
+		t.Errorf("Timestamp is unreasonably far from start time: %v after start", timeSinceStart)
+	}
+
+	// Additional sanity check: timestamp should definitely be before endTime
+	if capturedTimestamp.After(endTime) {
+		t.Errorf("Timestamp %v is after end time %v, this should never happen", capturedTimestamp, endTime)
 	}
 }
