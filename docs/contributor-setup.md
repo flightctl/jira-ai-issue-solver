@@ -16,6 +16,12 @@ When you're assigned a Jira ticket, the bot can automatically:
 
 - You have a fork of the repository (e.g., `yourname/repository`)
 - You're assigned Jira tickets in the configured project
+- **Tickets have the `Components` field set** to a value that matches the bot's
+  configuration
+  - Example: If the bot is configured to process tickets with component
+    "Backend API", your ticket must have that component set
+  - Check with your admin for valid component names (they are case-sensitive)
+  - The bot uses this to determine which GitHub repository to target
 - The bot's Jira username is added as a **Contributor** on tickets you want
   processed
   - Example: If the bot's username is `wg-jira-ai-issue-solver`, add it as a
@@ -94,13 +100,16 @@ Both your changes and the bot's changes will appear in the same PR!
 
 **Possible causes:**
 
-1. The bot's Jira username is not added as a **Contributor** on the ticket →
+1. The ticket's `Components` field is not set or doesn't match the bot's
+   configuration → Check with your admin for valid component names and set it
+   in Jira
+2. The bot's Jira username is not added as a **Contributor** on the ticket →
    Add it in Jira (see Prerequisites above)
-2. The ticket is not in the configured "todo" status → Check with your admin
+3. The ticket is not in the configured "todo" status → Check with your admin
    for the expected status
-3. You haven't installed the GitHub App on your fork → Do Step 1 above
-4. Your admin hasn't added your email-to-GitHub mapping → Do Step 2 above
-5. Your fork doesn't exist → Fork the repository first
+4. You haven't installed the GitHub App on your fork → Do Step 1 above
+5. Your admin hasn't added your email-to-GitHub mapping → Do Step 2 above
+6. Your fork doesn't exist → Fork the repository first
 
 **Check with admin**: Ask if they see any errors in the bot logs for your ticket.
 
