@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -24,6 +25,34 @@ func init() {
 	if err != nil {
 		panic(fmt.Sprintf("Failed to parse ticket prompt template: %v", err))
 	}
+}
+
+// PII scrubbing regexes
+var (
+	emailRegex       = regexp.MustCompile(`[\w.\-+]+@[\w.\-]+\.\w+`)
+	internalURLRegex = regexp.MustCompile(`https?://[^\s)]*\.(redhat\.com|internal\.[^\s)]*)(:[0-9]+)?(/[^\s)]*)?`)
+)
+
+// scrubPII removes email addresses and internal URLs from text.
+func scrubPII(text string) string {
+	text = internalURLRegex.ReplaceAllString(text, "[internal link removed]")
+	text = emailRegex.ReplaceAllString(text, "[email redacted]")
+	return text
+}
+
+// fallbackPRBody builds a minimal structured PR body from the ticket data
+// when the AI output doesn't contain a "## PR Description" section.
+func fallbackPRBody(ticket *models.JiraTicketResponse) string {
+	summary := scrubPII(ticket.Fields.Summary)
+	description := scrubPII(ticket.Fields.Description)
+
+	body := fmt.Sprintf("This PR addresses %s.\n\n### Problem\n\n%s\n", ticket.Key, summary)
+	if description != "" {
+		body += fmt.Sprintf("\n%s\n", description)
+	}
+	body += "\n### Root Cause\n\n_See diff for details._\n"
+	body += "\n### Solution\n\n_See code changes in this PR._\n"
+	return body
 }
 
 // TicketProcessor defines the interface for processing Jira tickets
@@ -330,6 +359,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 		zap.String("ticket", ticketKey),
 		zap.Int("maxRetries", maxRetries))
 
+	var aiOutput interface{}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		p.logger.Info("AI code generation attempt",
 			zap.String("ticket", ticketKey),
@@ -337,7 +367,7 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 			zap.Int("maxRetries", maxRetries))
 
 		// Run AI service
-		_, err = p.aiService.GenerateCode(prompt, repoDir)
+		aiOutput, err = p.aiService.GenerateCode(prompt, repoDir)
 		if err != nil {
 			p.logger.Error("AI code generation failed",
 				zap.String("ticket", ticketKey),
@@ -458,17 +488,27 @@ func (p *TicketProcessorImpl) ProcessTicket(ticketKey string) error {
 	}
 
 	// Create PR content (redact if security level is set)
-	prTitle := fmt.Sprintf("%s: %s", ticketKey, ticket.Fields.Summary)
-	prBody := fmt.Sprintf("This PR addresses the issue described in [%s](%s/browse/%s).\n\n**Summary:** %s\n\n**Description:** %s",
-		ticketKey, p.config.Jira.BaseURL, ticketKey, ticket.Fields.Summary, ticket.Fields.Description)
-
-	// Add assignee information if available
-	if ticket.Fields.Assignee != nil {
-		prBody += fmt.Sprintf("\n\n**Assignee:** %s (%s)", ticket.Fields.Assignee.DisplayName, ticket.Fields.Assignee.EmailAddress)
-	}
-
+	var prTitle, prBody string
 	if hasSecurityLevel {
 		prTitle, prBody = redactPRContentForSecurity(ticketKey)
+	} else {
+		prTitle = fmt.Sprintf("%s: %s", ticketKey, scrubPII(ticket.Fields.Summary))
+
+		// Try to parse the "## PR Description" section from the AI output
+		if aiOutputStr, ok := aiOutput.(string); ok && aiOutputStr != "" {
+			prBody = parsePRDescription(aiOutputStr)
+		}
+
+		if prBody != "" {
+			prBody = scrubPII(prBody)
+			p.logger.Info("Using AI-generated PR description from model output",
+				zap.String("ticket", ticketKey))
+		} else {
+			// Fall back to ticket-data-based description
+			p.logger.Info("AI output did not contain PR Description section, using fallback",
+				zap.String("ticket", ticketKey))
+			prBody = fallbackPRBody(ticket)
+		}
 	}
 
 	// When creating a pull request from a fork, the head parameter should be in the format "forkOwner:branchName"
@@ -587,6 +627,39 @@ func (p *TicketProcessorImpl) generatePrompt(ticket *models.JiraTicketResponse) 
 	}
 
 	return buf.String(), nil
+}
+
+// parsePRDescription extracts the "## PR Description" section from the AI output.
+// It looks for "## PR Description" and captures everything from the next line until
+// the next H2 heading ("## ") or end of string.
+// Returns the extracted section or empty string if not found.
+func parsePRDescription(aiOutput string) string {
+	const marker = "## PR Description"
+	idx := strings.Index(aiOutput, marker)
+	if idx == -1 {
+		return ""
+	}
+
+	// Start after the marker line
+	content := aiOutput[idx+len(marker):]
+
+	// Find the next H2 heading that isn't part of the PR Description subsections
+	// PR Description uses ### (H3) for Problem/Root Cause/Solution, so we stop at ## (H2)
+	lines := strings.Split(content, "\n")
+	var result []string
+	for i, line := range lines {
+		// Skip the first line (could be empty after the marker)
+		if i == 0 && strings.TrimSpace(line) == "" {
+			continue
+		}
+		// Stop at the next ## heading (but not ### which are our subsections)
+		if strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "### ") {
+			break
+		}
+		result = append(result, line)
+	}
+
+	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
 // redactPRContentForSecurity creates redacted PR title and body when ticket has security level
