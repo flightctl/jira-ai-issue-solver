@@ -249,16 +249,23 @@ func TestTicketProcessor_CreatePullRequestHeadFormat(t *testing.T) {
 		t.Errorf("Expected PR title to be '%s', got '%s'", expectedPRTitle, capturedPRTitle)
 	}
 
-	// Verify that the PR body contains the expected format
-	expectedPRBodyContains := "This PR addresses the issue described in [TEST-123]"
-	if !strings.Contains(capturedPRBody, expectedPRBodyContains) {
-		t.Errorf("Expected PR body to contain '%s', got '%s'", expectedPRBodyContains, capturedPRBody)
+	// Verify that the PR body contains the structured format
+	if !strings.Contains(capturedPRBody, "This PR addresses TEST-123") {
+		t.Errorf("Expected PR body to contain ticket key reference, got '%s'", capturedPRBody)
+	}
+	if !strings.Contains(capturedPRBody, "## Problem") {
+		t.Errorf("Expected PR body to contain '## Problem' section, got '%s'", capturedPRBody)
+	}
+	if !strings.Contains(capturedPRBody, "## Root Cause") {
+		t.Errorf("Expected PR body to contain '## Root Cause' section, got '%s'", capturedPRBody)
+	}
+	if !strings.Contains(capturedPRBody, "## Solution") {
+		t.Errorf("Expected PR body to contain '## Solution' section, got '%s'", capturedPRBody)
 	}
 
-	// Verify that the PR body contains the Jira URL
-	expectedJiraURL := "https://your-domain.atlassian.net/browse/TEST-123"
-	if !strings.Contains(capturedPRBody, expectedJiraURL) {
-		t.Errorf("Expected PR body to contain Jira URL '%s', got '%s'", expectedJiraURL, capturedPRBody)
+	// Verify that the PR body does NOT contain internal Jira URLs
+	if strings.Contains(capturedPRBody, "atlassian.net") {
+		t.Errorf("Expected PR body NOT to contain internal Jira URL, got '%s'", capturedPRBody)
 	}
 }
 
@@ -382,16 +389,19 @@ func TestTicketProcessor_PRDescriptionWithAssignee(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	// Verify that the PR body contains assignee information
-	expectedAssigneeInfo := "**Assignee:** John Doe (john.doe@example.com)"
-	if !strings.Contains(capturedPRBody, expectedAssigneeInfo) {
-		t.Errorf("Expected PR body to contain assignee info '%s', got '%s'", expectedAssigneeInfo, capturedPRBody)
+	// Verify that the PR body uses the structured format
+	if !strings.Contains(capturedPRBody, "## Problem") {
+		t.Errorf("Expected PR body to contain '## Problem' section, got '%s'", capturedPRBody)
 	}
 
-	// Verify that the PR body contains the Jira URL
-	expectedJiraURL := "https://your-domain.atlassian.net/browse/TEST-456"
-	if !strings.Contains(capturedPRBody, expectedJiraURL) {
-		t.Errorf("Expected PR body to contain Jira URL '%s', got '%s'", expectedJiraURL, capturedPRBody)
+	// Verify that the PR body does NOT leak assignee email
+	if strings.Contains(capturedPRBody, "john.doe@example.com") {
+		t.Errorf("Expected PR body NOT to contain assignee email, got '%s'", capturedPRBody)
+	}
+
+	// Verify that the PR body does NOT contain internal Jira URLs
+	if strings.Contains(capturedPRBody, "atlassian.net") {
+		t.Errorf("Expected PR body NOT to contain internal Jira URL, got '%s'", capturedPRBody)
 	}
 }
 
@@ -564,3 +574,143 @@ func TestTicketProcessor_DocumentationGenerationConfig(t *testing.T) {
 // - Checking for changes after each attempt using githubService.HasChanges()
 // - Failing gracefully with clear error messages if no changes after all retries
 // - Waiting config.AI.RetryDelaySeconds between retries
+
+func TestParsePRDescription(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		shouldMatch    bool
+		mustContain    []string
+		mustNotContain []string
+	}{
+		{
+			name: "extracts full PR description section",
+			input: `I made some changes to fix the bug.
+
+## Changes Made
+- Modified foo.go
+
+## PR Description
+
+### Problem
+Users see an authentication error when pulling a valid container image.
+
+### Root Cause
+The error mapping in device/errors was returning an auth error for registry 404 responses.
+
+### Solution
+Updated the error classification to distinguish between auth failures and missing images.
+
+## Testing
+All tests pass.`,
+			shouldMatch: true,
+			mustContain: []string{
+				"### Problem",
+				"### Root Cause",
+				"### Solution",
+				"authentication error",
+				"error classification",
+			},
+			mustNotContain: []string{
+				"## Changes Made",
+				"## Testing",
+			},
+		},
+		{
+			name:        "returns empty when no PR Description section",
+			input:       "I fixed the bug by changing foo.go.\n\n## Summary\nDone.",
+			shouldMatch: false,
+		},
+		{
+			name: "stops at next H2 heading",
+			input: `## PR Description
+
+### Problem
+The widget broke.
+
+### Root Cause
+Off-by-one error.
+
+### Solution
+Fixed the loop bound.
+
+## Some Other Section
+This should not be included.`,
+			shouldMatch:    true,
+			mustContain:    []string{"Fixed the loop bound"},
+			mustNotContain: []string{"This should not be included"},
+		},
+		{
+			name:        "returns empty for empty input",
+			input:       "",
+			shouldMatch: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parsePRDescription(tc.input)
+
+			if tc.shouldMatch && result == "" {
+				t.Fatal("Expected parsePRDescription to extract content, got empty string")
+			}
+			if !tc.shouldMatch && result != "" {
+				t.Fatalf("Expected empty result, got: %s", result)
+			}
+
+			for _, s := range tc.mustContain {
+				if !strings.Contains(result, s) {
+					t.Errorf("Expected result to contain %q, got:\n%s", s, result)
+				}
+			}
+			for _, s := range tc.mustNotContain {
+				if strings.Contains(result, s) {
+					t.Errorf("Expected result NOT to contain %q, got:\n%s", s, result)
+				}
+			}
+		})
+	}
+}
+
+func TestScrubPII(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{
+			name:   "scrubs redhat email",
+			input:  "Assigned to john.doe@redhat.com for review",
+			expect: "Assigned to [email redacted] for review",
+		},
+		{
+			name:   "scrubs any email",
+			input:  "Contact alice@example.com or bob@corp.internal.net",
+			expect: "Contact [email redacted] or [email redacted]",
+		},
+		{
+			name:   "scrubs internal Jira URL",
+			input:  "See https://issues.redhat.com/browse/EDM-3115 for details",
+			expect: "See [internal link removed] for details",
+		},
+		{
+			name:   "leaves public URLs alone",
+			input:  "See https://github.com/org/repo/pull/1 for the PR",
+			expect: "See https://github.com/org/repo/pull/1 for the PR",
+		},
+		{
+			name:   "handles text with no PII",
+			input:  "Fixed a bug in the error handler",
+			expect: "Fixed a bug in the error handler",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := scrubPII(tc.input)
+			if result != tc.expect {
+				t.Errorf("scrubPII(%q)\n  got:    %q\n  expect: %q", tc.input, result, tc.expect)
+			}
+		})
+	}
+}
