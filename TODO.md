@@ -20,7 +20,7 @@ thinking (code generation, validation, fixing failures). Workspaces persist
 across jobs for the same ticket, enabling AI-generated artifacts to survive
 between sessions.
 
-### Task 1: Core domain types and IssueTracker interface
+### Task 1: Core domain types and IssueTracker interface ✅
 
 Introduce the generic domain model that decouples the system from Jira.
 Implement a Jira adapter that wraps the existing `JiraService` behind the
@@ -32,6 +32,11 @@ pipeline.
 - Define `WorkItem` type (key, summary, description, type, components,
   assignee, security level) -- the generic representation of a work item
   independent of any issue tracker
+- Define shared domain types in `models/`:
+  - `PRDetails` (number, title, branch, base branch, URL)
+  - `PRComment` (ID, author, body, file path, line, timestamp, in-reply-to)
+  - `PRParams`, `PRUpdateParams`, `PR` (for PR creation/update)
+  - `Author` (name, email, username -- for co-author attribution)
 - Define `SearchCriteria` type abstracting JQL and future query languages
 - Define `IssueTracker` interface: `SearchWorkItems`, `GetWorkItem`,
   `TransitionStatus`, `AddComment`, `GetFieldValue`, `SetFieldValue`
@@ -57,14 +62,33 @@ pipeline.
 
 **Dependencies**: None (first task)
 
+**Implementation notes**
+
+- Package structure: `IssueTracker` interface in `tracker/`, Jira adapter
+  in `tracker/jira/`. This establishes the pattern for new abstractions:
+  each gets its own package with implementation sub-packages, rather than
+  being added to `services/`.
+- Domain types in separate files under `models/`: `work_item.go`,
+  `author.go`, `pr.go`, `search_criteria.go`.
+- `SearchCriteria.StatusByType map[string][]string` handles type-specific
+  status filtering (e.g., Bug→"Open", Story→"To Do"). `Statuses []string`
+  handles uniform status queries (e.g., crash recovery). No raw query
+  escape hatch — new query patterns require evolving the struct.
+- `WorkItem` guarantees: `Components` and `Labels` are always non-nil
+  empty slices; security level "None" (case-insensitive) is normalized
+  to empty string.
+- Mock: `mocks/issue_tracker.go` using the existing func-field pattern.
+
 ---
 
-### Task 2: GitService interface evolution
+### Task 2: Workspace Manager and GitService SyncWithRemote
 
-Evolve the existing `GitHubService` interface to match the redesign's
-`GitService` contract. Add `SyncWithRemote` for post-commit workspace
-reconciliation. The existing interface methods continue to work; this
-extends rather than replaces.
+Introduce workspace lifecycle management and the `SyncWithRemote` git
+operation that underpins it. Workspaces are scoped to tickets (not jobs),
+enabling AI-generated artifacts to persist across container invocations.
+`SyncWithRemote` reconciles local git state after API-created commits.
+These are combined because `SyncWithRemote` has no caller without the
+workspace manager, and the workspace manager needs it to function.
 
 **Scope**
 
@@ -73,40 +97,6 @@ extends rather than replaces.
   - Implementation: `git fetch origin && git reset --hard origin/<branch>`
   - Preserves untracked files (the key property for artifact persistence)
 - Update the mock in `mocks/github.go` to include the new method
-- Evaluate whether other `GitService` methods from the redesign should be
-  added now or deferred (e.g., existing methods may already satisfy the
-  interface -- document the mapping)
-- Existing callers are unaffected; `SyncWithRemote` is a new method, not a
-  change to existing signatures
-
-**Testing**
-
-- `SyncWithRemote` executes the correct git commands
-- Untracked files are preserved after sync (integration test with real git
-  repo)
-- Error handling: remote unreachable, branch doesn't exist, dirty index
-- Existing `GitHubService` tests continue to pass
-
-**Documentation**
-
-- Document the post-commit sync pattern and why it's needed (API commits
-  create remote state that local git doesn't know about)
-- Document the artifact persistence guarantee (untracked files survive)
-- Add godoc to `SyncWithRemote` explaining its role in the workspace
-  lifecycle
-
-**Dependencies**: None (independent of Task 1)
-
----
-
-### Task 3: Workspace Manager
-
-Introduce workspace lifecycle management. Workspaces are scoped to tickets
-(not jobs), enabling AI-generated artifacts to persist across container
-invocations. This is a new service with no impact on existing code.
-
-**Scope**
-
 - `WorkspaceManager` service with interface:
   - `Create(ticketKey, repoURL string) (string, error)` -- clone repo,
     return workspace path
@@ -116,8 +106,8 @@ invocations. This is a new service with no impact on existing code.
   - `Cleanup(ticketKey string) error` -- remove a specific workspace
   - `CleanupStale(maxAge time.Duration) (int, error)` -- TTL-based cleanup,
     returns count removed
-  - `CleanupTerminal(activeTicketKeys []string) (int, error)` -- remove
-    workspaces for tickets no longer active
+  - `CleanupByFilter(shouldRemove func(ticketKey string) bool) (int, error)`
+    -- remove workspaces where the filter returns true
   - `List() ([]WorkspaceInfo, error)` -- list all workspaces (for startup
     scan)
 - Directory naming convention: `<base_dir>/<ticket-key>/`
@@ -126,35 +116,42 @@ invocations. This is a new service with no impact on existing code.
 
 **Testing**
 
+- `SyncWithRemote` executes the correct git commands
+- Untracked files are preserved after sync (integration test with real git
+  repo)
+- Error handling: remote unreachable, branch doesn't exist, dirty index
 - Create workspace: directory created, repo cloned
 - Find workspace: returns correct path, returns false when not found
 - FindOrCreate: creates on first call, reuses on second
 - Cleanup: removes directory
 - CleanupStale: removes only workspaces older than TTL, preserves recent
-- CleanupTerminal: removes workspaces not in active set
+- CleanupByFilter: removes only workspaces where filter returns true
 - List: discovers workspaces on disk by naming convention
 - Error cases: invalid base dir, permission errors, cleanup of non-existent
   workspace
+- Existing `GitHubService` tests continue to pass
 
 **Documentation**
 
+- Document the post-commit sync pattern and why it's needed (API commits
+  create remote state that local git doesn't know about)
+- Document the artifact persistence guarantee (untracked files survive)
 - Document workspace lifecycle (creation, reuse, cleanup triggers)
 - Document artifact persistence convention (untracked files in `.ai-bot/cache/`
   or gitignored directories)
 - Document directory structure and naming convention
 - Document configuration options
 
-**Dependencies**: None (independent of Tasks 1-2, though will integrate
-with `GitService.SyncWithRemote` later in Task 7)
+**Dependencies**: None (independent of Task 1)
 
 ---
 
-### Task 4: ContainerManager -- config resolution and runtime detection
+### Task 3: ContainerManager -- config resolution and runtime detection
 
 Introduce the container management abstraction. This task covers config
 resolution (how the bot discovers what container to use) and runtime
 detection (Podman vs Docker). Lifecycle operations (start/stop/exec) are
-in Task 5.
+in Task 4.
 
 The existing `ContainerRunner` from the validation feature branch can be
 referenced for runtime detection patterns, but this is a new, broader
@@ -171,8 +168,8 @@ abstraction.
 - Config resolution chain:
   1. `.ai-bot/container.json` -- bot-specific config
   2. `.devcontainer/devcontainer.json` -- standard devcontainer (practical
-     subset: `image`, `build.dockerfile`, `build.context`,
-     `postCreateCommand`, `containerEnv`)
+     subset: `image`, `postCreateCommand`, `containerEnv`; `build.*`
+     fields are deferred -- only pre-built images supported initially)
   3. Bot's `container.default_image` config -- admin fallback
   4. Built-in minimal fallback
 - Configuration additions: `container.runtime`, `container.default_image`,
@@ -203,11 +200,11 @@ abstraction.
 
 ---
 
-### Task 5: ContainerManager -- lifecycle operations
+### Task 4: ContainerManager -- lifecycle operations
 
 Implement container start, exec, stop, and orphan cleanup. This is where
 containers actually run. Builds on the interface and config resolution
-from Task 4.
+from Task 3.
 
 **Scope**
 
@@ -246,11 +243,11 @@ from Task 4.
 - Document resource limits and timeout behavior
 - Document orphan cleanup (naming convention, when it runs)
 
-**Dependencies**: Task 4
+**Dependencies**: Task 3
 
 ---
 
-### Task 6: Task file generation
+### Task 5: Task file generation
 
 Implement the mechanism by which the bot communicates goals to the AI.
 Instead of prompt templates, the bot writes a structured markdown task
@@ -297,13 +294,12 @@ file that the AI reads like a developer reading a task description.
 - This replaces the existing prompt templates -- document what's changing
   and why
 
-**Dependencies**: Task 1 (uses `WorkItem` type). Feedback format depends
-on PR types from `GitService` (Task 2), but can use local type definitions
-if those aren't ready.
+**Dependencies**: Task 1 (uses `WorkItem`, `PRDetails`, `PRComment` types
+from the shared domain model).
 
 ---
 
-### Task 7: JobManager
+### Task 6: JobManager
 
 Introduce the central coordination layer. The JobManager receives events,
 creates jobs, enforces constraints, and tracks state. This is the
@@ -324,10 +320,14 @@ orchestration brain of the new architecture.
 - Concurrency semaphore: configurable `max_concurrent_jobs`, blocks
   `Submit` when limit reached (or queues and processes when slot opens)
 - Retry policy: configurable `max_retries`, exponential backoff
+- Circuit breaker: pause job creation if N consecutive failures occur
+  within a time window (protects against sustained AI API outages)
 - Workspace integration: delegates to `WorkspaceManager` for
   create/find/cleanup
 - Event types: `NewTicketEvent`, `NewFeedbackEvent`
-- Configuration: `guardrails.max_concurrent_jobs`, `guardrails.max_retries`
+- Configuration: `guardrails.max_concurrent_jobs`, `guardrails.max_retries`,
+  `guardrails.circuit_breaker_threshold`, `guardrails.circuit_breaker_window`,
+  `guardrails.circuit_breaker_cooldown`
 
 **Testing**
 
@@ -341,6 +341,9 @@ orchestration brain of the new architecture.
 - Complete/Fail update job state correctly
 - ActiveJobs returns only running jobs
 - Workspace path assigned from WorkspaceManager
+- Circuit breaker: trips after N consecutive failures within window
+- Circuit breaker: resets after cooldown period
+- Circuit breaker: does not trip on isolated failures spread over time
 
 **Documentation**
 
@@ -349,11 +352,11 @@ orchestration brain of the new architecture.
 - Document retry policy (count, backoff strategy)
 - Document deduplication semantics
 
-**Dependencies**: Task 3 (WorkspaceManager)
+**Dependencies**: Task 2 (WorkspaceManager)
 
 ---
 
-### Task 8: JobExecutor -- new ticket pipeline
+### Task 7: JobExecutor -- new ticket pipeline
 
 Implement the end-to-end pipeline for processing a new ticket. This is
 where all the components come together. The executor handles plumbing;
@@ -367,17 +370,20 @@ the AI handles thinking.
   1. Prepare workspace (WorkspaceManager.FindOrCreate)
   2. Create branch (`{bot-username}/{ticket-key}`)
   3. Write task file (TaskFileWriter.WriteNewTicketTask)
-  4. Read `.ai-bot/config.yaml` for container/AI hints
-  5. Resolve and start container (ContainerManager)
-  6. Launch AI agent inside container, wait for completion or timeout
-  7. Collect results: `git diff`, `git status` in workspace
-  8. If no changes: return failure (JobManager handles retry)
-  9. Commit via GitHub API (verified commit, co-author attribution)
-  10. Post-commit sync (GitService.SyncWithRemote)
-  11. Generate PR description
-  12. Create PR (draft if AI indicated validation failures)
-  13. Update ticket: set PR URL, transition to "In Review"
-  14. Stop container (workspace retained)
+  4. Write wrapper script (`/workspace/.ai-bot/run.sh`) -- provider-specific
+     script that invokes the AI CLI, captures exit code, and writes
+     `session-output.json`. Must handle Claude and Gemini output formats.
+  5. Read `.ai-bot/config.yaml` for container/AI hints
+  6. Resolve and start container (ContainerManager)
+  7. Launch AI agent inside container, wait for completion or timeout
+  8. Collect results: `git diff`, `git status` in workspace
+  9. If no changes: return failure (JobManager handles retry)
+  10. Commit via GitHub API (verified commit, co-author attribution)
+  11. Post-commit sync (GitService.SyncWithRemote)
+  12. Generate PR description
+  13. Create PR (draft if AI indicated validation failures)
+  14. Update ticket: set PR URL, transition to "In Review"
+  15. Stop container (workspace retained)
 - Error handling: revert ticket status on failure, post error comment
   (unless disabled)
 - Draft PR: if AI exits with failure indicators or validation issues,
@@ -407,11 +413,11 @@ WorkspaceManager, TaskFileWriter):
 - Document what the AI CLI command looks like and how the AI discovers
   its task
 
-**Dependencies**: Tasks 1-6 (all foundational components)
+**Dependencies**: Tasks 1-6 (all foundational components and JobManager)
 
 ---
 
-### Task 9: JobExecutor -- PR feedback pipeline
+### Task 8: JobExecutor -- PR feedback pipeline
 
 Implement the pipeline for processing PR review feedback. This is a
 variation of the new ticket pipeline with key differences: workspace
@@ -423,7 +429,8 @@ and replying to review comments.
 - `JobExecutor` addition:
   - `ExecuteFeedback(job *Job) (*JobResult, error)`
 - Pipeline steps:
-  1. Find existing workspace (WorkspaceManager.Find -- must exist)
+  1. Find or recreate workspace (WorkspaceManager.FindOrCreate -- self-healing
+     if workspace was cleaned up by TTL or disk failure)
   2. Sync workspace with remote (GitService.SyncWithRemote -- picks up
      human commits and bot's prior API commits; preserves untracked
      artifacts)
@@ -437,7 +444,8 @@ and replying to review comments.
   10. Post-commit sync
   11. Reply to PR comments that were addressed
   12. Stop container (workspace retained)
-- Workspace reuse: verify artifacts from prior sessions are present
+- Workspace reuse: verify artifacts from prior sessions are present when
+  workspace was reused; accept their absence when workspace was recreated
 - Comment replies: post responses indicating which comments were addressed
 
 **Testing**
@@ -446,8 +454,8 @@ All dependencies mocked:
 
 - Happy path: workspace reused, artifacts present, changes committed to
   existing branch, comments replied to
-- Workspace not found: error (shouldn't happen in normal flow, but handle
-  gracefully)
+- Workspace not found: self-heals by re-cloning and checking out existing
+  branch; AI proceeds without prior artifacts
 - Sync picks up human commits: workspace updated before AI runs
 - Artifacts survive: untracked files from prior session present after sync
 - No changes from AI: failure result
@@ -464,11 +472,11 @@ All dependencies mocked:
 - Document the full lifecycle: ticket created -> bug fix -> PR created ->
   review comments -> feedback processed -> more comments -> more feedback
 
-**Dependencies**: Task 8 (shares `JobExecutor`, extends it)
+**Dependencies**: Task 7 (shares `JobExecutor`, extends it)
 
 ---
 
-### Task 10: Event-based scanners
+### Task 9: Event-based scanners
 
 Implement the event loop that discovers work. The scanners poll external
 systems and emit events to the JobManager. This replaces the existing
@@ -513,12 +521,12 @@ scanner implementations with the event-driven model from the redesign.
 - Update existing bot-loop-prevention documentation to reflect new
   architecture
 
-**Dependencies**: Tasks 1 (IssueTracker), 7 (JobManager). Task 2
-(GitService) for FeedbackScanner's PR comment retrieval.
+**Dependencies**: Tasks 1 (IssueTracker), 6 (JobManager). Task 2
+(GitService/WorkspaceManager) for FeedbackScanner's PR comment retrieval.
 
 ---
 
-### Task 11: Crash recovery and startup orchestration
+### Task 10: Crash recovery and startup orchestration
 
 Implement the startup sequence that recovers from crashes and cleans up
 orphaned resources. The system uses Jira and GitHub as the durable state
@@ -532,12 +540,15 @@ store -- no separate database needed.
   3. Query Jira for tickets in "In Progress" assigned to the bot
   4. For each stuck ticket:
      - Check GitHub for existing PR
-     - If no PR: job was interrupted mid-execution, re-queue via
-       JobManager
      - If PR exists but ticket still "In Progress": status transition
        was interrupted, complete it
+     - If no PR but branch has commits beyond base: AI work completed
+       but crashed before PR creation, skip AI and create PR directly
+     - If no PR and no branch commits: job was interrupted mid-execution,
+       re-queue via JobManager
   5. Clean up workspaces for tickets in terminal states
-     (WorkspaceManager.CleanupTerminal)
+     (WorkspaceManager.CleanupByFilter with a callback that checks
+     ticket status via IssueTracker)
   6. Clean up stale workspaces past TTL
      (WorkspaceManager.CleanupStale)
 - Integrate into application startup in `main.go` (runs before scanners
@@ -547,7 +558,8 @@ store -- no separate database needed.
 
 - No orphans: startup completes cleanly
 - Orphaned containers: detected and removed
-- Stuck ticket with no PR: re-queued
+- Stuck ticket with no PR and no branch: re-queued
+- Stuck ticket with no PR but branch has commits: PR created directly
 - Stuck ticket with PR: status transition completed
 - Stale workspaces: cleaned up
 - Terminal ticket workspaces: cleaned up
@@ -561,12 +573,12 @@ store -- no separate database needed.
 - Document what "stuck" means and how it's detected
 - Document the durable state model (Jira + GitHub + filesystem)
 
-**Dependencies**: Tasks 3 (WorkspaceManager), 5 (ContainerManager),
-7 (JobManager), 1 (IssueTracker)
+**Dependencies**: Tasks 2 (WorkspaceManager), 4 (ContainerManager),
+6 (JobManager), 1 (IssueTracker)
 
 ---
 
-### Task 12: Guardrails, wiring, and cutover
+### Task 11: Guardrails, wiring, and cutover
 
 Add cost tracking and budget enforcement. Wire all new components together
 in `main.go`. Remove deprecated code paths. Validate the complete system
