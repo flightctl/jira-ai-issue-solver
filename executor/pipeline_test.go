@@ -658,8 +658,8 @@ func TestExecuteNewTicket_ErrorCommentsDisabled(t *testing.T) {
 		return false, nil // trigger failure
 	}
 
-	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*executor.ProjectSettings, error) {
-		return &executor.ProjectSettings{
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
 			Owner:                "org",
 			Repo:                 "repo",
 			CloneURL:             "https://github.com/org/repo.git",
@@ -729,8 +729,8 @@ func TestExecuteNewTicket_WorkspaceReused_SwitchesBranch(t *testing.T) {
 
 func TestExecuteNewTicket_PRURLViaField(t *testing.T) {
 	d := newTestDeps(t)
-	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*executor.ProjectSettings, error) {
-		return &executor.ProjectSettings{
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
 			Owner:            "org",
 			Repo:             "repo",
 			CloneURL:         "https://github.com/org/repo.git",
@@ -884,8 +884,8 @@ func TestExecuteNewTicket_TitlePrefixFromRepoConfig(t *testing.T) {
 
 func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	d := newTestDeps(t)
-	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*executor.ProjectSettings, error) {
-		return &executor.ProjectSettings{
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
 			Owner:            "org",
 			Repo:             "repo",
 			CloneURL:         "https://github.com/org/repo.git",
@@ -977,8 +977,8 @@ func newTestDeps(t *testing.T) *testDeps {
 		},
 		taskWriter: &taskfiletest.Stub{},
 		projects: &executortest.StubProjectResolver{
-			ResolveProjectFunc: func(workItem models.WorkItem) (*executor.ProjectSettings, error) {
-				return &executor.ProjectSettings{
+			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+				return &models.ProjectSettings{
 					Owner:            "org",
 					Repo:             "repo",
 					CloneURL:         "https://github.com/org/repo.git",

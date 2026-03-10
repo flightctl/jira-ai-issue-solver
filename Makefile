@@ -10,7 +10,7 @@ SERVICE_NAME ?= $(error SERVICE_NAME is required. Usage: make deploy PROJECT_ID=
 
 
 
-.PHONY: build push clean run stop logs help debug debug-tests deploy lint tidy unit-test
+.PHONY: build push clean run stop logs help debug debug-tests deploy fmt lint tidy unit-test
 
 # Default target
 help:
@@ -19,6 +19,7 @@ help:
 	@echo "  push        - Build and push the container to Google Container Registry"
 	@echo "  deploy      - Deploy the container to Cloud Run (includes push)"
 	@echo "  unit-test   - Run unit tests with race detector"
+	@echo "  fmt         - Auto-format code (gofmt, gci)"
 	@echo "  lint        - Run golangci-lint"
 	@echo "  tidy        - Run go mod tidy"
 	@echo "  run         - Run the container"
@@ -119,6 +120,12 @@ debug-tests:
 unit-test:
 	@echo "Running unit tests with race detector..."
 	go test -v -race ./...
+
+# Auto-format code (import ordering and gofmt)
+fmt:
+	@echo "Formatting code..."
+	gofmt -w .
+	gci write --section standard --section default --section "prefix(jira-ai-issue-solver)" .
 
 # Run golangci-lint
 lint:

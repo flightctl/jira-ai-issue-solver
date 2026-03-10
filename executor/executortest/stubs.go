@@ -113,12 +113,12 @@ func (s *StubGitService) ReplyToComment(owner, repo string, prNumber int, commen
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubProjectResolver struct {
-	ResolveProjectFunc func(workItem models.WorkItem) (*executor.ProjectSettings, error)
+	ResolveProjectFunc func(workItem models.WorkItem) (*models.ProjectSettings, error)
 }
 
-func (s *StubProjectResolver) ResolveProject(workItem models.WorkItem) (*executor.ProjectSettings, error) {
+func (s *StubProjectResolver) ResolveProject(workItem models.WorkItem) (*models.ProjectSettings, error) {
 	if s.ResolveProjectFunc != nil {
 		return s.ResolveProjectFunc(workItem)
 	}
-	return &executor.ProjectSettings{}, nil
+	return &models.ProjectSettings{}, nil
 }

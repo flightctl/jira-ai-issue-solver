@@ -133,44 +133,7 @@ type ProjectResolver interface {
 	// ResolveProject returns the project-specific settings for the
 	// given work item. Returns an error if the work item cannot be
 	// mapped to a known project or repository.
-	ResolveProject(workItem models.WorkItem) (*ProjectSettings, error)
-}
-
-// ProjectSettings contains the resolved per-project settings needed
-// to execute a job for a specific work item.
-type ProjectSettings struct {
-	// Owner is the GitHub repository owner (e.g., "my-org").
-	Owner string
-
-	// Repo is the GitHub repository name (e.g., "backend").
-	Repo string
-
-	// CloneURL is the full clone URL for the repository.
-	CloneURL string
-
-	// BaseBranch is the target branch for pull requests (e.g., "main").
-	BaseBranch string
-
-	// InProgressStatus is the tracker status name for "in progress".
-	InProgressStatus string
-
-	// InReviewStatus is the tracker status name for "in review".
-	InReviewStatus string
-
-	// TodoStatus is the tracker status name to revert to on failure.
-	TodoStatus string
-
-	// PRURLFieldName is the custom field for storing the PR URL.
-	// Empty means PR URL is posted as a structured comment instead.
-	PRURLFieldName string
-
-	// DisableErrorComments prevents posting error details as tracker
-	// comments on job failure. Errors are still logged.
-	DisableErrorComments bool
-
-	// AIProvider overrides the default AI provider for this project.
-	// Empty means use the pipeline's default provider.
-	AIProvider string
+	ResolveProject(workItem models.WorkItem) (*models.ProjectSettings, error)
 }
 
 // Config holds construction parameters for [Pipeline].

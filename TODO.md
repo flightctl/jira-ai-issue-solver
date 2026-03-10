@@ -623,7 +623,7 @@ scanner implementations with the event-driven model from the redesign.
 
 ---
 
-### Task 10: Crash recovery and startup orchestration
+### Task 10: Crash recovery and startup orchestration ✅
 
 Implement the startup sequence that recovers from crashes and cleans up
 orphaned resources. The system uses Jira and GitHub as the durable state
@@ -723,4 +723,8 @@ end-to-end.
 - Update `config.example.yaml` with all new configuration options
 - Document migration notes: what changed, what was removed, any
   behavioral differences from the old system
+- Document that `ActiveStatuses` (used by crash recovery for terminal
+  workspace cleanup) is case-sensitive — status names must match Jira
+  exactly (e.g., "In Progress" not "in progress"). Add this to the
+  configuration reference and/or `config.example.yaml`.
 - Remove or archive `plan.md` (pre-PR validation design, superseded)

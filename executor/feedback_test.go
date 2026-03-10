@@ -280,8 +280,8 @@ func TestExecuteFeedback_ErrorCommentsDisabled(t *testing.T) {
 	d.git.HasChangesFunc = func(dir string) (bool, error) {
 		return false, nil // trigger failure
 	}
-	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*executor.ProjectSettings, error) {
-		return &executor.ProjectSettings{
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
 			Owner:                "org",
 			Repo:                 "repo",
 			CloneURL:             "https://github.com/org/repo.git",

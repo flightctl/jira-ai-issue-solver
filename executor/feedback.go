@@ -257,7 +257,7 @@ func (p *Pipeline) commentFilterConfig() commentfilter.Config {
 func (p *Pipeline) handleFeedbackFailure(
 	logger *zap.Logger,
 	ticketKey string,
-	settings *ProjectSettings,
+	settings *models.ProjectSettings,
 	jobErr error,
 ) {
 	if settings.DisableErrorComments {

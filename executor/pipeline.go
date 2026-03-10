@@ -316,7 +316,7 @@ func (p *Pipeline) startContainer(
 	return p.containers.Start(ctx, fallbackCfg, wsPath, env)
 }
 
-func (p *Pipeline) resolveProvider(settings *ProjectSettings) string {
+func (p *Pipeline) resolveProvider(settings *models.ProjectSettings) string {
 	if settings.AIProvider != "" {
 		return settings.AIProvider
 	}
@@ -345,7 +345,7 @@ func (p *Pipeline) buildContainerEnv(provider string) map[string]string {
 
 // setPRURL stores the PR URL on the ticket via either a custom field
 // or a structured comment.
-func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *ProjectSettings, prURL string) {
+func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, prURL string) {
 	if settings.PRURLFieldName != "" {
 		if err := p.tracker.SetFieldValue(ticketKey, settings.PRURLFieldName, prURL); err != nil {
 			logger.Warn("Failed to set PR URL field", zap.Error(err))
@@ -360,7 +360,7 @@ func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *Proj
 
 // handleFailure reverts the ticket status and optionally posts an
 // error comment.
-func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings *ProjectSettings, jobErr error) {
+func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, jobErr error) {
 	if err := p.tracker.TransitionStatus(ticketKey, settings.TodoStatus); err != nil {
 		logger.Error("Failed to revert ticket status",
 			zap.String("target_status", settings.TodoStatus),
