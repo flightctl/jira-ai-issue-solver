@@ -258,7 +258,7 @@ from Task 3.
 
 ---
 
-### Task 5: Task file generation
+### Task 5: Task file generation ✅
 
 Implement the mechanism by which the bot communicates goals to the AI.
 Instead of prompt templates, the bot writes a structured markdown task
@@ -268,7 +268,7 @@ file that the AI reads like a developer reading a task description.
 
 - `TaskFileWriter` service:
   - `WriteNewTicketTask(workItem WorkItem, dir string) error`
-  - `WriteFeedbackTask(prDetails PRDetails, comments []PRComment, dir string) error`
+  - `WriteFeedbackTask(prDetails PRDetails, newComments, addressedComments []PRComment, dir string) error`
 - New ticket task file format:
   - Summary, description, acceptance criteria from `WorkItem`
   - Standard instructions ("validate using project tools, don't push to
@@ -307,6 +307,42 @@ file that the AI reads like a developer reading a task description.
 
 **Dependencies**: Task 1 (uses `WorkItem`, `PRDetails`, `PRComment` types
 from the shared domain model).
+
+**Implementation notes**
+
+- Package structure: `taskfile/` for the Writer interface and
+  MarkdownWriter implementation. `repoconfig/` for `.ai-bot/config.yaml`
+  parsing. Each gets its own package because the repo config is consumed
+  by later tasks (Task 7+ for PR settings and AI preferences), not just
+  the task file writer.
+- Test doubles follow the established pattern:
+  `taskfile/taskfiletest/stubs.go`, `repoconfig/repoconfigtest/stubs.go`
+  (if needed; `repoconfig.Load` is a pure function so a stub may not be
+  necessary).
+- No `AcceptanceCriteria` field on `WorkItem`. In practice (confirmed
+  against real Jira instances), acceptance criteria is embedded in the
+  description text (e.g., `h2. Acceptance Criteria` in wiki markup),
+  not a separate custom field. The task file includes the full
+  description verbatim; the AI sees acceptance criteria naturally.
+- Validation commands are NOT included in the task file. The design
+  principle is "bot gives a goal, not instructions." The task file's
+  Instructions section says "validate using whatever build tools this
+  project provides." The AI discovers validation tools autonomously
+  from the repo (CLAUDE.md, Makefile, `.ai-bot/config.yaml`, CI config).
+  This aligns with "AI acts autonomously" and avoids duplicating
+  information already present in the repo.
+- `WriteFeedbackTask` accepts two separate comment slices:
+  `newComments` (action required) and `addressedComments` (context
+  only). The caller (JobExecutor/FeedbackScanner) is responsible for
+  determining which comments have been addressed. The writer just
+  formats them into clearly labeled sections so the AI knows what
+  needs attention vs. what's already handled.
+- Security-level tickets: the task file includes the full description
+  (the AI needs it to do its work), but adds a note in the Instructions
+  section reminding the AI not to include vulnerability details in
+  commit messages or code comments that may appear in the public PR.
+  Security redaction of PR titles/bodies is the caller's responsibility
+  (JobExecutor), not the task file writer's.
 
 ---
 

@@ -312,13 +312,12 @@ Instead, the bot writes a task file and tells the AI to read it:
 Fix null pointer exception in UserService.getProfile()
 
 ## Description
-> [Ticket description — user-provided content]
+> [Ticket description]
 > When a user has no profile photo set, calling getProfile() throws a
 > NullPointerException at UserService.java:142. The photo URL field should
 > default to a placeholder image.
-
-## Acceptance Criteria
-> [Ticket acceptance criteria — user-provided content]
+>
+> h2. Acceptance Criteria
 > - getProfile() returns a valid response when photo is null
 > - Unit tests cover the null photo case
 > - All existing tests still pass
@@ -328,6 +327,12 @@ Implement this task. Validate your changes compile and pass tests using
 whatever build tools this project provides. Fix any issues you find.
 Do not push to git -- the system handles that.
 ```
+
+Note: acceptance criteria is not a separate task file section. In practice,
+Jira stores acceptance criteria as part of the description text (e.g.,
+`h2. Acceptance Criteria` in wiki markup), not as a separate custom field.
+The task file includes the full description verbatim; the AI sees
+acceptance criteria naturally within the description.
 
 **For PR feedback:**
 
@@ -342,18 +347,30 @@ Branch: ai-bot/PROJ-123
 ## Review Comments
 
 ### File: src/main/java/com/example/UserService.java
-> [Review comment — user-provided content, @reviewer1, line 145]
+> [@reviewer1, line 145]
 > This should use Optional<String> instead of a null check.
 > Our codebase convention is to use Optional for nullable returns.
 
 ### General
-> [Review comment — user-provided content, @reviewer2]
+> [@reviewer2]
 > Please add an integration test, not just a unit test.
 
+## Previously Addressed Comments (Context Only)
+
+### File: src/main/java/com/example/UserService.java
+> [@reviewer1, line 100]
+> Use final for this variable.
+
 ## Instructions
-Address each review comment. Validate your changes compile and pass tests.
-Do not push to git -- the system handles that.
+Address each review comment listed above. Validate your changes compile
+and pass tests. Do not push to git -- the system handles that.
 ```
+
+The feedback task file includes two comment sections: "Review Comments"
+(requiring action) and "Previously Addressed Comments" (for context only,
+so the AI understands the conversation history without re-doing prior work).
+The caller determines which comments are addressed; the task file writer
+just formats them.
 
 The AI -- running inside the dev container with the full toolchain -- reads this file, reads the repo (including CLAUDE.md, Makefile, CI config, whatever exists), and does whatever it takes to complete the task. If CLAUDE.md defines a `/bug-fix` skill, the AI can use it. If there's a Makefile with `make test`, the AI will run it. The bot doesn't need to know any of this.
 
