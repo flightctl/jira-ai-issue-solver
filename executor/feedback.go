@@ -3,10 +3,12 @@ package executor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	"jira-ai-issue-solver/commentfilter"
 	"jira-ai-issue-solver/container"
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
@@ -79,7 +81,10 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	if err != nil {
 		return result, fmt.Errorf("get PR comments: %w", err)
 	}
-	newComments, addressedComments := CategorizeComments(allComments, p.cfg.BotUsername)
+
+	// Apply bot-loop prevention before categorization.
+	filtered := commentfilter.Filter(allComments, p.commentFilterConfig())
+	newComments, addressedComments := CategorizeComments(filtered, p.cfg.BotUsername)
 
 	if len(newComments) == 0 {
 		logger.Info("No new comments to address")
@@ -204,17 +209,19 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 //
 // Both returned slices are non-nil (empty slices, not nil).
 func CategorizeComments(comments []models.PRComment, botUsername string) (newComments, addressed []models.PRComment) {
+	normBot := normalizeUsername(botUsername)
+
 	// Find which comment IDs the bot has replied to.
 	botRepliedTo := make(map[int64]bool)
 	for _, c := range comments {
-		if c.Author.Username == botUsername && c.InReplyTo != 0 {
+		if normalizeUsername(c.Author.Username) == normBot && c.InReplyTo != 0 {
 			botRepliedTo[c.InReplyTo] = true
 		}
 	}
 
 	// Categorize non-bot comments.
 	for _, c := range comments {
-		if c.Author.Username == botUsername {
+		if normalizeUsername(c.Author.Username) == normBot {
 			continue
 		}
 		if botRepliedTo[c.ID] {
@@ -235,6 +242,15 @@ func CategorizeComments(comments []models.PRComment, botUsername string) (newCom
 	return newComments, addressed
 }
 
+func (p *Pipeline) commentFilterConfig() commentfilter.Config {
+	return commentfilter.Config{
+		BotUsername:       p.cfg.BotUsername,
+		IgnoredUsernames:  p.cfg.IgnoredUsernames,
+		KnownBotUsernames: p.cfg.KnownBotUsernames,
+		MaxThreadDepth:    p.cfg.MaxThreadDepth,
+	}
+}
+
 // handleFeedbackFailure posts an error comment on feedback failure.
 // Unlike [Pipeline.handleFailure] for new tickets, feedback failures
 // do not revert the ticket status (it stays "in review").
@@ -252,4 +268,11 @@ func (p *Pipeline) handleFeedbackFailure(
 	if err := p.tracker.AddComment(ticketKey, comment); err != nil {
 		logger.Error("Failed to post error comment", zap.Error(err))
 	}
+}
+
+// normalizeUsername strips the GitHub [bot] suffix and lowercases
+// for case-insensitive comparison. Matches the normalization used
+// by [commentfilter.Filter].
+func normalizeUsername(s string) string {
+	return strings.ToLower(strings.TrimSuffix(s, "[bot]"))
 }

@@ -196,4 +196,17 @@ type Config struct {
 	// inside the container. Zero means no explicit timeout (only
 	// the parent context controls cancellation).
 	SessionTimeout time.Duration
+
+	// IgnoredUsernames lists users whose PR comments are excluded
+	// from feedback processing entirely (e.g., CI bots).
+	IgnoredUsernames []string
+
+	// KnownBotUsernames lists other bots for loop prevention.
+	// Their replies to our bot's comments are excluded.
+	KnownBotUsernames []string
+
+	// MaxThreadDepth limits how many times our bot can appear in
+	// a comment thread's ancestry before further comments in that
+	// thread are excluded. Zero or negative disables the limit.
+	MaxThreadDepth int
 }

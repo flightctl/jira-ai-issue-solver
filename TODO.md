@@ -573,7 +573,7 @@ All dependencies mocked:
 
 ---
 
-### Task 9: Event-based scanners
+### Task 9: Event-based scanners ✅
 
 Implement the event loop that discovers work. The scanners poll external
 systems and emit events to the JobManager. This replaces the existing

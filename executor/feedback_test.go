@@ -584,6 +584,165 @@ func TestCategorizeComments_BotReplyToOwnComment(t *testing.T) {
 	}
 }
 
+func TestCategorizeComments_NormalizesUsername(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
+		// Bot username has different casing and [bot] suffix.
+		{ID: 2, Author: models.Author{Username: "MyBot[bot]"}, Body: "Done", InReplyTo: 1},
+	}
+
+	newC, addrC := executor.CategorizeComments(comments, "mybot")
+
+	if len(addrC) != 1 || addrC[0].ID != 1 {
+		t.Errorf("addressed = %v, want [comment 1]", addrC)
+	}
+	if len(newC) != 0 {
+		t.Errorf("new = %v, want empty", newC)
+	}
+}
+
+// --- Comment filter integration ---
+
+func TestExecuteFeedback_IgnoredUsersFiltered(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			// Only comment is from an ignored user.
+			{ID: 1, Author: models.Author{Username: "packit-as-a-service[bot]"}, Body: "/build"},
+		}, nil
+	}
+
+	containerStarted := false
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+		containerStarted = true
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:      "ai-bot",
+		DefaultProvider:  "claude",
+		AIAPIKeys:        map[string]string{"claude": "test-key"},
+		IgnoredUsernames: []string{"packit-as-a-service"},
+	})
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("expected success when only ignored users, got %v", err)
+	}
+	if containerStarted {
+		t.Error("container should not start when all comments are from ignored users")
+	}
+	if result.PRURL != "" {
+		t.Errorf("expected empty PRURL, got %q", result.PRURL)
+	}
+}
+
+func TestExecuteFeedback_KnownBotLoopFiltered(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1},
+			// Known bot replying to our bot — should be filtered.
+			{ID: 3, Author: models.Author{Username: "coderabbitai[bot]"}, Body: "Also...", InReplyTo: 2},
+		}, nil
+	}
+
+	containerStarted := false
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+		containerStarted = true
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:       "ai-bot",
+		DefaultProvider:   "claude",
+		AIAPIKeys:         map[string]string{"claude": "test-key"},
+		KnownBotUsernames: []string{"coderabbitai"},
+	})
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("expected success when bot loop filtered, got %v", err)
+	}
+	if containerStarted {
+		t.Error("container should not start when only actionable comment is a bot loop")
+	}
+	if result.PRURL != "" {
+		t.Errorf("expected empty PRURL, got %q", result.PRURL)
+	}
+}
+
+func TestExecuteFeedback_ThreadDepthExceeded(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1},
+			// Depth at this comment: bot appeared once (ID 2), equals max.
+			{ID: 3, Author: models.Author{Username: "reviewer"}, Body: "Still wrong", InReplyTo: 2},
+		}, nil
+	}
+
+	containerStarted := false
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+		containerStarted = true
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"claude": "test-key"},
+		MaxThreadDepth:  1,
+	})
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("expected success when thread depth exceeded, got %v", err)
+	}
+	if containerStarted {
+		t.Error("container should not start when all comments exceed thread depth")
+	}
+	if result.PRURL != "" {
+		t.Errorf("expected empty PRURL, got %q", result.PRURL)
+	}
+}
+
+func TestExecuteFeedback_FilterKeepsActionableComments(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			// Ignored user — should be filtered.
+			{ID: 1, Author: models.Author{Username: "packit[bot]"}, Body: "/build"},
+			// Real reviewer comment — should pass through.
+			{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	var taskNewComments []models.PRComment
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir string) error {
+		taskNewComments = newC
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:      "ai-bot",
+		DefaultProvider:  "claude",
+		AIAPIKeys:        map[string]string{"claude": "test-key"},
+		IgnoredUsernames: []string{"packit"},
+	})
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Only comment 2 (reviewer) should be in the task — comment 1 (ignored) filtered out.
+	if len(taskNewComments) != 1 || taskNewComments[0].ID != 2 {
+		t.Errorf("taskNewComments = %v, want [comment 2 only]", taskNewComments)
+	}
+}
+
 // --- helpers ---
 
 func newFeedbackDeps(t *testing.T) *testDeps {
