@@ -200,7 +200,7 @@ abstraction.
 
 ---
 
-### Task 4: ContainerManager -- lifecycle operations
+### Task 4: ContainerManager -- lifecycle operations ✅
 
 Implement container start, exec, stop, and orphan cleanup. This is where
 containers actually run. Builds on the interface and config resolution
