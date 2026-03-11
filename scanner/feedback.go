@@ -189,7 +189,7 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 		return false
 	}
 
-	comments, err := s.prs.GetPRComments(owner, repo, pr.Number)
+	comments, err := s.prs.GetPRComments(owner, repo, pr.Number, time.Time{})
 	if err != nil {
 		logger.Warn("Failed to fetch PR comments, skipping", zap.Error(err))
 		return false
@@ -218,6 +218,9 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 		logger.Debug("Skipping exhausted ticket")
 	case errors.Is(err, jobmanager.ErrCircuitOpen):
 		logger.Warn("Circuit breaker open, stopping scan cycle")
+		return true
+	case errors.Is(err, jobmanager.ErrBudgetExceeded):
+		logger.Warn("Daily budget exceeded, stopping scan cycle")
 		return true
 	case errors.Is(err, jobmanager.ErrShutdown):
 		logger.Info("Job manager shut down, stopping scan cycle")

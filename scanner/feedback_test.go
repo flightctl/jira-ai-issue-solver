@@ -98,7 +98,7 @@ func TestNewFeedbackScanner_Validation(t *testing.T) {
 
 func TestFeedbackScanner_EmitsEventForActionableComments(t *testing.T) {
 	d := newFeedbackDeps()
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
 		}, nil
@@ -133,7 +133,7 @@ func TestFeedbackScanner_EmitsEventForActionableComments(t *testing.T) {
 
 func TestFeedbackScanner_NoEventWhenAllAddressed(t *testing.T) {
 	d := newFeedbackDeps()
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
 			{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1},
@@ -159,7 +159,7 @@ func TestFeedbackScanner_NoEventWhenAllAddressed(t *testing.T) {
 func TestFeedbackScanner_IgnoredUsersFiltered(t *testing.T) {
 	d := newFeedbackDeps()
 	d.cfg.IgnoredUsernames = []string{"packit"}
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "packit[bot]"}, Body: "/build"},
 		}, nil
@@ -184,7 +184,7 @@ func TestFeedbackScanner_IgnoredUsersFiltered(t *testing.T) {
 func TestFeedbackScanner_KnownBotLoopFiltered(t *testing.T) {
 	d := newFeedbackDeps()
 	d.cfg.KnownBotUsernames = []string{"coderabbitai"}
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
 			{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1},
@@ -212,7 +212,7 @@ func TestFeedbackScanner_KnownBotLoopFiltered(t *testing.T) {
 func TestFeedbackScanner_ThreadDepthFiltered(t *testing.T) {
 	d := newFeedbackDeps()
 	d.cfg.MaxThreadDepth = 1
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
 			{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1},
@@ -283,7 +283,7 @@ func TestFeedbackScanner_RepoLocateFailure_Skipped(t *testing.T) {
 
 func TestFeedbackScanner_CommentFetchFailure_Skipped(t *testing.T) {
 	d := newFeedbackDeps()
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return nil, errors.New("API error")
 	}
 
@@ -315,7 +315,7 @@ func TestFeedbackScanner_MultipleTickets_MixedActionable(t *testing.T) {
 	d.prs.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
 		return &models.PRDetails{Number: 1, Branch: head, URL: "https://github.com/org/repo/pull/1"}, nil
 	}
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
 		}, nil
@@ -324,7 +324,7 @@ func TestFeedbackScanner_MultipleTickets_MixedActionable(t *testing.T) {
 	// Second ticket has no actionable comments.
 	callCount := 0
 	origComments := d.prs.GetPRCommentsFunc
-	d.prs.GetPRCommentsFunc = func(owner, repo string, number int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(owner, repo string, number int, _ time.Time) ([]models.PRComment, error) {
 		callCount++
 		if callCount == 2 {
 			return []models.PRComment{
@@ -332,7 +332,7 @@ func TestFeedbackScanner_MultipleTickets_MixedActionable(t *testing.T) {
 				{ID: 11, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 10},
 			}, nil
 		}
-		return origComments(owner, repo, number)
+		return origComments(owner, repo, number, time.Time{})
 	}
 
 	var mu sync.Mutex
@@ -365,7 +365,7 @@ func TestFeedbackScanner_CircuitOpenStopsCycle(t *testing.T) {
 	d.searcher.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
 		return []models.WorkItem{{Key: "PROJ-1"}, {Key: "PROJ-2"}}, nil
 	}
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
 		}, nil
@@ -387,6 +387,38 @@ func TestFeedbackScanner_CircuitOpenStopsCycle(t *testing.T) {
 	defer mu.Unlock()
 	if callCount != 1 {
 		t.Errorf("Submit called %d times, want 1 (circuit open stops cycle)", callCount)
+	}
+}
+
+// --- Budget exceeded stops scan cycle ---
+
+func TestFeedbackScanner_BudgetExceededStopsCycle(t *testing.T) {
+	d := newFeedbackDeps()
+	d.searcher.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
+		return []models.WorkItem{{Key: "PROJ-1"}, {Key: "PROJ-2"}}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
+		}, nil
+	}
+
+	var mu sync.Mutex
+	var callCount int
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return nil, jobmanager.ErrBudgetExceeded
+	}
+
+	s := d.scanner(t)
+	runOneFeedbackScan(t, s)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Errorf("Submit called %d times, want 1 (budget exceeded stops cycle)", callCount)
 	}
 }
 
@@ -470,7 +502,7 @@ func TestFeedbackScanner_UsesBranchConvention(t *testing.T) {
 		receivedHead = head
 		return &models.PRDetails{Number: 1}, nil
 	}
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
 		}, nil
@@ -488,7 +520,7 @@ func TestFeedbackScanner_UsesBranchConvention(t *testing.T) {
 
 func TestFeedbackScanner_NoCommentsNoEvent(t *testing.T) {
 	d := newFeedbackDeps()
-	d.prs.GetPRCommentsFunc = func(_, _ string, _ int) ([]models.PRComment, error) {
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
 	}
 
@@ -531,7 +563,7 @@ func newFeedbackDeps() *feedbackDeps {
 					URL: "https://github.com/org/repo/pull/42",
 				}, nil
 			},
-			GetPRCommentsFunc: func(_, _ string, _ int) ([]models.PRComment, error) {
+			GetPRCommentsFunc: func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 				return []models.PRComment{
 					{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
 				}, nil

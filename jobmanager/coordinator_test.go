@@ -971,6 +971,136 @@ func TestDispatch_QueuedJobStartsWhenSlotFrees(t *testing.T) {
 	close(getBlock("B"))
 }
 
+// --- Cost recording ---
+
+type costStub struct {
+	mu       sync.Mutex
+	total    float64
+	exceeded bool
+}
+
+func (c *costStub) Record(amount float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.total += amount
+}
+
+func (c *costStub) BudgetExceeded() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.exceeded
+}
+
+func (c *costStub) getTotal() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
+}
+
+func TestCoordinator_SuccessfulJobRecordsCostOnce(t *testing.T) {
+	costs := &costStub{}
+	cfg := jobmanager.Config{
+		MaxConcurrent: 1,
+		CostRecorder:  costs,
+	}
+	execute := func(_ context.Context, _ *jobmanager.Job) (jobmanager.JobResult, error) {
+		return jobmanager.JobResult{CostUSD: 1.50}, nil
+	}
+	coord := mustCoordinator(t, cfg, execute)
+
+	job, err := coord.Submit(jobmanager.Event{
+		Type:      jobmanager.JobTypeNewTicket,
+		TicketKey: "PROJ-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, coord, job.ID)
+
+	if got := costs.getTotal(); got != 1.50 {
+		t.Errorf("total cost = %f, want 1.50 (cost should be recorded exactly once)", got)
+	}
+}
+
+func TestCoordinator_ExternalCompleteRecordsCost(t *testing.T) {
+	costs := &costStub{}
+	cfg := jobmanager.Config{
+		MaxConcurrent: 1,
+		CostRecorder:  costs,
+	}
+	coord := mustCoordinator(t, cfg, blockForever)
+	defer coord.Shutdown()
+
+	job, err := coord.Submit(jobmanager.Event{
+		Type:      jobmanager.JobTypeNewTicket,
+		TicketKey: "PROJ-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for job to be running.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		j, _ := coord.GetJob(job.ID)
+		if j.Status == jobmanager.JobStatusRunning {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	err = coord.Complete(job.ID, jobmanager.JobResult{CostUSD: 2.00})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := costs.getTotal(); got != 2.00 {
+		t.Errorf("total cost = %f, want 2.00", got)
+	}
+}
+
+func TestCoordinator_BudgetExceededRejectsSubmit(t *testing.T) {
+	costs := &costStub{exceeded: true}
+	cfg := jobmanager.Config{
+		MaxConcurrent: 1,
+		CostRecorder:  costs,
+	}
+	coord := mustCoordinator(t, cfg, noopExecute)
+
+	_, err := coord.Submit(jobmanager.Event{
+		Type:      jobmanager.JobTypeNewTicket,
+		TicketKey: "PROJ-1",
+	})
+	if !errors.Is(err, jobmanager.ErrBudgetExceeded) {
+		t.Fatalf("expected ErrBudgetExceeded, got %v", err)
+	}
+}
+
+func TestCoordinator_ZeroCostNotRecorded(t *testing.T) {
+	costs := &costStub{}
+	cfg := jobmanager.Config{
+		MaxConcurrent: 1,
+		CostRecorder:  costs,
+	}
+	execute := func(_ context.Context, _ *jobmanager.Job) (jobmanager.JobResult, error) {
+		return jobmanager.JobResult{CostUSD: 0}, nil
+	}
+	coord := mustCoordinator(t, cfg, execute)
+
+	job, err := coord.Submit(jobmanager.Event{
+		Type:      jobmanager.JobTypeNewTicket,
+		TicketKey: "PROJ-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, coord, job.ID)
+
+	if got := costs.getTotal(); got != 0 {
+		t.Errorf("total cost = %f, want 0 (zero cost should not be recorded)", got)
+	}
+}
+
 // --- helpers ---
 
 func mustCoordinator(t *testing.T, cfg jobmanager.Config, execute jobmanager.ExecuteFunc) *jobmanager.Coordinator {

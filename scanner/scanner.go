@@ -30,6 +30,7 @@ package scanner
 
 import (
 	"context"
+	"time"
 
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
@@ -65,9 +66,9 @@ type PRFetcher interface {
 	// branch matches the given name.
 	GetPRForBranch(owner, repo, head string) (*models.PRDetails, error)
 
-	// GetPRComments returns all comments on the given pull
-	// request.
-	GetPRComments(owner, repo string, number int) ([]models.PRComment, error)
+	// GetPRComments returns comments on the given pull request.
+	// Pass time.Time{} to retrieve all comments.
+	GetPRComments(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 }
 
 // RepoLocator maps work items to their GitHub repository coordinates.

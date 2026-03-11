@@ -21,7 +21,7 @@ import (
 // key so the constructor's GitHub App transport initialization succeeds.
 // When no executor is provided, it defaults to using /usr/bin/git to
 // bypass any wrapper scripts on PATH.
-func newTestGitHubServiceForGit(t *testing.T, executor ...models.CommandExecutor) services.GitHubService {
+func newTestGitHubServiceForGit(t *testing.T, executor ...models.CommandExecutor) *services.GitHubServiceImpl {
 	t.Helper()
 
 	keyFile := generateTempRSAKey(t)

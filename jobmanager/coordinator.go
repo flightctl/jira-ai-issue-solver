@@ -44,6 +44,13 @@ type Config struct {
 	// open before automatically resetting.
 	CircuitBreakerCooldown time.Duration
 
+	// CostRecorder optionally tracks AI session costs for budget
+	// enforcement. When set, [Coordinator.Submit] returns
+	// [ErrBudgetExceeded] if the daily budget has been reached, and
+	// completed jobs' costs are recorded automatically. Nil disables
+	// cost tracking.
+	CostRecorder CostRecorder
+
 	// Clock returns the current time. Defaults to [time.Now] when
 	// nil. Exposed for testing.
 	Clock func() time.Time
@@ -57,8 +64,6 @@ type Coordinator struct {
 	mu sync.Mutex
 
 	// Job storage and indices.
-	// TODO(task-11): jobs map grows unboundedly as terminal jobs accumulate.
-	// Add TTL-based eviction or a PurgeCompleted method during wiring.
 	jobs       map[string]*Job
 	ticketJobs map[string]string // ticket key -> job ID (pending/running)
 	queue      []string          // ordered pending job IDs
@@ -72,6 +77,7 @@ type Coordinator struct {
 	maxRetries    int
 
 	breaker circuitBreaker
+	costs   CostRecorder // nil disables cost tracking
 
 	execute ExecuteFunc
 	ctx     context.Context
@@ -115,6 +121,7 @@ func NewCoordinator(cfg Config, execute ExecuteFunc, logger *zap.Logger) (*Coord
 			window:    cfg.CircuitBreakerWindow,
 			cooldown:  cfg.CircuitBreakerCooldown,
 		},
+		costs:   cfg.CostRecorder,
 		execute: execute,
 		ctx:     ctx,
 		cancel:  cancel,
@@ -146,6 +153,10 @@ func (c *Coordinator) Submit(event Event) (*Job, error) {
 	now := c.clock()
 	if c.breaker.isOpen(now) {
 		return nil, ErrCircuitOpen
+	}
+
+	if c.costs != nil && c.costs.BudgetExceeded() {
+		return nil, ErrBudgetExceeded
 	}
 
 	job := &Job{
@@ -182,6 +193,10 @@ func (c *Coordinator) Complete(jobID string, result JobResult) error {
 	}
 	if job.Status != JobStatusRunning {
 		return ErrJobNotRunning
+	}
+
+	if c.costs != nil && result.CostUSD > 0 {
+		c.costs.Record(result.CostUSD)
 	}
 
 	c.completeLocked(job, result)
@@ -243,6 +258,24 @@ func (c *Coordinator) Shutdown() {
 	c.wg.Wait()
 }
 
+// PurgeCompleted removes all terminal (completed or failed) jobs from
+// the in-memory store. This prevents unbounded memory growth when the
+// bot runs for extended periods. Active (pending or running) jobs are
+// not affected. Returns the number of jobs removed.
+func (c *Coordinator) PurgeCompleted() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	removed := 0
+	for id, job := range c.jobs {
+		if job.Status == JobStatusCompleted || job.Status == JobStatusFailed {
+			delete(c.jobs, id)
+			removed++
+		}
+	}
+	return removed
+}
+
 // --- internal ---
 
 // tryDispatch starts goroutines for pending jobs when concurrency
@@ -287,6 +320,12 @@ func (c *Coordinator) runJob(jobID string, snapshot *Job) {
 		return
 	}
 
+	// Record cost even on failure — the AI session may have consumed
+	// tokens before failing (e.g., timeout, no changes produced).
+	if c.costs != nil && result.CostUSD > 0 {
+		c.costs.Record(result.CostUSD)
+	}
+
 	if err != nil {
 		c.failLocked(job, err)
 	} else {
@@ -310,7 +349,8 @@ func (c *Coordinator) completeLocked(job *Job, result JobResult) {
 
 	c.logger.Info("Job completed",
 		zap.String("job_id", job.ID),
-		zap.String("ticket", job.TicketKey))
+		zap.String("ticket", job.TicketKey),
+		zap.Float64("cost_usd", result.CostUSD))
 }
 
 func (c *Coordinator) failLocked(job *Job, err error) {

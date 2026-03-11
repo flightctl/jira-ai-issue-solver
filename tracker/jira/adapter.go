@@ -1,9 +1,8 @@
 // Package jira implements tracker.IssueTracker for Atlassian Jira.
 //
-// The Adapter wraps the existing JiraService, translating between the
-// generic domain model (WorkItem, SearchCriteria) and Jira-specific types
-// and API calls. This is a strangler fig adapter — it delegates all
-// operations to the existing service while presenting the new interface.
+// The Adapter wraps a JiraClient implementation, translating between
+// the generic domain model (WorkItem, SearchCriteria) and Jira-specific
+// types and API calls.
 package jira
 
 import (
@@ -16,25 +15,34 @@ import (
 	"go.uber.org/zap"
 
 	"jira-ai-issue-solver/models"
-	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/tracker"
 )
+
+// JiraClient is the consumer-defined interface declaring only the Jira
+// operations the adapter actually needs. Any concrete type whose methods
+// match (e.g. *services.JiraServiceImpl) satisfies it implicitly.
+type JiraClient interface {
+	SearchTickets(jql string) (*models.JiraSearchResponse, error)
+	GetTicket(key string) (*models.JiraTicketResponse, error)
+	GetTicketSecurityLevel(key string) (*models.JiraSecurity, error)
+	UpdateTicketStatus(key string, status string) error
+	AddComment(key string, comment string) error
+	GetTicketWithExpandedFields(key string) (map[string]interface{}, map[string]string, error)
+	UpdateTicketFieldByName(key string, fieldName string, value interface{}) error
+}
 
 // Compile-time check that Adapter implements tracker.IssueTracker.
 var _ tracker.IssueTracker = (*Adapter)(nil)
 
-// Adapter implements tracker.IssueTracker by delegating to the existing
-// JiraService. It is a transitional component — once the migration to
-// the new architecture is complete, this adapter can be replaced with a
-// direct Jira API client that speaks the IssueTracker interface natively.
+// Adapter implements tracker.IssueTracker by delegating to a JiraClient.
 type Adapter struct {
-	jira   services.JiraService
+	jira   JiraClient
 	logger *zap.Logger
 }
 
 // NewAdapter creates a Jira issue tracker adapter that wraps the given
-// JiraService. Returns an error if jira or logger is nil.
-func NewAdapter(jira services.JiraService, logger *zap.Logger) (*Adapter, error) {
+// JiraClient. Returns an error if jira or logger is nil.
+func NewAdapter(jira JiraClient, logger *zap.Logger) (*Adapter, error) {
 	if jira == nil {
 		return nil, errors.New("jira service must not be nil")
 	}

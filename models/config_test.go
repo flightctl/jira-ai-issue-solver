@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +30,7 @@ func getValidGitHubConfig() struct {
 	SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 	MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 	KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+	IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 } {
 	return struct {
 		AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
@@ -40,6 +42,7 @@ func getValidGitHubConfig() struct {
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 	}{
 		AppID:          123456,
 		PrivateKeyPath: "/tmp/test_key.pem",
@@ -100,23 +103,18 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tmpKeyPath,
 					BotUsername:    "test-bot",
 				},
-				AI: struct {
-					GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-					MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
-					RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
-				}{
-					GenerateDocumentation: true,
-					MaxRetries:            5,
-					RetryDelaySeconds:     2,
-				},
 				Workspaces: WorkspacesConfig{
 					BaseDir: "/tmp/test-workspaces",
 					TTLDays: 7,
+				},
+				Guardrails: GuardrailsConfig{
+					MaxConcurrentJobs: 10,
 				},
 			},
 			wantErr: false,
@@ -679,11 +677,6 @@ func TestLoadConfig_WithAIConfiguration(t *testing.T) {
 	// Create a temporary config file
 	configContent := fmt.Sprintf(`
 ai_provider: claude
-ai:
-  generate_documentation: false
-claude:
-  cli_path: claude
-  timeout: 300
 jira:
   base_url: https://test.atlassian.net
   username: test-user
@@ -726,13 +719,9 @@ workspaces:
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Verify AI configuration
+	// Verify AI provider
 	if config.AIProvider != "claude" {
 		t.Errorf("Expected AI provider to be 'claude', got '%s'", config.AIProvider)
-	}
-
-	if config.AI.GenerateDocumentation {
-		t.Error("Expected generate_documentation to be false, got true")
 	}
 }
 
@@ -802,23 +791,18 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot[bot]",
 				},
-				AI: struct {
-					GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-					MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
-					RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
-				}{
-					GenerateDocumentation: true,
-					MaxRetries:            5,
-					RetryDelaySeconds:     2,
-				},
 				Workspaces: WorkspacesConfig{
 					BaseDir: "/tmp/test-workspaces",
 					TTLDays: 7,
+				},
+				Guardrails: GuardrailsConfig{
+					MaxConcurrentJobs: 10,
 				},
 			},
 			wantErr: false,
@@ -862,6 +846,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot",
@@ -912,6 +897,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: "/non/existent/path/key.pem",
@@ -961,6 +947,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
@@ -980,7 +967,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 				return
 			}
 			if tt.wantErr && tt.errMsg != "" {
-				if err == nil || !contains(err.Error(), tt.errMsg) {
+				if err == nil || !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("Config.validate() error = %v, want error containing %q", err, tt.errMsg)
 				}
 			}
@@ -1082,106 +1069,6 @@ workspaces:
 	}
 }
 
-func TestConfig_validateAIConfiguration(t *testing.T) {
-	tests := []struct {
-		name          string
-		maxRetries    int
-		retryDelay    int
-		expectedError string
-	}{
-		{
-			name:          "valid config with default values",
-			maxRetries:    5,
-			retryDelay:    2,
-			expectedError: "",
-		},
-		{
-			name:          "valid config with minimum values",
-			maxRetries:    1,
-			retryDelay:    0,
-			expectedError: "",
-		},
-		{
-			name:          "valid config with high values",
-			maxRetries:    10,
-			retryDelay:    10,
-			expectedError: "",
-		},
-		{
-			name:          "invalid max_retries zero",
-			maxRetries:    0,
-			retryDelay:    2,
-			expectedError: "ai.max_retries must be at least 1",
-		},
-		{
-			name:          "invalid max_retries negative",
-			maxRetries:    -1,
-			retryDelay:    2,
-			expectedError: "ai.max_retries must be at least 1",
-		},
-		{
-			name:          "invalid retry_delay_seconds negative",
-			maxRetries:    5,
-			retryDelay:    -1,
-			expectedError: "ai.retry_delay_seconds must be non-negative",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			keyPath := createTempKeyFile(t)
-			defer func() { _ = os.Remove(keyPath) }()
-
-			config := &Config{}
-			config.AIProvider = "claude"
-			config.Logging.Level = "info"
-			config.Logging.Format = "console"
-			config.Jira.BaseURL = "https://test.atlassian.net"
-			config.Jira.Username = "test@example.com"
-			config.Jira.APIToken = "test-token"
-			config.Jira.AssigneeToGitHubUsername = map[string]string{
-				"test@example.com": "test-user",
-			}
-			config.Jira.Projects = []ProjectConfig{
-				{
-					ProjectKeys: ProjectKeys{"TEST"},
-					StatusTransitions: TicketTypeStatusTransitions{
-						"default": StatusTransitions{
-							Todo:       "To Do",
-							InProgress: "In Progress",
-							InReview:   "In Review",
-						},
-					},
-					ComponentToRepo: ComponentToRepoMap{
-						"component1": "https://github.com/test/repo1.git",
-					},
-				},
-			}
-			config.GitHub.AppID = 123456
-			config.GitHub.PrivateKeyPath = keyPath
-			config.GitHub.BotUsername = "test-bot"
-			config.AI.MaxRetries = tt.maxRetries
-			config.AI.RetryDelaySeconds = tt.retryDelay
-			config.Workspaces.BaseDir = "/tmp/test-workspaces"
-			config.Workspaces.TTLDays = 7
-
-			err := config.validate()
-
-			if tt.expectedError == "" {
-				if err != nil {
-					t.Errorf("Expected no error, got: %v", err)
-				}
-			} else {
-				if err == nil {
-					t.Errorf("Expected error containing '%s', got nil", tt.expectedError)
-				} else if !contains(err.Error(), tt.expectedError) {
-					t.Errorf("Expected error containing '%s', got: %v", tt.expectedError, err)
-				}
-			}
-		})
-	}
-}
-
 func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1248,10 +1135,9 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 			config.GitHub.AppID = 123456
 			config.GitHub.PrivateKeyPath = keyPath
 			config.GitHub.BotUsername = "test-bot"
-			config.AI.MaxRetries = 5
-			config.AI.RetryDelaySeconds = 2
 			config.Workspaces.BaseDir = tt.baseDir
 			config.Workspaces.TTLDays = tt.ttlDays
+			config.Guardrails.MaxConcurrentJobs = 10
 
 			err := config.validate()
 
@@ -1262,7 +1148,7 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 			} else {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.expectedError)
-				} else if !contains(err.Error(), tt.expectedError) {
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
 					t.Errorf("expected error containing %q, got: %v", tt.expectedError, err)
 				}
 			}
@@ -1336,11 +1222,10 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 			config.GitHub.AppID = 123456
 			config.GitHub.PrivateKeyPath = keyPath
 			config.GitHub.BotUsername = "test-bot"
-			config.AI.MaxRetries = 5
-			config.AI.RetryDelaySeconds = 2
 			config.Workspaces.BaseDir = "/var/lib/workspaces"
 			config.Workspaces.TTLDays = 7
 			config.Container.Runtime = tt.runtime
+			config.Guardrails.MaxConcurrentJobs = 10
 
 			err := config.validate()
 
@@ -1351,25 +1236,10 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 			} else {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.expectedError)
-				} else if !contains(err.Error(), tt.expectedError) {
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
 					t.Errorf("expected error containing %q, got: %v", tt.expectedError, err)
 				}
 			}
 		})
 	}
-}
-
-// contains checks if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
-}
-
-func stringContains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

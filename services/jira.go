@@ -34,45 +34,6 @@ const (
 	maxBodyErrorLength = 200 // Max chars to include in error messages
 )
 
-// JiraService defines the interface for interacting with Jira
-type JiraService interface {
-	// GetTicket fetches a ticket from Jira
-	GetTicket(key string) (*models.JiraTicketResponse, error)
-
-	// GetTicketWithExpandedFields fetches a ticket from Jira with expanded fields for custom field access
-	GetTicketWithExpandedFields(key string) (map[string]interface{}, map[string]string, error)
-
-	// UpdateTicketLabels updates the labels of a ticket
-	UpdateTicketLabels(key string, addLabels, removeLabels []string) error
-
-	// UpdateTicketStatus updates the status of a ticket
-	UpdateTicketStatus(key string, status string) error
-
-	// UpdateTicketField updates a specific field of a ticket
-	UpdateTicketField(key string, fieldID string, value interface{}) error
-
-	// UpdateTicketFieldByName updates a specific field of a ticket by field name
-	UpdateTicketFieldByName(key string, fieldName string, value interface{}) error
-
-	// GetFieldIDByName resolves a field name to its ID
-	GetFieldIDByName(fieldName string) (string, error)
-
-	// AddComment adds a comment to a ticket
-	AddComment(key string, comment string) error
-
-	// GetTicketWithComments fetches a ticket from Jira with comments expanded
-	GetTicketWithComments(key string) (*models.JiraTicketResponse, error)
-
-	// SearchTickets searches for tickets using JQL
-	SearchTickets(jql string) (*models.JiraSearchResponse, error)
-
-	// HasSecurityLevel checks if a ticket has a security level set (other than "None")
-	HasSecurityLevel(key string) (bool, error)
-
-	// GetTicketSecurityLevel gets the security level of a ticket
-	GetTicketSecurityLevel(key string) (*models.JiraSecurity, error)
-}
-
 // truncate truncates a string to a maximum length
 func truncate(body []byte, maxLen int) string {
 	bodyStr := string(body)
@@ -107,7 +68,7 @@ func randomJitter(maxSeconds float64) (float64, error) {
 	return normalized * maxSeconds, nil
 }
 
-// JiraServiceImpl implements the JiraService interface
+// JiraServiceImpl provides Jira API operations (search, get, update, comment, etc.).
 type JiraServiceImpl struct {
 	config   *models.Config
 	client   *http.Client
@@ -116,12 +77,12 @@ type JiraServiceImpl struct {
 	sleepFn  func(time.Duration) <-chan time.Time // Returns a channel for select-based waiting
 }
 
-// NewJiraService creates a new JiraService with production defaults
-func NewJiraService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) JiraService {
+// NewJiraService creates a new JiraServiceImpl with production defaults.
+func NewJiraService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) *JiraServiceImpl {
 	return NewJiraServiceForTest(config, &http.Client{}, logger, time.After, executor...)
 }
 
-// NewJiraServiceForTest creates a new JiraService with a custom sleep function for testing
+// NewJiraServiceForTest creates a new JiraServiceImpl with a custom sleep function for testing.
 func NewJiraServiceForTest(config *models.Config, client *http.Client, logger *zap.Logger, sleepFn func(time.Duration) <-chan time.Time, executor ...models.CommandExecutor) *JiraServiceImpl {
 	commandExecutor := exec.Command
 	if len(executor) > 0 {

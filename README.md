@@ -54,7 +54,7 @@ authentication, and system architecture.
 - Jira API access
 - GitHub App credentials (App ID and private key) -
   see [docs/admin-setup.md](docs/admin-setup.md) for setup instructions
-- Claude CLI or Gemini CLI (depending on your AI provider choice)
+- Container runtime (podman or docker) with a dev container image that includes the AI CLI
 
 ### Installation
 
@@ -106,7 +106,7 @@ See **[config.example.yaml](config.example.yaml)** for complete configuration re
 - **GitHub App authentication**: See [docs/admin-setup.md](docs/admin-setup.md) for creating the GitHub App
 - **Contributor setup**: Developers must install the app on their forks - see [docs/contributor-setup.md](docs/contributor-setup.md)
 - **Status transitions**: Configure per ticket type - see config.example.yaml for examples
-- **Headless environments**: Claude requires API key for containers/Cloud Run
+- **AI API keys**: Claude or Gemini API key required (passed to containers as env vars)
 
 For detailed configuration explanations, see [docs/architecture.md](docs/architecture.md).
 
@@ -164,20 +164,9 @@ make stop
 
 See config.example.yaml for all environment variable options (use `JIRA_AI_*` prefix).
 
-### Cloud Run Deployment
+### Deployment
 
-Quick deployment to Google Cloud Run with automatic secrets management:
-
-```bash
-# Configure your settings
-cp config.example.yaml config.yaml
-# Edit config.yaml with your settings
-
-# Deploy (requires gcloud CLI and yq)
-make deploy PROJECT_ID="your-project-id" REGION="us-central1" SERVICE_NAME="jira-ai-solver"
-```
-
-The deployment script automatically creates secrets from config.yaml and deploys to Cloud Run. See `deploy.sh` for options and `deploy-example.sh` for a full example.
+See **[docs/testing-setup.md](docs/testing-setup.md)** for deployment instructions using podman/docker.
 
 ## Architecture
 

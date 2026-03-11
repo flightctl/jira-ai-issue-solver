@@ -3,6 +3,7 @@ package scannertest
 
 import (
 	"context"
+	"time"
 
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
@@ -72,7 +73,7 @@ func (s *StubJobSubmitter) Submit(event jobmanager.Event) (*jobmanager.Job, erro
 // When a Func field is nil, the method returns zero values.
 type StubPRFetcher struct {
 	GetPRForBranchFunc func(owner, repo, head string) (*models.PRDetails, error)
-	GetPRCommentsFunc  func(owner, repo string, number int) ([]models.PRComment, error)
+	GetPRCommentsFunc  func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 }
 
 func (s *StubPRFetcher) GetPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
@@ -82,9 +83,9 @@ func (s *StubPRFetcher) GetPRForBranch(owner, repo, head string) (*models.PRDeta
 	return &models.PRDetails{}, nil
 }
 
-func (s *StubPRFetcher) GetPRComments(owner, repo string, number int) ([]models.PRComment, error) {
+func (s *StubPRFetcher) GetPRComments(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
 	if s.GetPRCommentsFunc != nil {
-		return s.GetPRCommentsFunc(owner, repo, number)
+		return s.GetPRCommentsFunc(owner, repo, number, since)
 	}
 	return []models.PRComment{}, nil
 }

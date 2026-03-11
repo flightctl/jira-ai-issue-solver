@@ -232,6 +232,40 @@ func TestWorkItemScanner_CircuitOpenStopsCycle(t *testing.T) {
 	}
 }
 
+// --- Budget exceeded stops scan cycle ---
+
+func TestWorkItemScanner_BudgetExceededStopsCycle(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(_ models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1"},
+				{Key: "PROJ-2"},
+				{Key: "PROJ-3"},
+			}, nil
+		},
+	}
+
+	var mu sync.Mutex
+	var callCount int
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(_ jobmanager.Event) (*jobmanager.Job, error) {
+			mu.Lock()
+			callCount++
+			mu.Unlock()
+			return nil, jobmanager.ErrBudgetExceeded
+		},
+	}
+
+	s := newWorkItemScanner(t, searcher, submitter)
+	runOneScan(t, s)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Errorf("Submit called %d times, want 1 (budget exceeded stops cycle)", callCount)
+	}
+}
+
 // --- Search error continues to next cycle ---
 
 func TestWorkItemScanner_SearchErrorContinues(t *testing.T) {

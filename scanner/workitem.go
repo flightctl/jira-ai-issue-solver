@@ -162,6 +162,9 @@ func (s *WorkItemScanner) submitEvent(item models.WorkItem) bool {
 	case errors.Is(err, jobmanager.ErrCircuitOpen):
 		s.logger.Warn("Circuit breaker open, stopping scan cycle")
 		return true
+	case errors.Is(err, jobmanager.ErrBudgetExceeded):
+		s.logger.Warn("Daily budget exceeded, stopping scan cycle")
+		return true
 	case errors.Is(err, jobmanager.ErrShutdown):
 		s.logger.Info("Job manager shut down, stopping scan cycle")
 		return true

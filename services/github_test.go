@@ -42,45 +42,6 @@ func (m *MockGitHubAppService) GetAppToken() (string, error) {
 	return "mock-app-token", nil
 }
 
-// TestCreatePullRequest_ForkOwnerExtraction tests that the fork owner is correctly extracted from head parameter
-func TestCreatePullRequest_ForkOwnerExtraction(t *testing.T) {
-	testCases := []struct {
-		name          string
-		head          string
-		expectedOwner string
-	}{
-		{
-			name:          "fork with owner prefix",
-			head:          "adalton:EDM-123",
-			expectedOwner: "adalton",
-		},
-		{
-			name:          "another fork owner",
-			head:          "bob:feature-branch",
-			expectedOwner: "bob",
-		},
-		{
-			name:          "no colon - same repo",
-			head:          "feature-branch",
-			expectedOwner: "", // Will be set to owner param in actual code
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			var extractedOwner string
-			if strings.Contains(tc.head, ":") {
-				parts := strings.SplitN(tc.head, ":", 2)
-				extractedOwner = parts[0]
-			}
-
-			if extractedOwner != tc.expectedOwner {
-				t.Errorf("Expected owner '%s', got '%s'", tc.expectedOwner, extractedOwner)
-			}
-		})
-	}
-}
-
 // generateTestRSAKey creates a temporary RSA private key file for testing
 func generateTestRSAKey(t *testing.T) string {
 	// Generate RSA key
@@ -110,8 +71,8 @@ func generateTestRSAKey(t *testing.T) string {
 	return tmpFile.Name()
 }
 
-// TestCreatePullRequest_GitHubApp tests CreatePullRequest with GitHub App authentication
-func TestCreatePullRequest_GitHubApp(t *testing.T) {
+// TestCreatePR_GitHubApp tests CreatePR with GitHub App authentication
+func TestCreatePR_GitHubApp(t *testing.T) {
 	// Generate temporary RSA key for testing
 	keyPath := generateTestRSAKey(t)
 	if keyPath == "" {
@@ -250,15 +211,15 @@ func TestCreatePullRequest_GitHubApp(t *testing.T) {
 				logger:              zap.NewNop(),
 			}
 
-			// Call CreatePullRequest
-			result, err := service.CreatePullRequest(
-				tc.baseOwner,
-				tc.repo,
-				"Test PR",
-				"Test body",
-				tc.head,
-				tc.base,
-			)
+			// Call CreatePR
+			result, err := service.CreatePR(models.PRParams{
+				Owner: tc.baseOwner,
+				Repo:  tc.repo,
+				Title: "Test PR",
+				Body:  "Test body",
+				Head:  tc.head,
+				Base:  tc.base,
+			})
 
 			// Verify no error
 			if err != nil {
@@ -318,8 +279,8 @@ func TestCreatePullRequest_GitHubApp(t *testing.T) {
 	}
 }
 
-// TestCreatePullRequest tests the CreatePullRequest method
-func TestCreatePullRequest(t *testing.T) {
+// TestCreatePR tests the CreatePR method
+func TestCreatePR(t *testing.T) {
 	// Generate temporary RSA key for testing
 	keyPath := generateTestRSAKey(t)
 	if keyPath == "" {
@@ -330,26 +291,23 @@ func TestCreatePullRequest(t *testing.T) {
 	// Test cases
 	testCases := []struct {
 		name           string
-		owner          string
-		repo           string
-		title          string
-		body           string
-		head           string
-		base           string
+		params         models.PRParams
 		prLabel        string
 		mockResponse   *http.Response
 		mockError      error
-		expectedResult *models.GitHubCreatePRResponse
+		expectedResult *models.PR
 		expectedError  bool
 	}{
 		{
-			name:    "successful PR creation",
-			owner:   "example",
-			repo:    "repo",
-			title:   "Test PR",
-			body:    "This is a test PR",
-			head:    "feature/TEST-123",
-			base:    "main",
+			name: "successful PR creation",
+			params: models.PRParams{
+				Owner: "example",
+				Repo:  "repo",
+				Title: "Test PR",
+				Body:  "This is a test PR",
+				Head:  "feature/TEST-123",
+				Base:  "main",
+			},
 			prLabel: "ai-pr",
 			mockResponse: &http.Response{
 				StatusCode: http.StatusCreated,
@@ -365,24 +323,23 @@ func TestCreatePullRequest(t *testing.T) {
 				}`))),
 			},
 			mockError: nil,
-			expectedResult: &models.GitHubCreatePRResponse{
-				ID:      12345,
-				Number:  1,
-				State:   "open",
-				Title:   "Test PR",
-				Body:    "This is a test PR",
-				HTMLURL: "https://github.com/example/repo/pull/1",
+			expectedResult: &models.PR{
+				Number: 1,
+				URL:    "https://github.com/example/repo/pull/1",
+				State:  "open",
 			},
 			expectedError: false,
 		},
 		{
-			name:    "error creating PR",
-			owner:   "example",
-			repo:    "repo",
-			title:   "Test PR",
-			body:    "This is a test PR",
-			head:    "feature/TEST-123",
-			base:    "main",
+			name: "error creating PR",
+			params: models.PRParams{
+				Owner: "example",
+				Repo:  "repo",
+				Title: "Test PR",
+				Body:  "This is a test PR",
+				Head:  "feature/TEST-123",
+				Base:  "main",
+			},
 			prLabel: "ai-pr",
 			mockResponse: &http.Response{
 				StatusCode: http.StatusUnprocessableEntity,
@@ -460,7 +417,7 @@ func TestCreatePullRequest(t *testing.T) {
 			}
 
 			// Call the method being tested
-			result, err := service.CreatePullRequest(tc.owner, tc.repo, tc.title, tc.body, tc.head, tc.base)
+			result, err := service.CreatePR(tc.params)
 
 			// Check the results
 			if tc.expectedError && err == nil {
@@ -473,26 +430,23 @@ func TestCreatePullRequest(t *testing.T) {
 				if result == nil {
 					t.Errorf("Expected a result but got nil")
 				} else {
-					if result.ID != tc.expectedResult.ID {
-						t.Errorf("Expected result ID %d but got %d", tc.expectedResult.ID, result.ID)
-					}
 					if result.Number != tc.expectedResult.Number {
 						t.Errorf("Expected result Number %d but got %d", tc.expectedResult.Number, result.Number)
 					}
-					// Add more assertions for other fields as needed
+					if result.URL != tc.expectedResult.URL {
+						t.Errorf("Expected result URL %s but got %s", tc.expectedResult.URL, result.URL)
+					}
+					if result.State != tc.expectedResult.State {
+						t.Errorf("Expected result State %s but got %s", tc.expectedResult.State, result.State)
+					}
 				}
 			}
-
-			// Note: We no longer verify HTTP request details since we're using go-github library
-			// which handles request formatting. We trust go-github to format requests correctly.
-			// The label is now added via a separate Issues.AddLabelsToIssue API call.
-			// maintainer_can_modify is set in the NewPullRequest struct passed to go-github.
 		})
 	}
 }
 
-// TestExtractRepoInfo tests the ExtractRepoInfo function
-func TestExtractRepoInfo(t *testing.T) {
+// Test_extractRepoInfo tests the extractRepoInfo function.
+func Test_extractRepoInfo(t *testing.T) {
 	// Test cases
 	testCases := []struct {
 		name          string
@@ -534,7 +488,7 @@ func TestExtractRepoInfo(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Call the function being tested
-			owner, repo, err := ExtractRepoInfo(tc.repoURL)
+			owner, repo, err := extractRepoInfo(tc.repoURL)
 
 			// Check the results
 			if tc.expectedError && err == nil {
@@ -553,8 +507,8 @@ func TestExtractRepoInfo(t *testing.T) {
 	}
 }
 
-// TestSwitchToBranch tests the SwitchToBranch method
-func TestSwitchToBranch(t *testing.T) {
+// TestSwitchBranch tests the SwitchBranch method
+func TestSwitchBranch(t *testing.T) {
 	// Create test logger
 	logger := zap.NewNop()
 
@@ -589,9 +543,9 @@ func TestSwitchToBranch(t *testing.T) {
 	githubService := NewGitHubService(config, logger, mockExecutor)
 
 	// Test switching to the test branch
-	err = githubService.SwitchToBranch(tempDir, "test-branch")
+	err = githubService.SwitchBranch(tempDir, "test-branch")
 	if err != nil {
-		t.Errorf("SwitchToBranch() error = %v", err)
+		t.Errorf("SwitchBranch() error = %v", err)
 	}
 
 	// Verify the correct commands were executed
@@ -611,8 +565,8 @@ func TestSwitchToBranch(t *testing.T) {
 	}
 }
 
-// TestSwitchToBranch_NonExistentBranch tests switching to a non-existent branch
-func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
+// TestSwitchBranch_NonExistentBranch tests switching to a non-existent branch
+func TestSwitchBranch_NonExistentBranch(t *testing.T) {
 	// Create test logger
 	logger := zap.NewNop()
 
@@ -651,1123 +605,9 @@ func TestSwitchToBranch_NonExistentBranch(t *testing.T) {
 	githubService := NewGitHubService(config, logger)
 
 	// Test switching to a non-existent branch
-	err = githubService.SwitchToBranch(tempDir, "non-existent-branch")
+	err = githubService.SwitchBranch(tempDir, "non-existent-branch")
 	if err == nil {
-		t.Error("SwitchToBranch() should return error for non-existent branch")
-	}
-}
-
-func TestGitHubService_CommitChanges_WithCoAuthor(t *testing.T) {
-	// Create a temporary directory for the test
-	tempDir, err := os.MkdirTemp("", "github-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Create temporary private key file
-	keyPath := generateTestRSAKey(t)
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Initialize git repository
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repository: %v", err)
-	}
-
-	// Configure git user
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user email: %v", err)
-	}
-
-	// Create a test file
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
-	// Create config
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.PrivateKeyPath = keyPath
-	config.GitHub.BotUsername = "test-bot"
-
-	// Create GitHub service
-	githubService := NewGitHubService(config, zap.NewNop())
-
-	// Test commit with co-author
-	commitMessage := "TEST-123: Test commit with co-author"
-	coAuthorName := "Test Assignee"
-	coAuthorEmail := "assignee@example.com"
-
-	err = githubService.CommitChanges(tempDir, commitMessage, coAuthorName, coAuthorEmail)
-	if err != nil {
-		t.Fatalf("Failed to commit changes: %v", err)
-	}
-
-	// Verify the commit message contains the co-author
-	cmd = exec.Command("git", "log", "--format=%B", "-1")
-	cmd.Dir = tempDir
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("Failed to get commit message: %v", err)
-	}
-
-	commitOutput := string(output)
-	if !strings.Contains(commitOutput, "Co-authored-by: Test Assignee <assignee@example.com>") {
-		t.Errorf("Expected commit message to contain co-author, got: %s", commitOutput)
-	}
-
-	if !strings.Contains(commitOutput, commitMessage) {
-		t.Errorf("Expected commit message to contain original message, got: %s", commitOutput)
-	}
-}
-
-func TestGitHubService_CommitChanges_WithoutCoAuthor(t *testing.T) {
-	// Create a temporary directory for the test
-	tempDir, err := os.MkdirTemp("", "github-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Create temporary private key file
-	keyPath := generateTestRSAKey(t)
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Initialize git repository
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repository: %v", err)
-	}
-
-	// Configure git user
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user email: %v", err)
-	}
-
-	// Create a test file
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
-	// Create config
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.PrivateKeyPath = keyPath
-	config.GitHub.BotUsername = "test-bot"
-
-	// Create GitHub service
-	githubService := NewGitHubService(config, zap.NewNop())
-
-	// Test commit without co-author
-	commitMessage := "TEST-123: Test commit without co-author"
-
-	err = githubService.CommitChanges(tempDir, commitMessage, "", "")
-	if err != nil {
-		t.Fatalf("Failed to commit changes: %v", err)
-	}
-
-	// Verify the commit message does not contain co-author
-	cmd = exec.Command("git", "log", "--format=%B", "-1")
-	cmd.Dir = tempDir
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("Failed to get commit message: %v", err)
-	}
-
-	commitOutput := string(output)
-	if strings.Contains(commitOutput, "Co-authored-by:") {
-		t.Errorf("Expected commit message to not contain co-author, got: %s", commitOutput)
-	}
-
-	if !strings.Contains(commitOutput, commitMessage) {
-		t.Errorf("Expected commit message to contain original message, got: %s", commitOutput)
-	}
-}
-
-func TestGitHubService_CommitChanges_WithSSHSigning(t *testing.T) {
-	// Create a temporary directory for the test
-	tempDir, err := os.MkdirTemp("", "github-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Create temporary private key file
-	keyPath := generateTestRSAKey(t)
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Initialize git repository
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repository: %v", err)
-	}
-
-	// Configure git user
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user email: %v", err)
-	}
-
-	// Create a test file
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
-	// Create config with SSH key
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.PrivateKeyPath = keyPath
-	config.GitHub.BotUsername = "test-bot"
-	config.GitHub.SSHKeyPath = "/path/to/test_ssh_key" // Test SSH key path
-
-	// Create GitHub service
-	githubService := NewGitHubService(config, zap.NewNop())
-
-	// Configure SSH signing manually (simulating what CloneRepository does)
-	cmd = exec.Command("git", "config", "gpg.format", "ssh")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git gpg format: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.signingkey", config.GitHub.SSHKeyPath)
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git ssh signing key: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "commit.gpgsign", "true")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to enable git commit signing: %v", err)
-	}
-
-	// Test commit with SSH signing - this will fail because the key doesn't exist,
-	// but we can verify that the git configuration was set correctly
-	commitMessage := "TEST-123: Test commit with SSH signing"
-
-	err = githubService.CommitChanges(tempDir, commitMessage, "", "")
-	// We expect this to fail because the SSH key doesn't exist in the test environment
-	if err == nil {
-		t.Log("Commit succeeded (unexpected, but possible if SSH key exists)")
-	} else {
-		t.Logf("Commit failed as expected: %v", err)
-	}
-
-	// Verify that git config was set for SSH signing
-	cmd = exec.Command("git", "config", "gpg.format")
-	cmd.Dir = tempDir
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("Failed to get gpg format config: %v", err)
-	}
-
-	gpgFormat := strings.TrimSpace(string(output))
-	if gpgFormat != "ssh" {
-		t.Errorf("Expected gpg format to be 'ssh', got '%s'", gpgFormat)
-	}
-
-	// Verify that signing key was set
-	cmd = exec.Command("git", "config", "user.signingkey")
-	cmd.Dir = tempDir
-	output, err = cmd.Output()
-	if err != nil {
-		t.Fatalf("Failed to get signing key config: %v", err)
-	}
-
-	signingKey := strings.TrimSpace(string(output))
-	if signingKey != config.GitHub.SSHKeyPath {
-		t.Errorf("Expected signing key to be '%s', got '%s'", config.GitHub.SSHKeyPath, signingKey)
-	}
-
-	// Verify that commit signing is enabled
-	cmd = exec.Command("git", "config", "commit.gpgsign")
-	cmd.Dir = tempDir
-	output, err = cmd.Output()
-	if err != nil {
-		t.Fatalf("Failed to get commit signing config: %v", err)
-	}
-
-	gpgSign := strings.TrimSpace(string(output))
-	if gpgSign != "true" {
-		t.Errorf("Expected commit signing to be enabled, got '%s'", gpgSign)
-	}
-
-	t.Log("SSH signing configuration verified successfully")
-}
-
-// mockCommitChangesViaAPIHandler creates a mock HTTP handler for testing CommitChangesViaAPI
-func mockCommitChangesViaAPIHandler(t *testing.T, capturedCommitRequest **models.GitHubCommitRequest, getRefCalled, getCommitCalled, createBlobCalled, createTreeCalled, createCommitCalled, updateRefCalled *bool) RoundTripFunc {
-	return func(req *http.Request) (*http.Response, error) {
-		// Mock installation token request
-		if strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"token": "ghs_mock_installation_token",
-					"expires_at": "2099-01-01T00:00:00Z"
-				}`))),
-			}, nil
-		}
-
-		// Mock installation ID request
-		if strings.Contains(req.URL.Path, "/installation") && !strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"id": 12345678
-				}`))),
-			}, nil
-		}
-
-		// Mock update reference (PATCH must be checked before GET for refs)
-		if req.Method == "PATCH" && strings.Contains(req.URL.Path, "/git/refs/heads/") {
-			*updateRefCalled = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"ref": "refs/heads/test-branch",
-					"object": {
-						"sha": "newcommit789abc012"
-					}
-				}`))),
-			}, nil
-		}
-
-		// Mock get reference
-		if strings.Contains(req.URL.Path, "/git/refs/heads/") {
-			*getRefCalled = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"ref": "refs/heads/test-branch",
-					"object": {
-						"type": "commit",
-						"sha": "abc123def456",
-						"url": "https://api.github.com/repos/test/repo/git/commits/abc123def456"
-					}
-				}`))),
-			}, nil
-		}
-
-		// Mock get commit (for tree SHA)
-		if strings.Contains(req.URL.Path, "/git/commits/") {
-			*getCommitCalled = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"sha": "abc123def456",
-					"tree": {
-						"sha": "tree123abc456"
-					}
-				}`))),
-			}, nil
-		}
-
-		// Mock create blob
-		if strings.Contains(req.URL.Path, "/git/blobs") {
-			*createBlobCalled = true
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"sha": "blob789xyz012",
-					"url": "https://api.github.com/repos/test/repo/git/blobs/blob789xyz012"
-				}`))),
-			}, nil
-		}
-
-		// Mock create tree
-		if strings.Contains(req.URL.Path, "/git/trees") {
-			*createTreeCalled = true
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"sha": "newtree456def789",
-					"url": "https://api.github.com/repos/test/repo/git/trees/newtree456def789"
-				}`))),
-			}, nil
-		}
-
-		// Mock create commit
-		if strings.Contains(req.URL.Path, "/git/commits") && req.Method == "POST" {
-			*createCommitCalled = true
-			// Capture the commit request body
-			bodyBytes, _ := io.ReadAll(req.Body)
-			if err := json.Unmarshal(bodyBytes, capturedCommitRequest); err != nil {
-				t.Errorf("Failed to unmarshal commit request: %v", err)
-			}
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"sha": "newcommit789abc012",
-					"url": "https://api.github.com/repos/test/repo/git/commits/newcommit789abc012",
-					"message": "Test commit"
-				}`))),
-			}, nil
-		}
-
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
-		}, nil
-	}
-}
-
-// TestCommitChangesViaAPI_Success tests successful commit creation via GitHub API
-func TestCommitChangesViaAPI_Success(t *testing.T) {
-	// Generate temporary RSA key for testing
-	keyPath := generateTestRSAKey(t)
-	if keyPath == "" {
-		return // Test was skipped
-	}
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Create a temporary directory with a test file
-	tempDir, err := os.MkdirTemp("", "test-repo-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Initialize git repo
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repo: %v", err)
-	}
-
-	// Configure git user
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.email: %v", err)
-	}
-
-	// Create initial commit
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("initial content\n"), 0600); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	cmd = exec.Command("git", "commit", "-m", "Initial commit")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to create initial commit: %v", err)
-	}
-
-	// Make a change
-	if err := os.WriteFile(testFile, []byte("modified content\n"), 0600); err != nil {
-		t.Fatalf("Failed to modify test file: %v", err)
-	}
-
-	// Stage the changes (git add) - CommitChangesViaAPI expects changes to be staged
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	// Track API calls
-	var getRefCalled, getCommitCalled, createBlobCalled, createTreeCalled, createCommitCalled, updateRefCalled bool
-	var capturedCommitRequest *models.GitHubCommitRequest
-
-	// Create mock HTTP client using the extracted handler
-	mockClient := NewTestClient(mockCommitChangesViaAPIHandler(t, &capturedCommitRequest, &getRefCalled, &getCommitCalled, &createBlobCalled, &createTreeCalled, &createCommitCalled, &updateRefCalled))
-
-	// Create config with GitHub App settings
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.BotUsername = "test-bot[bot]"
-	config.GitHub.PrivateKeyPath = keyPath
-
-	// Create service
-	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
-		mockClient.Transport,
-		config.GitHub.AppID,
-		config.GitHub.PrivateKeyPath,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create app transport: %v", err)
-	}
-
-	service := &GitHubServiceImpl{
-		config:              config,
-		client:              mockClient,
-		appTransport:        appTransport,
-		installationAuth:    make(map[int64]*ghinstallation.Transport),
-		installationClients: make(map[int64]*github.Client),
-		installationIDs:     make(map[string]int64),
-		executor:            execCommand,
-		logger:              zap.NewNop(),
-	}
-
-	// Test commit creation
-	commitMessage := "Test commit message"
-	coAuthorName := "Alice Developer"
-	coAuthorEmail := "alice@example.com"
-
-	commitSHA, err := service.CommitChangesViaAPI("testowner", "testrepo", "test-branch", commitMessage, tempDir, coAuthorName, coAuthorEmail)
-
-	// Verify no error
-	if err != nil {
-		t.Fatalf("Expected no error but got: %v", err)
-	}
-
-	// Verify commit SHA returned
-	if commitSHA == "" {
-		t.Fatal("Expected commit SHA but got empty string")
-	}
-	if commitSHA != "newcommit789abc012" {
-		t.Errorf("Expected commit SHA 'newcommit789abc012' but got '%s'", commitSHA)
-	}
-
-	// Verify all API calls were made
-	if !getRefCalled {
-		t.Error("Expected get reference API call but it wasn't made")
-	}
-	if !getCommitCalled {
-		t.Error("Expected get commit API call but it wasn't made")
-	}
-	if !createBlobCalled {
-		t.Error("Expected create blob API call but it wasn't made")
-	}
-	if !createTreeCalled {
-		t.Error("Expected create tree API call but it wasn't made")
-	}
-	if !createCommitCalled {
-		t.Error("Expected create commit API call but it wasn't made")
-	}
-	if !updateRefCalled {
-		t.Error("Expected update reference API call but it wasn't made")
-	}
-
-	// Verify commit request structure
-	if capturedCommitRequest == nil {
-		t.Fatal("Commit request was not captured")
-	}
-
-	// Verify commit message includes co-author
-	expectedMessage := "Test commit message\n\nCo-authored-by: Alice Developer <alice@example.com>"
-	if capturedCommitRequest.Message != expectedMessage {
-		t.Errorf("Expected commit message:\n%s\nGot:\n%s", expectedMessage, capturedCommitRequest.Message)
-	}
-
-	// Verify Author and Committer are NOT set (GitHub sets them automatically for verified commits)
-	if capturedCommitRequest.Author != nil {
-		t.Error("Expected Author to be nil (for GitHub App verified commits) but it was set")
-	}
-	if capturedCommitRequest.Committer != nil {
-		t.Error("Expected Committer to be nil (for GitHub App verified commits) but it was set")
-	}
-
-	// Verify tree SHA
-	if capturedCommitRequest.Tree != "newtree456def789" {
-		t.Errorf("Expected tree SHA 'newtree456def789' but got '%s'", capturedCommitRequest.Tree)
-	}
-
-	// Verify parents
-	if len(capturedCommitRequest.Parents) != 1 {
-		t.Errorf("Expected 1 parent but got %d", len(capturedCommitRequest.Parents))
-	} else if capturedCommitRequest.Parents[0] != "abc123def456" {
-		t.Errorf("Expected parent SHA 'abc123def456' but got '%s'", capturedCommitRequest.Parents[0])
-	}
-}
-
-// TestCommitChangesViaAPI_NoChanges tests that no commit is created when there are no changes
-func TestCommitChangesViaAPI_NoChanges(t *testing.T) {
-	// Generate temporary RSA key for testing
-	keyPath := generateTestRSAKey(t)
-	if keyPath == "" {
-		return // Test was skipped
-	}
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Create a temporary directory
-	tempDir, err := os.MkdirTemp("", "test-repo-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Initialize git repo with initial commit (no pending changes)
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repo: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.email: %v", err)
-	}
-
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("initial content\n"), 0600); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	cmd = exec.Command("git", "commit", "-m", "Initial commit")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to create initial commit: %v", err)
-	}
-
-	// Track API calls - no commit creation should happen
-	var getRefCalled, createCommitCalled bool
-
-	// Create mock HTTP client
-	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"token": "ghs_mock_installation_token",
-					"expires_at": "2099-01-01T00:00:00Z"
-				}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/installation") && !strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"id": 12345678
-				}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/refs/heads/") {
-			getRefCalled = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"ref": "refs/heads/test-branch",
-					"object": {
-						"sha": "abc123def456"
-					}
-				}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/commits/") && req.Method == "GET" {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"tree": {
-						"sha": "tree123abc456"
-					}
-				}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/commits") && req.Method == "POST" {
-			createCommitCalled = true
-		}
-
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
-		}, nil
-	})
-
-	// Create config
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.BotUsername = "test-bot[bot]"
-	config.GitHub.PrivateKeyPath = keyPath
-
-	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
-		mockClient.Transport,
-		config.GitHub.AppID,
-		config.GitHub.PrivateKeyPath,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create app transport: %v", err)
-	}
-
-	service := &GitHubServiceImpl{
-		config:              config,
-		client:              mockClient,
-		appTransport:        appTransport,
-		installationAuth:    make(map[int64]*ghinstallation.Transport),
-		installationClients: make(map[int64]*github.Client),
-		installationIDs:     make(map[string]int64),
-		executor:            execCommand,
-		logger:              zap.NewNop(),
-	}
-
-	// Test commit creation with no changes
-	commitSHA, err := service.CommitChangesViaAPI("testowner", "testrepo", "test-branch", "Test commit", tempDir, "", "")
-
-	// Verify no error
-	if err != nil {
-		t.Fatalf("Expected no error but got: %v", err)
-	}
-
-	// Verify original commit SHA is returned (no new commit created)
-	if commitSHA != "abc123def456" {
-		t.Errorf("Expected original commit SHA 'abc123def456' but got '%s'", commitSHA)
-	}
-
-	// Verify get reference was called
-	if !getRefCalled {
-		t.Error("Expected get reference API call but it wasn't made")
-	}
-
-	// Verify NO commit was created
-	if createCommitCalled {
-		t.Error("Expected NO commit creation but create commit API was called")
-	}
-}
-
-// TestCommitChangesViaAPI_WithoutCoAuthor tests commit creation without co-author
-func TestCommitChangesViaAPI_WithoutCoAuthor(t *testing.T) {
-	// Generate temporary RSA key for testing
-	keyPath := generateTestRSAKey(t)
-	if keyPath == "" {
-		return // Test was skipped
-	}
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Create a temporary directory with changes
-	tempDir, err := os.MkdirTemp("", "test-repo-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Initialize git repo
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repo: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.email: %v", err)
-	}
-
-	// Create initial commit
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("initial\n"), 0600); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	cmd = exec.Command("git", "commit", "-m", "Initial commit")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to create initial commit: %v", err)
-	}
-
-	// Make a change
-	if err := os.WriteFile(testFile, []byte("modified\n"), 0600); err != nil {
-		t.Fatalf("Failed to modify test file: %v", err)
-	}
-
-	// Stage the changes (git add) - CommitChangesViaAPI expects changes to be staged
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	var capturedCommitRequest *models.GitHubCommitRequest
-
-	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"token": "ghs_mock_installation_token",
-					"expires_at": "2099-01-01T00:00:00Z"
-				}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/installation") && !strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"id": 12345678}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/refs/heads/") {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"ref": "refs/heads/test", "object": {"sha": "abc123"}}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/commits/") && req.Method == "GET" {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"tree": {"sha": "tree123"}}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/blobs") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "blob789"}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/trees") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "newtree456"}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/commits") && req.Method == "POST" {
-			bodyBytes, _ := io.ReadAll(req.Body)
-			if err := json.Unmarshal(bodyBytes, &capturedCommitRequest); err != nil {
-				t.Errorf("Failed to unmarshal commit request: %v", err)
-			}
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "newcommit789"}`))),
-			}, nil
-		}
-
-		if req.Method == "PATCH" {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"ref": "refs/heads/test"}`))),
-			}, nil
-		}
-
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
-		}, nil
-	})
-
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.BotUsername = "test-bot[bot]"
-	config.GitHub.PrivateKeyPath = keyPath
-
-	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
-		mockClient.Transport,
-		config.GitHub.AppID,
-		config.GitHub.PrivateKeyPath,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create app transport: %v", err)
-	}
-
-	service := &GitHubServiceImpl{
-		config:              config,
-		client:              mockClient,
-		appTransport:        appTransport,
-		installationAuth:    make(map[int64]*ghinstallation.Transport),
-		installationClients: make(map[int64]*github.Client),
-		installationIDs:     make(map[string]int64),
-		executor:            execCommand,
-		logger:              zap.NewNop(),
-	}
-
-	// Test commit creation WITHOUT co-author
-	commitMessage := "Simple commit message"
-	commitSHA, err := service.CommitChangesViaAPI("testowner", "testrepo", "test-branch", commitMessage, tempDir, "", "")
-
-	if err != nil {
-		t.Fatalf("Expected no error but got: %v", err)
-	}
-
-	if commitSHA != "newcommit789" {
-		t.Errorf("Expected commit SHA 'newcommit789' but got '%s'", commitSHA)
-	}
-
-	// Verify commit message does NOT include co-author
-	if capturedCommitRequest == nil {
-		t.Fatal("Commit request was not captured")
-	}
-
-	if capturedCommitRequest.Message != commitMessage {
-		t.Errorf("Expected commit message '%s' but got '%s'", commitMessage, capturedCommitRequest.Message)
-	}
-
-	// Verify no co-author trailer is present
-	if strings.Contains(capturedCommitRequest.Message, "Co-authored-by") {
-		t.Error("Expected no Co-authored-by trailer but it was present")
-	}
-}
-
-// TestCommitChangesViaAPI_NewBranch tests commit creation when branch doesn't exist on remote
-// This test would have caught the missing GitHubCreateReferenceRequest model
-func TestCommitChangesViaAPI_NewBranch(t *testing.T) {
-	// Generate temporary RSA key for testing
-	keyPath := generateTestRSAKey(t)
-	if keyPath == "" {
-		return // Test was skipped
-	}
-	defer func() { _ = os.Remove(keyPath) }()
-
-	// Create a temporary directory with changes
-	tempDir, err := os.MkdirTemp("", "test-repo-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Initialize git repo
-	cmd := exec.Command("git", "init")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to init git repo: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.name", "Test User")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.name: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "test@example.com")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to configure git user.email: %v", err)
-	}
-
-	// Create initial commit
-	testFile := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("initial\n"), 0600); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	cmd = exec.Command("git", "commit", "-m", "Initial commit")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to create initial commit: %v", err)
-	}
-
-	// Make a change
-	if err := os.WriteFile(testFile, []byte("modified\n"), 0600); err != nil {
-		t.Fatalf("Failed to modify test file: %v", err)
-	}
-
-	// Stage the changes
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = tempDir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to git add: %v", err)
-	}
-
-	var createRefCalled bool
-	var capturedCreateRefRequest *models.GitHubCreateReferenceRequest
-
-	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"token": "ghs_mock_installation_token",
-					"expires_at": "2099-01-01T00:00:00Z"
-				}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/installation") && !strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"id": 12345678}`))),
-			}, nil
-		}
-
-		// First call to get new branch - returns 404
-		// Second call to get target branch - returns 200
-		if strings.Contains(req.URL.Path, "/git/refs/heads/") && req.Method == "GET" {
-			if strings.Contains(req.URL.Path, "/git/refs/heads/new-feature") {
-				// New branch doesn't exist
-				return &http.Response{
-					StatusCode: http.StatusNotFound,
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"message": "Not Found"}`))),
-				}, nil
-			}
-			// Target branch (main) exists
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"ref": "refs/heads/main", "object": {"sha": "target123"}}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/commits/") {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"tree": {"sha": "tree456"}}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/blobs") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "blob789"}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/trees") {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "newtree999"}`))),
-			}, nil
-		}
-
-		if strings.Contains(req.URL.Path, "/git/commits") && req.Method == "POST" {
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "newcommit111"}`))),
-			}, nil
-		}
-
-		// Create new reference (POST to /git/refs)
-		if strings.Contains(req.URL.Path, "/git/refs") && !strings.Contains(req.URL.Path, "/git/refs/heads/") && req.Method == "POST" {
-			createRefCalled = true
-			bodyBytes, _ := io.ReadAll(req.Body)
-			if err := json.Unmarshal(bodyBytes, &capturedCreateRefRequest); err != nil {
-				t.Errorf("Failed to unmarshal create reference request: %v", err)
-			}
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"ref": "refs/heads/new-feature", "object": {"sha": "newcommit111"}}`))),
-			}, nil
-		}
-
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
-		}, nil
-	})
-
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-	config.GitHub.BotUsername = "test-bot[bot]"
-	config.GitHub.PrivateKeyPath = keyPath
-	config.GitHub.TargetBranch = "main"
-
-	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
-		mockClient.Transport,
-		config.GitHub.AppID,
-		config.GitHub.PrivateKeyPath,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create app transport: %v", err)
-	}
-
-	service := &GitHubServiceImpl{
-		config:              config,
-		client:              mockClient,
-		appTransport:        appTransport,
-		installationAuth:    make(map[int64]*ghinstallation.Transport),
-		installationClients: make(map[int64]*github.Client),
-		installationIDs:     make(map[string]int64),
-		executor:            execCommand,
-		logger:              zap.NewNop(),
-	}
-
-	// Test commit creation for a NEW branch
-	commitSHA, err := service.CommitChangesViaAPI("testowner", "testrepo", "new-feature", "Add new feature", tempDir, "", "")
-
-	if err != nil {
-		t.Fatalf("Expected no error but got: %v", err)
-	}
-
-	if commitSHA != "newcommit111" {
-		t.Errorf("Expected commit SHA 'newcommit111' but got '%s'", commitSHA)
-	}
-
-	// Verify that createReference was called (not updateReference)
-	if !createRefCalled {
-		t.Error("Expected createReference to be called for new branch but it wasn't")
-	}
-
-	// Verify the create reference request structure
-	if capturedCreateRefRequest == nil {
-		t.Fatal("Create reference request was not captured")
-	}
-
-	if capturedCreateRefRequest.Ref != "refs/heads/new-feature" {
-		t.Errorf("Expected ref 'refs/heads/new-feature' but got '%s'", capturedCreateRefRequest.Ref)
-	}
-
-	if capturedCreateRefRequest.SHA != "newcommit111" {
-		t.Errorf("Expected SHA 'newcommit111' but got '%s'", capturedCreateRefRequest.SHA)
+		t.Error("SwitchBranch() should return error for non-existent branch")
 	}
 }
 
@@ -2133,17 +973,6 @@ func TestGitHubService_HasChanges_WorkingTreeChanges(t *testing.T) {
 }
 
 func TestGitHubService_HasChanges_UnpushedCommits(t *testing.T) {
-	// This test verifies that HasChanges detects when there are local commits
-	// that haven't been pushed to the remote. We test this by creating a branch
-	// with a remote, then adding a local commit without pushing it.
-
-	// Note: The complexity of setting up a real bare repository for this test
-	// outweighs its value since TestGitHubService_HasChanges_NewBranch already
-	// validates the core unpushed commit detection logic (a new branch is
-	// effectively unpushed commits).
-	//
-	// In a real-world scenario, this would be tested via integration tests
-	// against an actual Git server.
 	t.Skip("Skipping bare repository test - covered by NewBranch test")
 }
 

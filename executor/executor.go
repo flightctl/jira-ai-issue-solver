@@ -13,7 +13,7 @@
 // interface package. This follows the Go convention of consumer-
 // defined interfaces. Each consumer declares only the methods it
 // requires; the underlying implementation satisfies all consumers.
-// See docs/architecture-redesign.md for rationale.
+// See docs/architecture.md for rationale.
 //
 // # Integration with JobManager
 //

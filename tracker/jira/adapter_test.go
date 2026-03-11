@@ -8,17 +8,17 @@ import (
 
 	"go.uber.org/zap"
 
-	"jira-ai-issue-solver/mocks"
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/tracker"
 	"jira-ai-issue-solver/tracker/jira"
+	"jira-ai-issue-solver/tracker/jira/jiratest"
 )
 
 // Compile-time check: *jira.Adapter satisfies tracker.IssueTracker.
 var _ tracker.IssueTracker = (*jira.Adapter)(nil)
 
 // mustNewAdapter creates an Adapter or fails the test immediately.
-func mustNewAdapter(t *testing.T, svc *mocks.MockJiraService) *jira.Adapter {
+func mustNewAdapter(t *testing.T, svc *jiratest.Stub) *jira.Adapter {
 	t.Helper()
 	adapter, err := jira.NewAdapter(svc, zap.NewNop())
 	if err != nil {
@@ -43,7 +43,7 @@ func TestNewAdapter(t *testing.T) {
 	})
 
 	t.Run("returns error for nil logger", func(t *testing.T) {
-		mock := &mocks.MockJiraService{}
+		mock := &jiratest.Stub{}
 		_, err := jira.NewAdapter(mock, nil)
 		if err == nil {
 			t.Fatal("expected error, got nil")
@@ -54,7 +54,7 @@ func TestNewAdapter(t *testing.T) {
 	})
 
 	t.Run("succeeds with valid arguments", func(t *testing.T) {
-		mock := &mocks.MockJiraService{}
+		mock := &jiratest.Stub{}
 		adapter, err := jira.NewAdapter(mock, zap.NewNop())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -71,7 +71,7 @@ func TestNewAdapter(t *testing.T) {
 
 func TestAdapter_GetWorkItem(t *testing.T) {
 	t.Run("maps all fields from a complete ticket", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(key string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-123",
@@ -124,7 +124,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("returns nil assignee when ticket has no assignee", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(key string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-456",
@@ -153,7 +153,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("normalizes security level None to empty string", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-789",
@@ -180,7 +180,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("normalizes security level none (lowercase) to empty string", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-789",
@@ -207,7 +207,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("returns empty security level when no security set", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-100",
@@ -234,7 +234,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("returns empty slices for nil components and labels", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-200",
@@ -273,7 +273,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("propagates GetTicket error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(string) (*models.JiraTicketResponse, error) {
 				return nil, errors.New("connection refused")
 			},
@@ -290,7 +290,7 @@ func TestAdapter_GetWorkItem(t *testing.T) {
 	})
 
 	t.Run("propagates GetTicketSecurityLevel error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketFunc: func(string) (*models.JiraTicketResponse, error) {
 				return &models.JiraTicketResponse{
 					Key: "PROJ-300",
@@ -444,7 +444,7 @@ func TestAdapter_SearchWorkItems_JQL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var capturedJQL string
-			mock := &mocks.MockJiraService{
+			mock := &jiratest.Stub{
 				SearchTicketsFunc: func(jql string) (*models.JiraSearchResponse, error) {
 					capturedJQL = jql
 					return &models.JiraSearchResponse{}, nil
@@ -470,7 +470,7 @@ func TestAdapter_SearchWorkItems_JQL(t *testing.T) {
 
 func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 	t.Run("maps search results to work items", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
 				return &models.JiraSearchResponse{
 					Total: 2,
@@ -545,7 +545,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 	})
 
 	t.Run("returns empty slice for no results", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
 				return &models.JiraSearchResponse{Total: 0}, nil
 			},
@@ -565,7 +565,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 	})
 
 	t.Run("includes security level from search results when available", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
 				return &models.JiraSearchResponse{
 					Total: 1,
@@ -596,7 +596,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 	})
 
 	t.Run("propagates search error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
 				return nil, errors.New("jira unavailable")
 			},
@@ -613,7 +613,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 	})
 
 	t.Run("rejects invalid criteria", func(t *testing.T) {
-		mock := &mocks.MockJiraService{}
+		mock := &jiratest.Stub{}
 
 		adapter := mustNewAdapter(t, mock)
 		_, err := adapter.SearchWorkItems(models.SearchCriteria{
@@ -636,7 +636,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 func TestAdapter_TransitionStatus(t *testing.T) {
 	t.Run("delegates to JiraService with correct arguments", func(t *testing.T) {
 		var gotKey, gotStatus string
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			UpdateTicketStatusFunc: func(key, status string) error {
 				gotKey = key
 				gotStatus = status
@@ -658,7 +658,7 @@ func TestAdapter_TransitionStatus(t *testing.T) {
 	})
 
 	t.Run("propagates error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			UpdateTicketStatusFunc: func(string, string) error {
 				return errors.New("transition denied")
 			},
@@ -682,7 +682,7 @@ func TestAdapter_TransitionStatus(t *testing.T) {
 func TestAdapter_AddComment(t *testing.T) {
 	t.Run("delegates to JiraService with correct arguments", func(t *testing.T) {
 		var gotKey, gotBody string
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			AddCommentFunc: func(key, comment string) error {
 				gotKey = key
 				gotBody = comment
@@ -704,7 +704,7 @@ func TestAdapter_AddComment(t *testing.T) {
 	})
 
 	t.Run("propagates error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			AddCommentFunc: func(string, string) error {
 				return errors.New("comment rejected")
 			},
@@ -727,7 +727,7 @@ func TestAdapter_AddComment(t *testing.T) {
 
 func TestAdapter_GetFieldValue(t *testing.T) {
 	t.Run("returns string field value", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
 				fields := map[string]any{
 					"customfield_10001": "https://github.com/org/repo/pull/42",
@@ -750,7 +750,7 @@ func TestAdapter_GetFieldValue(t *testing.T) {
 	})
 
 	t.Run("converts numeric field value to string", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
 				fields := map[string]any{
 					"customfield_10002": float64(42),
@@ -773,7 +773,7 @@ func TestAdapter_GetFieldValue(t *testing.T) {
 	})
 
 	t.Run("returns empty string for nil field value", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
 				fields := map[string]any{
 					"customfield_10001": nil,
@@ -796,7 +796,7 @@ func TestAdapter_GetFieldValue(t *testing.T) {
 	})
 
 	t.Run("returns error when field name not found", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
 				return map[string]any{}, map[string]string{}, nil
 			},
@@ -813,7 +813,7 @@ func TestAdapter_GetFieldValue(t *testing.T) {
 	})
 
 	t.Run("propagates API error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
 				return nil, nil, errors.New("api timeout")
 			},
@@ -838,7 +838,7 @@ func TestAdapter_SetFieldValue(t *testing.T) {
 	t.Run("delegates to JiraService with correct arguments", func(t *testing.T) {
 		var gotKey, gotField string
 		var gotValue any
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			UpdateTicketFieldByNameFunc: func(key, fieldName string, value any) error {
 				gotKey = key
 				gotField = fieldName
@@ -864,7 +864,7 @@ func TestAdapter_SetFieldValue(t *testing.T) {
 	})
 
 	t.Run("propagates error", func(t *testing.T) {
-		mock := &mocks.MockJiraService{
+		mock := &jiratest.Stub{
 			UpdateTicketFieldByNameFunc: func(string, string, any) error {
 				return errors.New("field update denied")
 			},

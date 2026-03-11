@@ -313,46 +313,32 @@ type Config struct {
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
+		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`           // List of usernames whose PR comments are completely ignored
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
 	AIProvider string `yaml:"ai_provider" mapstructure:"ai_provider" default:"claude"` // "claude" or "gemini"
 
-	// Claude CLI configuration
+	// Claude configuration — only the API key is needed at the bot level;
+	// CLI path, timeout, and tool settings are configured per-repo via
+	// .ai-bot/config.yaml or container environment.
 	Claude struct {
-		CLIPath                    string `yaml:"cli_path" mapstructure:"cli_path" default:"claude-cli"`
-		Timeout                    int    `yaml:"timeout" mapstructure:"timeout" default:"300"`
-		DangerouslySkipPermissions bool   `yaml:"dangerously_skip_permissions" mapstructure:"dangerously_skip_permissions" default:"false"`
-		AllowedTools               string `yaml:"allowed_tools" mapstructure:"allowed_tools" default:"Bash Edit"`
-		DisallowedTools            string `yaml:"disallowed_tools" mapstructure:"disallowed_tools" default:"Python"`
-		APIKey                     string `yaml:"api_key" mapstructure:"api_key"` // Anthropic API key for headless/container environments
+		APIKey string `yaml:"api_key" mapstructure:"api_key"`
 	} `yaml:"claude" mapstructure:"claude"`
 
-	// Gemini CLI configuration
+	// Gemini configuration — only the API key is needed at the bot level.
 	Gemini struct {
-		CLIPath  string `yaml:"cli_path" mapstructure:"cli_path" default:"gemini"`
-		Timeout  int    `yaml:"timeout" mapstructure:"timeout" default:"300"`
-		Model    string `yaml:"model" mapstructure:"model" default:"gemini-2.5-pro"`
-		AllFiles bool   `yaml:"all_files" mapstructure:"all_files" default:"false"`
-		Sandbox  bool   `yaml:"sandbox" mapstructure:"sandbox" default:"false"`
-		APIKey   string `yaml:"api_key" mapstructure:"api_key"`
+		APIKey string `yaml:"api_key" mapstructure:"api_key"`
 	} `yaml:"gemini" mapstructure:"gemini"`
-
-	// AI configuration
-	AI struct {
-		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-		MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`                 // Maximum number of times to retry AI code generation if no changes are detected. Total retry time is constrained by max_retries * retry_delay_seconds <= 1800 seconds (30 minutes).
-		RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"` // Delay in seconds between AI retries
-	} `yaml:"ai" mapstructure:"ai"`
-
-	// Temporary directory for cloning repositories
-	TempDir string `yaml:"temp_dir" mapstructure:"temp_dir" default:"/tmp/jira-ai-issue-solver"`
 
 	// Workspaces configuration for ticket-scoped workspace lifecycle
 	Workspaces WorkspacesConfig `yaml:"workspaces" mapstructure:"workspaces"`
 
 	// Container configuration for dev container management
 	Container ContainerCfg `yaml:"container" mapstructure:"container"`
+
+	// Guardrails configuration for safety and resource limits
+	Guardrails GuardrailsConfig `yaml:"guardrails" mapstructure:"guardrails"`
 }
 
 // ContainerCfg holds bot-level container configuration. These values
@@ -396,6 +382,41 @@ type WorkspacesConfig struct {
 	// However, AI-generated artifacts from prior sessions will be lost.
 	// Set this high enough to cover typical PR review turnaround times.
 	TTLDays int `yaml:"ttl_days" mapstructure:"ttl_days" default:"7"`
+}
+
+// GuardrailsConfig holds safety and resource limit settings.
+type GuardrailsConfig struct {
+	// MaxConcurrentJobs is the maximum number of jobs that can run
+	// simultaneously. Must be positive.
+	MaxConcurrentJobs int `yaml:"max_concurrent_jobs" mapstructure:"max_concurrent_jobs" default:"10"`
+
+	// MaxRetries is the maximum number of times a ticket can fail
+	// before further submissions are rejected. Zero means no retries
+	// (one attempt total). Negative disables the retry limit.
+	MaxRetries int `yaml:"max_retries" mapstructure:"max_retries" default:"3"`
+
+	// MaxDailyCostUSD is the maximum daily AI session cost in USD.
+	// Job creation is paused when this budget is exceeded. Zero or
+	// negative disables cost-based limiting.
+	MaxDailyCostUSD float64 `yaml:"max_daily_cost_usd" mapstructure:"max_daily_cost_usd"`
+
+	// MaxContainerRuntimeMinutes is the maximum duration (in minutes)
+	// for an AI session inside a container. Zero means no timeout.
+	MaxContainerRuntimeMinutes int `yaml:"max_container_runtime_minutes" mapstructure:"max_container_runtime_minutes" default:"60"`
+
+	// CircuitBreakerThreshold is the number of consecutive failures
+	// within CircuitBreakerWindow that trips the breaker. Zero
+	// disables the circuit breaker.
+	CircuitBreakerThreshold int `yaml:"circuit_breaker_threshold" mapstructure:"circuit_breaker_threshold" default:"5"`
+
+	// CircuitBreakerWindowMinutes is the time window (in minutes) for
+	// counting consecutive failures. Failures outside this window are
+	// pruned.
+	CircuitBreakerWindowMinutes int `yaml:"circuit_breaker_window_minutes" mapstructure:"circuit_breaker_window_minutes" default:"10"`
+
+	// CircuitBreakerCooldownMinutes is how long (in minutes) the circuit
+	// breaker stays open before automatically resetting.
+	CircuitBreakerCooldownMinutes int `yaml:"circuit_breaker_cooldown_minutes" mapstructure:"circuit_breaker_cooldown_minutes" default:"5"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -495,29 +516,14 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.ssh_key_path")
 	bindEnv("github.max_thread_depth")
 	bindEnv("github.known_bot_usernames")
+	bindEnv("github.ignored_usernames")
 
 	// AI configuration
 	bindEnv("ai_provider")
 
-	// Claude configuration
-	bindEnv("claude.cli_path")
-	bindEnv("claude.timeout")
-	bindEnv("claude.dangerously_skip_permissions")
-	bindEnv("claude.allowed_tools")
-	bindEnv("claude.disallowed_tools")
-
-	// Gemini configuration
-	bindEnv("gemini.cli_path")
-	bindEnv("gemini.timeout")
-	bindEnv("gemini.model")
-	bindEnv("gemini.all_files")
-	bindEnv("gemini.sandbox")
+	// AI API key configuration
+	bindEnv("claude.api_key")
 	bindEnv("gemini.api_key")
-
-	// AI configuration
-	bindEnv("ai.generate_documentation")
-	bindEnv("ai.max_retries")
-	bindEnv("ai.retry_delay_seconds")
 
 	// Server configuration
 	bindEnv("server.port")
@@ -537,8 +543,15 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("container.resource_limits.memory")
 	bindEnv("container.resource_limits.cpus")
 
-	// Other configuration
-	bindEnv("temp_dir")
+	// Guardrails configuration
+	bindEnv("guardrails.max_concurrent_jobs")
+	bindEnv("guardrails.max_retries")
+	bindEnv("guardrails.max_daily_cost_usd")
+	bindEnv("guardrails.max_container_runtime_minutes")
+	bindEnv("guardrails.circuit_breaker_threshold")
+	bindEnv("guardrails.circuit_breaker_window_minutes")
+	bindEnv("guardrails.circuit_breaker_cooldown_minutes")
+
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
 	// Load main config file if provided
@@ -729,33 +742,19 @@ func setDefaults(v *viper.Viper) {
 	// AI Provider defaults
 	v.SetDefault("ai_provider", "claude")
 
-	// Claude defaults
-	v.SetDefault("claude.cli_path", "claude")
-	v.SetDefault("claude.timeout", 300)
-	v.SetDefault("claude.dangerously_skip_permissions", false)
-	v.SetDefault("claude.allowed_tools", "Bash Edit")
-	v.SetDefault("claude.disallowed_tools", "Python")
-
-	// Gemini defaults
-	v.SetDefault("gemini.cli_path", "gemini")
-	v.SetDefault("gemini.timeout", 300)
-	v.SetDefault("gemini.model", "gemini-2.5-pro")
-	v.SetDefault("gemini.all_files", false)
-	v.SetDefault("gemini.sandbox", false)
-
-	// AI defaults
-	v.SetDefault("ai.generate_documentation", true)
-	v.SetDefault("ai.max_retries", 5)
-	v.SetDefault("ai.retry_delay_seconds", 2)
-
 	// Workspace defaults
 	v.SetDefault("workspaces.ttl_days", 7)
 
 	// Container defaults
 	v.SetDefault("container.runtime", "auto")
 
-	// Temp directory defaults
-	v.SetDefault("temp_dir", "/tmp/jira-ai-issue-solver")
+	// Guardrails defaults
+	v.SetDefault("guardrails.max_concurrent_jobs", 10)
+	v.SetDefault("guardrails.max_retries", 3)
+	v.SetDefault("guardrails.max_container_runtime_minutes", 60)
+	v.SetDefault("guardrails.circuit_breaker_threshold", 5)
+	v.SetDefault("guardrails.circuit_breaker_window_minutes", 10)
+	v.SetDefault("guardrails.circuit_breaker_cooldown_minutes", 5)
 }
 
 // validate validates the entire configuration
@@ -791,34 +790,8 @@ func (c *Config) validate() error {
 
 	// Validate each project configuration
 	for i, project := range c.Jira.Projects {
-		projectPrefix := fmt.Sprintf("jira.projects[%d]", i)
-
-		// Validate project keys - at least one project key must be configured per project
-		if len(project.ProjectKeys) == 0 {
-			return fmt.Errorf("%s.project_keys: at least one project key must be configured", projectPrefix)
-		}
-
-		// Validate status transitions - every configured ticket type must have all required status transitions
-		for ticketType, transitions := range project.StatusTransitions {
-			if transitions.Todo == "" {
-				return fmt.Errorf("%s.status_transitions.%s.todo cannot be empty", projectPrefix, ticketType)
-			}
-			if transitions.InProgress == "" {
-				return fmt.Errorf("%s.status_transitions.%s.in_progress cannot be empty", projectPrefix, ticketType)
-			}
-			if transitions.InReview == "" {
-				return fmt.Errorf("%s.status_transitions.%s.in_review cannot be empty", projectPrefix, ticketType)
-			}
-		}
-
-		// Ensure at least one ticket type is configured per project
-		if len(project.StatusTransitions) == 0 {
-			return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", projectPrefix)
-		}
-
-		// Validate component to repo mapping (required for functionality)
-		if len(project.ComponentToRepo) == 0 {
-			return fmt.Errorf("%s.component_to_repo: at least one component_to_repo mapping is required", projectPrefix)
+		if err := project.validate(i); err != nil {
+			return err
 		}
 	}
 
@@ -864,24 +837,6 @@ func (c *Config) validate() error {
 		}
 	}
 
-	// Validate AI configuration
-	if c.AI.MaxRetries < 1 {
-		return errors.New("ai.max_retries must be at least 1")
-	}
-	if c.AI.RetryDelaySeconds < 0 {
-		return errors.New("ai.retry_delay_seconds must be non-negative")
-	}
-	if c.AI.RetryDelaySeconds > 300 {
-		return errors.New("ai.retry_delay_seconds must not exceed 300 seconds (5 minutes)")
-	}
-
-	// Validate total retry time is reasonable (max 30 minutes total)
-	maxTotalRetryTime := c.AI.MaxRetries * c.AI.RetryDelaySeconds
-	if maxTotalRetryTime > 1800 {
-		return fmt.Errorf("ai config would cause excessive retry time: max_retries(%d) * retry_delay_seconds(%d) = %d seconds (max allowed: 1800 seconds / 30 minutes)",
-			c.AI.MaxRetries, c.AI.RetryDelaySeconds, maxTotalRetryTime)
-	}
-
 	// Validate workspaces configuration
 	if c.Workspaces.BaseDir == "" {
 		return errors.New("workspaces.base_dir is required")
@@ -894,6 +849,61 @@ func (c *Config) validate() error {
 		return err
 	}
 
+	if err := c.Guardrails.validate(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validate checks a single project configuration for required fields.
+func (p *ProjectConfig) validate(index int) error {
+	prefix := fmt.Sprintf("jira.projects[%d]", index)
+
+	if len(p.ProjectKeys) == 0 {
+		return fmt.Errorf("%s.project_keys: at least one project key must be configured", prefix)
+	}
+
+	for ticketType, transitions := range p.StatusTransitions {
+		if transitions.Todo == "" {
+			return fmt.Errorf("%s.status_transitions.%s.todo cannot be empty", prefix, ticketType)
+		}
+		if transitions.InProgress == "" {
+			return fmt.Errorf("%s.status_transitions.%s.in_progress cannot be empty", prefix, ticketType)
+		}
+		if transitions.InReview == "" {
+			return fmt.Errorf("%s.status_transitions.%s.in_review cannot be empty", prefix, ticketType)
+		}
+	}
+
+	if len(p.StatusTransitions) == 0 {
+		return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", prefix)
+	}
+
+	if len(p.ComponentToRepo) == 0 {
+		return fmt.Errorf("%s.component_to_repo: at least one component_to_repo mapping is required", prefix)
+	}
+
+	return nil
+}
+
+// validate checks guardrails configuration values.
+func (g *GuardrailsConfig) validate() error {
+	if g.MaxConcurrentJobs <= 0 {
+		return errors.New("guardrails.max_concurrent_jobs must be positive")
+	}
+	if g.MaxContainerRuntimeMinutes < 0 {
+		return errors.New("guardrails.max_container_runtime_minutes must be non-negative")
+	}
+	if g.CircuitBreakerThreshold < 0 {
+		return errors.New("guardrails.circuit_breaker_threshold must be non-negative")
+	}
+	if g.CircuitBreakerWindowMinutes < 0 {
+		return errors.New("guardrails.circuit_breaker_window_minutes must be non-negative")
+	}
+	if g.CircuitBreakerCooldownMinutes < 0 {
+		return errors.New("guardrails.circuit_breaker_cooldown_minutes must be non-negative")
+	}
 	return nil
 }
 

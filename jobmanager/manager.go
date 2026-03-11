@@ -116,6 +116,19 @@ type Job struct {
 	Err error
 }
 
+// CostRecorder tracks AI session costs for budget enforcement. The
+// Coordinator checks [CostRecorder.BudgetExceeded] on each Submit and
+// records costs via [CostRecorder.Record] when a job completes with a
+// non-zero CostUSD in its [JobResult].
+type CostRecorder interface {
+	// Record adds the given amount to the daily cost total.
+	Record(amount float64)
+
+	// BudgetExceeded reports whether the daily cost budget has been
+	// reached or exceeded.
+	BudgetExceeded() bool
+}
+
 // Sentinel errors returned by [Manager] methods.
 var (
 	// ErrDuplicateJob indicates a pending or running job already
@@ -129,6 +142,10 @@ var (
 	// ErrCircuitOpen indicates the circuit breaker has tripped due to
 	// consecutive failures, temporarily blocking new job creation.
 	ErrCircuitOpen = errors.New("circuit breaker is open")
+
+	// ErrBudgetExceeded indicates the daily cost budget has been
+	// reached and new job creation is temporarily paused.
+	ErrBudgetExceeded = errors.New("daily cost budget exceeded")
 
 	// ErrJobNotFound indicates no job exists with the given ID.
 	ErrJobNotFound = errors.New("job not found")

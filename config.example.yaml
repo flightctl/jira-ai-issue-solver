@@ -34,32 +34,34 @@ jira:
       disable_error_comments: false
       # Status transitions can be configured per ticket type
       # All ticket types must be explicitly configured
+      # IMPORTANT: Status names are case-sensitive and must match Jira exactly
+      # (e.g., "In Progress" not "in progress")
       status_transitions:
         # Specific transitions for Bug tickets
         Bug:
           todo: "Open"
           in_progress: "In Progress"
           in_review: "Code Review"
-        
+
         # Specific transitions for Story tickets
         Story:
           todo: "Backlog"
           in_progress: "Development"
           in_review: "Testing"
-        
+
         # Specific transitions for Task tickets
         Task:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "Review"
-      
+
       # Component to Repository Mapping for this project
       # Note: Component names are case-sensitive and will be matched exactly as they appear in Jira
       component_to_repo:
         frontend: https://github.com/your-org/frontend.git
         backend: https://github.com/your-org/backend.git
         api: https://github.com/your-org/api.git
-    
+
     # Example project 2 - using PR URLs in comments instead of git field
     - project_keys:
         - "PROJ3"
@@ -72,9 +74,6 @@ jira:
           in_review: "POST"
       component_to_repo:
         mobile: https://github.com/your-org/mobile.git
-        # Example of case-sensitive mapping:
-        # FlightCtl: https://github.com/your-org/flightctl.git
-        # flightctl: https://github.com/your-org/flightctl-lowercase.git
 
 # GitHub Configuration - GitHub App Authentication (Required)
 github:
@@ -99,7 +98,7 @@ github:
   # Bot loop prevention settings
   max_thread_depth: 5  # Maximum depth of bot reply threads (prevents infinite loops)
 
-  # List of known bot usernames to ignore (prevents bot-to-bot conversations)
+  # List of known bot usernames (prevents bot-to-bot conversations)
   # Add any additional code review bots your team uses
   # NOTE: Do NOT include [bot] suffixes - they are automatically handled
   # (e.g., use "github-actions" not "github-actions[bot]")
@@ -114,33 +113,87 @@ github:
     - "codefactor-io"
     - "codeclimate"
 
+  # List of usernames whose PR comments are completely ignored
+  # Use for CI/build bots whose comments are not code review feedback
+  # (e.g., packit build commands). Differs from known_bot_usernames:
+  # ignored users' comments are completely skipped, while known bots'
+  # comments are processed initially but loop prevention stops
+  # bot-to-bot conversations.
+  ignored_usernames:
+    - "packit-as-a-service"
+
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
 
-# AI Configuration
-ai:
-  generate_documentation: true  # Set to false to disable documentation generation (CLAUDE.md or GEMINI.md)
-
-# Claude CLI Configuration (used when ai_provider: claude)
+# Claude API key — passed to the container as an environment variable.
+# Get from https://console.anthropic.com/settings/keys
+# CLI-level settings (timeout, tool filtering, etc.) are configured per-repo
+# via .ai-bot/config.yaml or container environment, not here.
 claude:
-  cli_path: claude
-  timeout: 300
-  dangerously_skip_permissions: true
-  allowed_tools: "Bash Edit"
-  disallowed_tools: "Python"
-  # API key for headless/container environments (get from https://console.anthropic.com/settings/keys)
-  # If not set, Claude CLI will use interactive login (only works in non-container environments)
   api_key: "your-anthropic-api-key-here"  # sk-ant-api03-...
 
-# Gemini CLI Configuration (used when ai_provider: gemini)
+# Gemini API key — passed to the container as an environment variable.
 gemini:
-  cli_path: gemini
-  timeout: 300
-  model: "gemini-2.5-pro"
-  all_files: false
-  sandbox: false
-  # Note: YOLO mode (enabled by default) automatically approves all tool usage
   api_key: "your-gemini-api-key-here"
 
-# Temporary Directory
-temp_dir: /tmp/jira-ai-issue-solver 
+# Workspace Configuration
+# Workspaces are ticket-scoped directories that persist across jobs.
+# Each ticket gets its own workspace directory, enabling AI-generated
+# artifacts (caches, build outputs) to survive between sessions.
+workspaces:
+  # Root directory for per-ticket workspaces. Each ticket gets a
+  # subdirectory named after its key (e.g., /var/lib/ai-bot/workspaces/PROJ-123/).
+  base_dir: /var/lib/ai-bot/workspaces
+
+  # Maximum age (in days) before a workspace is eligible for cleanup,
+  # regardless of ticket status. Set high enough to cover typical PR
+  # review turnaround times. If a workspace is cleaned up while its
+  # ticket still has an active PR, the feedback pipeline will re-clone
+  # automatically (but AI-generated artifacts from prior sessions will
+  # be lost).
+  ttl_days: 7
+
+# Container Configuration
+# AI sessions run inside ephemeral dev containers with full toolchain access.
+# The bot manages container lifecycle; the AI manages thinking.
+container:
+  # Container runtime preference: "auto" (detect, preferring podman),
+  # "podman", or "docker".
+  runtime: auto
+
+  # Fallback container image when no repo-level container config is found
+  # (.ai-bot/container.json or .devcontainer/devcontainer.json).
+  # If empty, a built-in minimal fallback image is used.
+  default_image: "mcr.microsoft.com/devcontainers/universal:2"
+
+  # Default resource limits for containers (can be overridden by
+  # repo-level config).
+  resource_limits:
+    memory: "8g"
+    cpus: "4"
+
+# Guardrails Configuration
+# Safety and resource limits to prevent runaway costs and cascading failures.
+guardrails:
+  # Maximum number of jobs that can run simultaneously.
+  max_concurrent_jobs: 10
+
+  # Maximum number of times a ticket can fail before further submissions
+  # are rejected. Zero means no retries (one attempt total).
+  max_retries: 3
+
+  # Maximum daily AI session cost in USD. Job creation is paused when
+  # this budget is exceeded. The budget resets at midnight UTC.
+  # Zero or negative disables cost-based limiting.
+  max_daily_cost_usd: 50.0
+
+  # Maximum duration (in minutes) for an AI session inside a container.
+  # Zero means no timeout.
+  max_container_runtime_minutes: 60
+
+  # Circuit breaker: trips after N consecutive failures within the
+  # time window, pausing all job creation until the cooldown expires.
+  # Set threshold to zero to disable the circuit breaker.
+  circuit_breaker_threshold: 5
+  circuit_breaker_window_minutes: 10
+  circuit_breaker_cooldown_minutes: 5
