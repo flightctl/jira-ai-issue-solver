@@ -89,30 +89,48 @@ func NewRuntimeManager(runner Runner, resolver *Resolver, cfg RuntimeManagerConf
 	}, nil
 }
 
-func (m *RuntimeManager) ResolveConfig(repoDir string) (*Config, error) {
-	return m.resolver.Resolve(repoDir)
+func (m *RuntimeManager) ResolveConfig(repoDir string, projectOverride *SettingsOverride) (*Config, error) {
+	return m.resolver.Resolve(repoDir, projectOverride)
 }
 
-func (m *RuntimeManager) Start(ctx context.Context, cfg *Config, workspaceDir string, env map[string]string) (*Container, error) {
-	name := m.generateName()
+func (m *RuntimeManager) Start(ctx context.Context, cfg *Config, workspaceDir, ticketKey string, env map[string]string) (*Container, error) {
+	name := m.generateName(ticketKey)
 
 	// Merge environment: config env as base, runtime env overrides.
 	mergedEnv := make(map[string]string, len(cfg.Env)+len(env))
 	maps.Copy(mergedEnv, cfg.Env)
 	maps.Copy(mergedEnv, env)
 
+	mounts := []Mount{{
+		Source:  workspaceDir,
+		Target:  workspaceMountTarget,
+		Options: workspaceMountOptions,
+	}}
+	mounts = append(mounts, cfg.ExtraMounts...)
+
+	var securityOpt []string
+	if cfg.DisableSELinux {
+		securityOpt = append(securityOpt, "label=disable")
+	}
+
 	opts := RunOptions{
-		Name:  name,
-		Image: cfg.Image,
-		Mounts: []Mount{{
-			Source:  workspaceDir,
-			Target:  workspaceMountTarget,
-			Options: workspaceMountOptions,
-		}},
-		Env:     mergedEnv,
-		Memory:  cfg.ResourceLimits.Memory,
-		CPUs:    cfg.ResourceLimits.CPUs,
-		Command: []string{"sleep", "infinity"},
+		Name:        name,
+		Image:       cfg.Image,
+		Mounts:      mounts,
+		Env:         mergedEnv,
+		Memory:      cfg.ResourceLimits.Memory,
+		CPUs:        cfg.ResourceLimits.CPUs,
+		SecurityOpt: securityOpt,
+		UserNS:      cfg.UserNS,
+		Tmpfs:       cfg.Tmpfs,
+		Command:     []string{"sleep", "infinity"},
+	}
+
+	m.logger.Info("Pulling image",
+		zap.String("image", cfg.Image))
+
+	if err := m.runner.Pull(ctx, cfg.Image); err != nil {
+		return nil, fmt.Errorf("pull image %s: %w", cfg.Image, err)
 	}
 
 	m.logger.Info("Starting container",
@@ -231,12 +249,12 @@ func (m *RuntimeManager) stopAndRemove(ctx context.Context, ctr *Container) erro
 }
 
 // generateName produces a unique container name using the configured
-// prefix and a random suffix.
-func (m *RuntimeManager) generateName() string {
+// prefix, ticket key, and a random suffix. The ticket key provides
+// operational visibility (e.g., "ai-bot-EDM-2747-a1b2c3d4").
+func (m *RuntimeManager) generateName(ticketKey string) string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to a less random but still unique-enough name.
-		return fmt.Sprintf("%s-%d", m.namePrefix, time.Now().UnixNano())
+		return fmt.Sprintf("%s-%s-%d", m.namePrefix, ticketKey, time.Now().UnixNano())
 	}
-	return fmt.Sprintf("%s-%x", m.namePrefix, b)
+	return fmt.Sprintf("%s-%s-%x", m.namePrefix, ticketKey, b)
 }

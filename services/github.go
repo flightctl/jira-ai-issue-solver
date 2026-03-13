@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,10 @@ import (
 
 	"jira-ai-issue-solver/models"
 )
+
+// ErrNoChanges is returned by CommitChanges when all workspace changes
+// are bot artifacts and there is nothing to commit.
+var ErrNoChanges = errors.New("no committable changes")
 
 // fileExists returns true if the file exists, false if it does not exist,
 // and an error if the existence check failed for reasons other than the file not existing.
@@ -504,7 +509,7 @@ func (s *GitHubServiceImpl) commitChangesViaAPI(owner, repo, branchName, message
 
 	if len(treeEntries) == 0 {
 		s.logger.Info("No changes made to repository; nothing to commit")
-		return baseSHA, nil
+		return "", ErrNoChanges
 	}
 
 	// Create a new tree
@@ -652,10 +657,22 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 		return "", fmt.Errorf("failed to create commit: %w", err)
 	}
 
-	// Update the branch reference to point to the new commit
-	// Branch must exist since we have local commits on it
-	if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
-		return "", fmt.Errorf("failed to update reference: %w", err)
+	// Create or update the branch reference to point to the new commit.
+	// The branch exists locally but may not have been pushed to the
+	// remote yet, so we must check before choosing the operation.
+	_, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to check branch existence: %w", err)
+	}
+
+	if branchExists {
+		if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
+			return "", fmt.Errorf("failed to update reference: %w", err)
+		}
+	} else {
+		if err := s.createReference(owner, repo, branchName, commitSHA, token); err != nil {
+			return "", fmt.Errorf("failed to create reference: %w", err)
+		}
 	}
 
 	s.logger.Info("Successfully created verified commit from local HEAD",
@@ -863,45 +880,21 @@ func (s *GitHubServiceImpl) createBlobsForChangedFiles(owner, repo, directory, t
 			zap.String("filename", filename),
 			zap.String("rawLine", line))
 
-		// Read file content
+		// Use shared helper for blob creation (handles directory skipping).
 		filePath := filepath.Join(directory, filename)
-		// #nosec G304 - filename comes from git status output in controlled repo directory
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file %s: %w", filename, err)
+		entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
+		if errors.Is(err, errSkipEntry) {
+			continue
 		}
-
-		// Create blob
-		blobSHA, err := s.createBlob(owner, repo, string(content), token)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create blob for %s: %w", filename, err)
 		}
 
-		// Determine file mode (check if executable)
-		fileInfo, err := os.Stat(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat file %s: %w", filename, err)
-		}
-
-		mode := "100644" // Regular file
-		if fileInfo.Mode()&0111 != 0 {
-			mode = "100755" // Executable
-		}
-
-		treeEntries = append(treeEntries, models.GitHubTreeEntry{
-			Path: filename,
-			Mode: mode,
-			Type: "blob",
-			SHA:  &blobSHA,
-		})
+		treeEntries = append(treeEntries, entry)
 
 		s.logger.Debug("Created blob for file",
 			zap.String("file", filename),
-			zap.String("sha", blobSHA))
-
-		// Add a small delay between blob creations to avoid rate limiting
-		// GitHub's secondary rate limit is triggered by rapid API calls
-		time.Sleep(100 * time.Millisecond)
+			zap.String("path", filePath))
 	}
 
 	return treeEntries, nil
@@ -956,6 +949,9 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			// Added or Modified file - create blob and add to tree
 			filename := parts[1]
 			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
+			if errors.Is(err, errSkipEntry) {
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to create tree entry for %s: %w", filename, err)
 			}
@@ -964,6 +960,9 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "D":
 			// Deleted file - add entry with nil SHA to remove from tree
 			filename := parts[1]
+			if isBotArtifact(filename) {
+				continue
+			}
 			s.logger.Debug("File deleted, adding deletion entry",
 				zap.String("file", filename))
 			treeEntries = append(treeEntries, models.GitHubTreeEntry{
@@ -979,19 +978,27 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			}
 			oldPath := parts[1]
 			newPath := parts[2]
+			if isBotArtifact(oldPath) && isBotArtifact(newPath) {
+				continue
+			}
 
 			s.logger.Debug("File renamed",
 				zap.String("old_path", oldPath),
 				zap.String("new_path", newPath))
 
 			// Delete old path
-			treeEntries = append(treeEntries, models.GitHubTreeEntry{
-				Path: oldPath,
-				SHA:  nil,
-			})
+			if !isBotArtifact(oldPath) {
+				treeEntries = append(treeEntries, models.GitHubTreeEntry{
+					Path: oldPath,
+					SHA:  nil,
+				})
+			}
 
 			// Add new path
 			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			if errors.Is(err, errSkipEntry) {
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to create tree entry for renamed file %s: %w", newPath, err)
 			}
@@ -1005,6 +1012,9 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			}
 			newPath := parts[2]
 			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			if errors.Is(err, errSkipEntry) {
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to create tree entry for copied file %s: %w", newPath, err)
 			}
@@ -1020,9 +1030,45 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 	return treeEntries, nil
 }
 
-// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob
+// errSkipEntry signals that a tree entry should be skipped (e.g.,
+// the path is a directory or a bot artifact).
+var errSkipEntry = errors.New("skip entry")
+
+// botArtifactPrefix is the directory where the bot writes transient
+// artifacts (task files, wrapper scripts, session output). These are
+// communication between the bot and the AI agent and must never be
+// included in commits pushed to the remote.
+const botArtifactPrefix = ".ai-bot/"
+
+// isBotArtifact reports whether filename is inside the bot artifact
+// directory.
+func isBotArtifact(filename string) bool {
+	return filename == ".ai-bot" || strings.HasPrefix(filename, botArtifactPrefix)
+}
+
+// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob.
+// Returns errSkipEntry if the path is a directory.
 func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string) (models.GitHubTreeEntry, error) {
+	// Skip bot artifacts — these are transient communication
+	// between the bot and the AI agent, not source code.
+	if isBotArtifact(filename) {
+		s.logger.Debug("Skipping bot artifact",
+			zap.String("path", filename))
+		return models.GitHubTreeEntry{}, errSkipEntry
+	}
+
 	filePath := filepath.Join(directory, filename)
+
+	// Check if path is a directory.
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
+	}
+	if fileInfo.IsDir() {
+		s.logger.Debug("Skipping directory entry",
+			zap.String("path", filename))
+		return models.GitHubTreeEntry{}, errSkipEntry
+	}
 
 	// Read file content
 	// #nosec G304 - filename comes from git diff-tree output in controlled repo directory
@@ -1035,12 +1081,6 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 	blobSHA, err := s.createBlob(owner, repo, string(content), token)
 	if err != nil {
 		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob: %w", err)
-	}
-
-	// Determine file mode (check if executable)
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
 	}
 
 	mode := "100644" // Regular file
@@ -1604,6 +1644,53 @@ func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Fiel
 	return logCmd.hasStdout(), nil
 }
 
+// StripRemoteAuth removes authentication credentials from the
+// workspace's origin remote URL. After this call, push operations
+// will be rejected by the remote.
+func (s *GitHubServiceImpl) StripRemoteAuth(directory string) error {
+	cmd := newGitCommand(s.executor("git", "remote", "get-url", "origin"), directory, false, true)
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("get remote URL: %w, stderr: %s", err, cmd.getStderr())
+	}
+
+	rawURL := strings.TrimSpace(cmd.getStdout())
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse remote URL: %w", err)
+	}
+	parsed.User = nil
+
+	setCmd := newGitCommand(
+		s.executor("git", "remote", "set-url", "origin", parsed.String()),
+		directory, false, false)
+	if err := setCmd.run(); err != nil {
+		return fmt.Errorf("strip remote auth: %w, stderr: %s", err, setCmd.getStderr())
+	}
+
+	s.logger.Debug("Stripped remote auth", zap.String("directory", directory))
+	return nil
+}
+
+// RestoreRemoteAuth restores authentication credentials on the
+// workspace's origin remote URL using a fresh installation token.
+func (s *GitHubServiceImpl) RestoreRemoteAuth(directory, owner, repo string) error {
+	token, err := s.getAuthTokenForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get auth token: %w", err)
+	}
+
+	authURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
+	cmd := newGitCommand(
+		s.executor("git", "remote", "set-url", "origin", authURL),
+		directory, false, false)
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("restore remote auth: %w, stderr: %s", err, cmd.getStderr())
+	}
+
+	s.logger.Debug("Restored remote auth", zap.String("directory", directory))
+	return nil
+}
+
 // SyncWithRemote reconciles the local workspace with the remote branch by
 // fetching and hard-resetting to the remote ref. Untracked files are
 // preserved because git reset --hard only affects the index and tracked
@@ -2068,4 +2155,28 @@ func (s *GitHubServiceImpl) BranchHasCommits(owner, repo, branch, base string) (
 	}
 
 	return comparison.GetAheadBy() > 0, nil
+}
+
+// RemoteBranchExists reports whether the named branch exists on the
+// remote repository. Used by the executor to detect when a user has
+// deleted a branch (e.g., after closing a PR) so the pipeline can
+// start fresh instead of reusing stale local state.
+func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return false, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return false, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	_, _, err = client.Git.GetRef(context.Background(), owner, repo, "refs/heads/"+branch)
+	if err != nil {
+		// go-github returns an error for 404 responses.
+		return false, nil
+	}
+
+	return true, nil
 }

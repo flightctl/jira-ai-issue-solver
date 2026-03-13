@@ -27,15 +27,18 @@ import "context"
 type Manager interface {
 	// ResolveConfig determines the container configuration for a
 	// repository by checking configuration sources in priority order.
-	// See package documentation for the resolution chain.
-	ResolveConfig(repoDir string) (*Config, error)
+	// The projectOverride, if non-nil, sits between repo-level config
+	// and the global fallback. See package documentation for the
+	// resolution chain.
+	ResolveConfig(repoDir string, projectOverride *SettingsOverride) (*Config, error)
 
 	// Start launches a container with the given configuration. The
 	// workspace directory is mounted into the container at /workspace.
 	// The env map provides runtime environment variables (AI provider,
 	// API keys, etc.) that are separate from the container config's
-	// static env vars.
-	Start(ctx context.Context, cfg *Config, workspaceDir string,
+	// static env vars. The ticketKey is included in the container
+	// name and labels for operational visibility.
+	Start(ctx context.Context, cfg *Config, workspaceDir, ticketKey string,
 		env map[string]string) (*Container, error)
 
 	// Exec runs a command inside a running container. It captures
@@ -89,6 +92,19 @@ type Config struct {
 	// starts (e.g., "npm install", "go mod download"). Empty means
 	// no post-create command.
 	PostCreateCommand string
+
+	// DisableSELinux disables SELinux confinement
+	// (--security-opt=label=disable).
+	DisableSELinux bool
+
+	// UserNS sets the user namespace mode (e.g., "keep-id").
+	UserNS string
+
+	// Tmpfs holds tmpfs mount specs (e.g., "/tmp:size=4g").
+	Tmpfs []string
+
+	// ExtraMounts holds additional volume mounts beyond the workspace.
+	ExtraMounts []Mount
 
 	// Source identifies which configuration file produced this config,
 	// for logging and debugging. Empty for built-in defaults.

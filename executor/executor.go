@@ -94,15 +94,32 @@ type GitService interface {
 	// for feedback processing.
 	SwitchBranch(dir, name string) error
 
+	// RemoteBranchExists reports whether the named branch exists on
+	// the remote repository. Used to detect when a user has deleted
+	// a branch so the pipeline can start fresh.
+	RemoteBranchExists(owner, repo, branch string) (bool, error)
+
 	// HasChanges reports whether the workspace has uncommitted
 	// changes (modified, added, or deleted tracked files).
 	HasChanges(dir string) (bool, error)
 
 	// CommitChanges creates a verified commit via the GitHub API
-	// from local workspace changes. Returns the commit SHA, or
-	// empty string if there are no changes to commit.
+	// from local workspace changes. Returns the commit SHA.
+	// Returns services.ErrNoChanges if all changes are bot
+	// artifacts and there is nothing to commit.
 	CommitChanges(owner, repo, branch, message, dir string,
 		coAuthor *models.Author) (string, error)
+
+	// StripRemoteAuth removes authentication credentials from the
+	// workspace's origin remote URL, preventing push operations.
+	// Used before handing control to the AI agent.
+	StripRemoteAuth(dir string) error
+
+	// RestoreRemoteAuth restores authentication credentials on the
+	// workspace's origin remote URL using a fresh token. Must be
+	// called after AI execution, before any operation that needs
+	// remote access (e.g., SyncWithRemote).
+	RestoreRemoteAuth(dir, owner, repo string) error
 
 	// SyncWithRemote reconciles the local workspace with the remote
 	// branch after an API-created commit.

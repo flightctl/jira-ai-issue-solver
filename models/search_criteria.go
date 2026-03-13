@@ -29,8 +29,11 @@ type SearchCriteria struct {
 	// Mutually exclusive with StatusByType.
 	Statuses []string
 
-	// AssignedTo filters by the assignee's username.
-	AssignedTo string
+	// ContributorIsCurrentUser restricts results to work items where the
+	// authenticated user is listed as a contributor. In Jira this maps to
+	// "Contributors = currentUser()". This is how the bot identifies
+	// tickets it should work on without being the assignee.
+	ContributorIsCurrentUser bool
 
 	// Labels filters by applied labels. Multiple labels are OR'd.
 	Labels []string

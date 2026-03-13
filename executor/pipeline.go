@@ -11,6 +11,7 @@ import (
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/repoconfig"
+	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/taskfile"
 	"jira-ai-issue-solver/tracker"
 	"jira-ai-issue-solver/workspace"
@@ -153,14 +154,8 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 5: Create or switch to branch ---
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	if reused {
-		if err := p.git.SwitchBranch(wsPath, branchName); err != nil {
-			return result, fmt.Errorf("switch to branch: %w", err)
-		}
-	} else {
-		if err := p.git.CreateBranch(wsPath, branchName); err != nil {
-			return result, fmt.Errorf("create branch: %w", err)
-		}
+	if err := p.prepareBranch(logger, wsPath, branchName, reused, settings); err != nil {
+		return result, err
 	}
 
 	// --- Step 6: Write task file ---
@@ -170,6 +165,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 7: Determine AI provider ---
 	provider := p.resolveProvider(settings)
+	logger.Info("AI provider selected", zap.String("provider", provider))
 
 	// --- Step 8: Load repo config ---
 	repoCfg, err := repoconfig.Load(wsPath)
@@ -178,17 +174,29 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		repoCfg = repoconfig.Default()
 	}
 
-	// --- Step 9: Write wrapper script ---
+	// --- Step 9: Build AI command ---
 	sp := buildScriptParams(provider, repoCfg)
-	if err := writeRunScript(wsPath, sp); err != nil {
-		return result, fmt.Errorf("write run script: %w", err)
-	}
+	execCommand := buildExecCommand(sp)
 
 	// --- Step 10: Resolve and start container ---
-	ctr, err = p.startContainer(ctx, logger, wsPath, provider)
+	ctr, err = p.startContainer(ctx, logger, wsPath, job.TicketKey, provider, settings)
 	if err != nil {
 		return result, fmt.Errorf("start container: %w", err)
 	}
+
+	// --- Step 10a: Strip remote auth before AI execution ---
+	// Prevent the AI from pushing directly to the remote.
+	if err := p.git.StripRemoteAuth(wsPath); err != nil {
+		return result, fmt.Errorf("strip remote auth: %w", err)
+	}
+	authStripped := true
+	defer func() {
+		if authStripped {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); restoreErr != nil {
+				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
+			}
+		}
+	}()
 
 	// --- Step 11: Execute AI agent ---
 	execCtx := ctx
@@ -199,7 +207,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	_, exitCode, execErr := p.containers.Exec(
-		execCtx, ctr, []string{"bash", "/workspace/.ai-bot/run.sh"})
+		execCtx, ctr, execCommand)
 	if execErr != nil {
 		if ctx.Err() != nil {
 			// Parent context cancelled (shutdown).
@@ -210,7 +218,20 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// Read session metadata (may be absent on abnormal exit).
 	session := readSessionOutput(wsPath)
+
+	logger.Info("AI session completed",
+		zap.Int("exit_code", exitCode),
+		zap.Float64("cost_usd", session.CostUSD),
+		zap.Any("validation_passed", session.ValidationPassed),
+		zap.String("summary", session.Summary))
 	result.CostUSD = session.CostUSD
+
+	// --- Step 11a: Restore remote auth ---
+	// Must happen before SyncWithRemote which needs fetch access.
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); err != nil {
+		return result, fmt.Errorf("restore remote auth: %w", err)
+	}
+	authStripped = false
 
 	// Exec runtime error (not just non-zero exit) is fatal.
 	if execErr != nil {
@@ -231,10 +252,14 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 13: Commit via GitHub API ---
 	commitMsg := fmt.Sprintf("%s: %s", job.TicketKey, workItem.Summary)
-	if _, err := p.git.CommitChanges(
+	_, err = p.git.CommitChanges(
 		settings.Owner, settings.Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee,
-	); err != nil {
+	)
+	if errors.Is(err, services.ErrNoChanges) {
+		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
+	}
+	if err != nil {
 		return result, fmt.Errorf("commit changes: %w", err)
 	}
 
@@ -245,6 +270,12 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 15: Create PR ---
 	draft := shouldCreateDraft(session, exitCode, repoCfg.PR.Draft)
+	if draft {
+		logger.Info("Creating draft PR",
+			zap.Int("exit_code", exitCode),
+			zap.Any("validation_passed", session.ValidationPassed),
+			zap.Bool("repo_config_draft", repoCfg.PR.Draft))
+	}
 	prTitle, prBody := buildPRContent(workItem, job.TicketKey, repoCfg.PR.TitlePrefix)
 
 	pr, err := p.git.CreatePR(models.PRParams{
@@ -288,16 +319,18 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 func (p *Pipeline) startContainer(
 	ctx context.Context,
 	logger *zap.Logger,
-	wsPath, provider string,
+	wsPath, ticketKey, provider string,
+	settings *models.ProjectSettings,
 ) (*container.Container, error) {
-	containerCfg, err := p.containers.ResolveConfig(wsPath)
+	projectOverride := toSettingsOverride(settings)
+	containerCfg, err := p.containers.ResolveConfig(wsPath, projectOverride)
 	if err != nil {
 		return nil, fmt.Errorf("resolve container config: %w", err)
 	}
 
 	env := p.buildContainerEnv(provider)
 
-	ctr, err := p.containers.Start(ctx, containerCfg, wsPath, env)
+	ctr, err := p.containers.Start(ctx, containerCfg, wsPath, ticketKey, env)
 	if err == nil {
 		return ctr, nil
 	}
@@ -313,7 +346,32 @@ func (p *Pipeline) startContainer(
 		zap.Error(err))
 
 	fallbackCfg := &container.Config{Image: p.cfg.FallbackImage}
-	return p.containers.Start(ctx, fallbackCfg, wsPath, env)
+	return p.containers.Start(ctx, fallbackCfg, wsPath, ticketKey, env)
+}
+
+// toSettingsOverride converts per-project container settings to the
+// container package's override type. Returns nil if no per-project
+// container settings are configured (zero-value ContainerSettings).
+func toSettingsOverride(settings *models.ProjectSettings) *container.SettingsOverride {
+	cs := settings.Container
+	if cs.Image == "" && cs.ResourceLimits.Memory == "" && cs.ResourceLimits.CPUs == "" &&
+		len(cs.Env) == 0 && len(cs.Tmpfs) == 0 && len(cs.ExtraMounts) == 0 {
+		return nil
+	}
+	mounts := make([]container.Mount, len(cs.ExtraMounts))
+	for i, m := range cs.ExtraMounts {
+		mounts[i] = container.Mount{Source: m.Source, Target: m.Target, Options: m.Options}
+	}
+	return &container.SettingsOverride{
+		Image: cs.Image,
+		Limits: container.ResourceLimits{
+			Memory: cs.ResourceLimits.Memory,
+			CPUs:   cs.ResourceLimits.CPUs,
+		},
+		Env:         cs.Env,
+		Tmpfs:       cs.Tmpfs,
+		ExtraMounts: mounts,
+	}
 }
 
 func (p *Pipeline) resolveProvider(settings *models.ProjectSettings) string {
@@ -375,6 +433,46 @@ func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings 
 	if err := p.tracker.AddComment(ticketKey, comment); err != nil {
 		logger.Error("Failed to post error comment", zap.Error(err))
 	}
+}
+
+// prepareBranch sets up the working branch for a new-ticket pipeline run.
+// When the workspace is reused and the remote branch still exists, it
+// switches to it. When the remote branch was deleted (e.g., user closed
+// the PR), it recreates the branch from the target branch so the AI
+// starts from a clean slate. For fresh workspaces it creates a new branch.
+func (p *Pipeline) prepareBranch(
+	logger *zap.Logger,
+	wsPath, branchName string,
+	reused bool,
+	settings *models.ProjectSettings,
+) error {
+	if !reused {
+		if err := p.git.CreateBranch(wsPath, branchName); err != nil {
+			return fmt.Errorf("create branch: %w", err)
+		}
+		return nil
+	}
+
+	remoteExists, err := p.git.RemoteBranchExists(
+		settings.Owner, settings.Repo, branchName)
+	if err != nil {
+		return fmt.Errorf("check remote branch: %w", err)
+	}
+
+	if remoteExists {
+		if err := p.git.SwitchBranch(wsPath, branchName); err != nil {
+			return fmt.Errorf("switch to branch: %w", err)
+		}
+		return nil
+	}
+
+	// Remote branch was deleted — start fresh from the target branch.
+	logger.Info("Remote branch deleted, recreating from target branch",
+		zap.String("branch", branchName))
+	if err := p.git.CreateBranch(wsPath, branchName); err != nil {
+		return fmt.Errorf("recreate branch: %w", err)
+	}
+	return nil
 }
 
 // shouldCreateDraft determines whether the PR should be created as a

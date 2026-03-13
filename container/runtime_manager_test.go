@@ -93,7 +93,7 @@ func TestStart_PassesCorrectRunOptions(t *testing.T) {
 	}
 	runtimeEnv := map[string]string{"API_KEY": "secret"}
 
-	ctr, err := mgr.Start(context.Background(), cfg, "/workspace/PROJ-1", runtimeEnv)
+	ctr, err := mgr.Start(context.Background(), cfg, "/workspace/PROJ-1", "PROJ-1", runtimeEnv)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,8 +102,8 @@ func TestStart_PassesCorrectRunOptions(t *testing.T) {
 	if ctr.ID != "abc123" {
 		t.Errorf("Container.ID = %q, want abc123", ctr.ID)
 	}
-	if !strings.HasPrefix(ctr.Name, "ai-bot-") {
-		t.Errorf("Container.Name = %q, does not start with ai-bot-", ctr.Name)
+	if !strings.HasPrefix(ctr.Name, "ai-bot-PROJ-1-") {
+		t.Errorf("Container.Name = %q, does not start with ai-bot-PROJ-1-", ctr.Name)
 	}
 
 	// RunOptions verified.
@@ -159,7 +159,7 @@ func TestStart_MergesEnv(t *testing.T) {
 	}
 	runtimeEnv := map[string]string{"SHARED": "from-runtime", "RUNTIME_ONLY": "yes"}
 
-	_, err := mgr.Start(context.Background(), cfg, "/ws", runtimeEnv)
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", runtimeEnv)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestStart_NilEnvMaps(t *testing.T) {
 
 	cfg := &container.Config{Image: "img:latest"}
 
-	_, err := mgr.Start(context.Background(), cfg, "/ws", nil)
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestStart_RunPostCreateCommand(t *testing.T) {
 		PostCreateCommand: "make setup",
 	}
 
-	_, err := mgr.Start(context.Background(), cfg, "/ws", nil)
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestStart_PostCreateCommandFailure_CleansUp(t *testing.T) {
 		PostCreateCommand: "make setup",
 	}
 
-	_, err := mgr.Start(context.Background(), cfg, "/ws", nil)
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
 	if err == nil {
 		t.Fatal("expected error from failed post-create command")
 	}
@@ -294,7 +294,7 @@ func TestStart_PostCreateCommandNonZeroExit_CleansUp(t *testing.T) {
 		PostCreateCommand: "make setup",
 	}
 
-	_, err := mgr.Start(context.Background(), cfg, "/ws", nil)
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
 	if err == nil {
 		t.Fatal("expected error from non-zero post-create exit")
 	}
@@ -303,6 +303,63 @@ func TestStart_PostCreateCommandNonZeroExit_CleansUp(t *testing.T) {
 	}
 	if !removeCalled {
 		t.Error("expected remove to be called for cleanup")
+	}
+}
+
+func TestStart_PullFails(t *testing.T) {
+	runner := &containertest.StubRunner{
+		PullFunc: func(_ context.Context, _ string) error {
+			return errors.New("unauthorized: access denied")
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{Image: "registry.example.com/private:latest"}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err == nil {
+		t.Fatal("expected error when pull fails")
+	}
+	if !strings.Contains(err.Error(), "pull image") {
+		t.Errorf("error = %q, want to mention 'pull image'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error = %q, want to contain underlying cause", err.Error())
+	}
+}
+
+func TestStart_PullsBeforeRun(t *testing.T) {
+	var sequence []string
+
+	runner := &containertest.StubRunner{
+		PullFunc: func(_ context.Context, image string) error {
+			sequence = append(sequence, "pull:"+image)
+			return nil
+		},
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			sequence = append(sequence, "run:"+opts.Image)
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{Image: "my-image:latest"}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(sequence) != 2 {
+		t.Fatalf("expected 2 operations, got %d: %v", len(sequence), sequence)
+	}
+	if sequence[0] != "pull:my-image:latest" {
+		t.Errorf("first operation = %q, want pull:my-image:latest", sequence[0])
+	}
+	if sequence[1] != "run:my-image:latest" {
+		t.Errorf("second operation = %q, want run:my-image:latest", sequence[1])
 	}
 }
 
@@ -317,7 +374,7 @@ func TestStart_RunFails(t *testing.T) {
 
 	cfg := &container.Config{Image: "bad-image:latest"}
 
-	_, err := mgr.Start(context.Background(), cfg, "/ws", nil)
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
 	if err == nil {
 		t.Fatal("expected error when run fails")
 	}
@@ -647,6 +704,207 @@ func TestCleanupOrphans_ListFails(t *testing.T) {
 	}
 }
 
+// --- Start: host policy passthrough ---
+
+func TestStart_DisableSELinux(t *testing.T) {
+	var captured container.RunOptions
+
+	runner := &containertest.StubRunner{
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			captured = opts
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{
+		Image:          "img:latest",
+		DisableSELinux: true,
+	}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(captured.SecurityOpt) != 1 || captured.SecurityOpt[0] != "label=disable" {
+		t.Errorf("SecurityOpt = %v, want [label=disable]", captured.SecurityOpt)
+	}
+}
+
+func TestStart_DisableSELinuxFalse_NoSecurityOpt(t *testing.T) {
+	var captured container.RunOptions
+
+	runner := &containertest.StubRunner{
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			captured = opts
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{
+		Image:          "img:latest",
+		DisableSELinux: false,
+	}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(captured.SecurityOpt) != 0 {
+		t.Errorf("SecurityOpt = %v, want empty", captured.SecurityOpt)
+	}
+}
+
+func TestStart_UserNS(t *testing.T) {
+	var captured container.RunOptions
+
+	runner := &containertest.StubRunner{
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			captured = opts
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{
+		Image:  "img:latest",
+		UserNS: "keep-id",
+	}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if captured.UserNS != "keep-id" {
+		t.Errorf("UserNS = %q, want keep-id", captured.UserNS)
+	}
+}
+
+func TestStart_Tmpfs(t *testing.T) {
+	var captured container.RunOptions
+
+	runner := &containertest.StubRunner{
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			captured = opts
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{
+		Image: "img:latest",
+		Tmpfs: []string{"/tmp:size=4g", "/run"},
+	}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(captured.Tmpfs) != 2 {
+		t.Fatalf("Tmpfs count = %d, want 2", len(captured.Tmpfs))
+	}
+	if captured.Tmpfs[0] != "/tmp:size=4g" {
+		t.Errorf("Tmpfs[0] = %q, want /tmp:size=4g", captured.Tmpfs[0])
+	}
+	if captured.Tmpfs[1] != "/run" {
+		t.Errorf("Tmpfs[1] = %q, want /run", captured.Tmpfs[1])
+	}
+}
+
+func TestStart_ExtraMounts(t *testing.T) {
+	var captured container.RunOptions
+
+	runner := &containertest.StubRunner{
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			captured = opts
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{
+		Image: "img:latest",
+		ExtraMounts: []container.Mount{
+			{Source: "/host/cache", Target: "/cache", Options: "ro"},
+			{Source: "/host/data", Target: "/data"},
+		},
+	}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// First mount is always the workspace, then extra mounts.
+	if len(captured.Mounts) != 3 {
+		t.Fatalf("Mounts count = %d, want 3 (workspace + 2 extra)", len(captured.Mounts))
+	}
+
+	// Workspace mount first.
+	if captured.Mounts[0].Source != "/ws" || captured.Mounts[0].Target != "/workspace" {
+		t.Errorf("Mounts[0] = %+v, want workspace mount", captured.Mounts[0])
+	}
+
+	// Extra mounts appended in order.
+	if captured.Mounts[1].Source != "/host/cache" || captured.Mounts[1].Target != "/cache" || captured.Mounts[1].Options != "ro" {
+		t.Errorf("Mounts[1] = %+v, want cache mount", captured.Mounts[1])
+	}
+	if captured.Mounts[2].Source != "/host/data" || captured.Mounts[2].Target != "/data" {
+		t.Errorf("Mounts[2] = %+v, want data mount", captured.Mounts[2])
+	}
+}
+
+func TestStart_AllHostPolicyCombined(t *testing.T) {
+	var captured container.RunOptions
+
+	runner := &containertest.StubRunner{
+		RunFunc: func(_ context.Context, opts container.RunOptions) (string, error) {
+			captured = opts
+			return "abc123", nil
+		},
+	}
+
+	mgr := mustManager(t, runner, "test", 0)
+
+	cfg := &container.Config{
+		Image:          "img:latest",
+		DisableSELinux: true,
+		UserNS:         "keep-id:uid=1000,gid=1000",
+		Tmpfs:          []string{"/tmp:size=2g"},
+		ExtraMounts: []container.Mount{
+			{Source: "/host/tools", Target: "/tools"},
+		},
+	}
+
+	_, err := mgr.Start(context.Background(), cfg, "/ws", "TEST-1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(captured.SecurityOpt) != 1 || captured.SecurityOpt[0] != "label=disable" {
+		t.Errorf("SecurityOpt = %v, want [label=disable]", captured.SecurityOpt)
+	}
+	if captured.UserNS != "keep-id:uid=1000,gid=1000" {
+		t.Errorf("UserNS = %q, want keep-id:uid=1000,gid=1000", captured.UserNS)
+	}
+	if len(captured.Tmpfs) != 1 || captured.Tmpfs[0] != "/tmp:size=2g" {
+		t.Errorf("Tmpfs = %v, want [/tmp:size=2g]", captured.Tmpfs)
+	}
+	if len(captured.Mounts) != 2 {
+		t.Fatalf("Mounts count = %d, want 2", len(captured.Mounts))
+	}
+}
+
 // --- ResolveConfig ---
 
 func TestResolveConfig_DelegatesToResolver(t *testing.T) {
@@ -655,7 +913,7 @@ func TestResolveConfig_DelegatesToResolver(t *testing.T) {
 
 	mgr := mustManager(t, runner, "test", 0)
 
-	cfg, err := mgr.ResolveConfig(repoDir)
+	cfg, err := mgr.ResolveConfig(repoDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -670,7 +928,7 @@ func TestResolveConfig_DelegatesToResolver(t *testing.T) {
 
 func mustResolver(t *testing.T) *container.Resolver {
 	t.Helper()
-	r, err := container.NewResolver("", container.ResourceLimits{}, zap.NewNop())
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}

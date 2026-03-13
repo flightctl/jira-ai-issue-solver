@@ -27,8 +27,20 @@ func NewCLIRunner(detected *DetectedRuntime) *CLIRunner {
 	return &CLIRunner{runtimePath: detected.Path}
 }
 
+func (r *CLIRunner) Pull(ctx context.Context, image string) error {
+	args := []string{"pull", image}
+
+	cmd := exec.CommandContext(ctx, r.runtimePath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("container pull %s: %w: %s",
+			image, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func (r *CLIRunner) Run(ctx context.Context, opts RunOptions) (string, error) {
-	args := []string{"run", "-d"}
+	args := []string{"run", "-d", "--pull=never"}
 
 	if opts.Name != "" {
 		args = append(args, "--name", opts.Name)
@@ -57,6 +69,16 @@ func (r *CLIRunner) Run(ctx context.Context, opts RunOptions) (string, error) {
 	}
 	if opts.CPUs != "" {
 		args = append(args, "--cpus", opts.CPUs)
+	}
+
+	for _, opt := range opts.SecurityOpt {
+		args = append(args, "--security-opt", opt)
+	}
+	if opts.UserNS != "" {
+		args = append(args, "--userns", opts.UserNS)
+	}
+	for _, t := range opts.Tmpfs {
+		args = append(args, "--tmpfs", t)
 	}
 
 	args = append(args, opts.Image)

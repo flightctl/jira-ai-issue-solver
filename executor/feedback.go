@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/repoconfig"
+	"jira-ai-issue-solver/services"
 )
 
 func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (result jobmanager.JobResult, retErr error) {
@@ -99,6 +101,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 8: Determine AI provider ---
 	provider := p.resolveProvider(settings)
+	logger.Info("AI provider selected", zap.String("provider", provider))
 
 	// --- Step 9: Load repo config ---
 	repoCfg, err := repoconfig.Load(wsPath)
@@ -107,17 +110,28 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		repoCfg = repoconfig.Default()
 	}
 
-	// --- Step 10: Write wrapper script ---
+	// --- Step 10: Build AI command ---
 	sp := buildScriptParams(provider, repoCfg)
-	if err := writeRunScript(wsPath, sp); err != nil {
-		return result, fmt.Errorf("write run script: %w", err)
-	}
+	execCommand := buildExecCommand(sp)
 
 	// --- Step 11: Resolve and start container ---
-	ctr, err = p.startContainer(ctx, logger, wsPath, provider)
+	ctr, err = p.startContainer(ctx, logger, wsPath, job.TicketKey, provider, settings)
 	if err != nil {
 		return result, fmt.Errorf("start container: %w", err)
 	}
+
+	// --- Step 11a: Strip remote auth before AI execution ---
+	if err := p.git.StripRemoteAuth(wsPath); err != nil {
+		return result, fmt.Errorf("strip remote auth: %w", err)
+	}
+	authStripped := true
+	defer func() {
+		if authStripped {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); restoreErr != nil {
+				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
+			}
+		}
+	}()
 
 	// --- Step 12: Execute AI agent ---
 	execCtx := ctx
@@ -128,7 +142,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	_, exitCode, execErr := p.containers.Exec(
-		execCtx, ctr, []string{"bash", "/workspace/.ai-bot/run.sh"})
+		execCtx, ctr, execCommand)
 	if execErr != nil {
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("job cancelled: %w", ctx.Err())
@@ -137,7 +151,19 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	session := readSessionOutput(wsPath)
+
+	logger.Info("AI session completed",
+		zap.Int("exit_code", exitCode),
+		zap.Float64("cost_usd", session.CostUSD),
+		zap.Any("validation_passed", session.ValidationPassed),
+		zap.String("summary", session.Summary))
 	result.CostUSD = session.CostUSD
+
+	// --- Step 12a: Restore remote auth ---
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); err != nil {
+		return result, fmt.Errorf("restore remote auth: %w", err)
+	}
+	authStripped = false
 
 	if execErr != nil {
 		if execCtx.Err() != nil {
@@ -161,6 +187,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		settings.Owner, settings.Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee,
 	)
+	if errors.Is(err, services.ErrNoChanges) {
+		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
+	}
 	if err != nil {
 		return result, fmt.Errorf("commit changes: %w", err)
 	}

@@ -66,6 +66,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		PRURLFieldName:       pc.GitPullRequestFieldName,
 		DisableErrorComments: pc.DisableErrorComments,
 		AIProvider:           r.config.AIProvider,
+		Container:            pc.Container,
 	}, nil
 }
 
@@ -102,14 +103,26 @@ func (r *ConfigResolver) findProjectConfig(workItem models.WorkItem) (*models.Pr
 // matchComponentRepo finds the first work item component that has a
 // mapping in the project's ComponentToRepo. Returns an error if the
 // work item has no components or none match.
+//
+// Matching is case-insensitive because viper lowercases YAML map keys
+// internally, so configured keys like "FlightCtl" become "flightctl"
+// in the loaded config regardless of the original YAML casing.
 func (r *ConfigResolver) matchComponentRepo(workItem models.WorkItem, pc *models.ProjectConfig) (string, error) {
 	if len(workItem.Components) == 0 {
 		return "", fmt.Errorf("work item %s has no components; cannot resolve repository", workItem.Key)
 	}
 
 	for _, component := range workItem.Components {
+		// Try exact match first.
 		if repoURL, ok := pc.ComponentToRepo[component]; ok {
 			return repoURL, nil
+		}
+		// Fall back to case-insensitive match (viper lowercases map keys).
+		lower := strings.ToLower(component)
+		for key, repoURL := range pc.ComponentToRepo {
+			if strings.ToLower(key) == lower {
+				return repoURL, nil
+			}
 		}
 	}
 

@@ -41,29 +41,63 @@ const (
 // do not stack. Within the selected source, any field left unset falls
 // through to bot-level defaults, then to the built-in fallback.
 type Resolver struct {
-	defaultImage  string
-	defaultLimits ResourceLimits
-	logger        *zap.Logger
+	defaults ResolverDefaults
+	logger   *zap.Logger
+}
+
+// ResolverDefaults holds the global fallback container settings and
+// host-level runtime policy. The fallback settings fill in gaps when
+// neither the target repo nor the per-project config provides values.
+// Host policy (DisableSELinux, UserNS) is always applied regardless
+// of the resolution chain.
+type ResolverDefaults struct {
+	// Fallback holds image, resource limits, and other settings
+	// used when no higher-priority source provides them.
+	Fallback SettingsOverride
+
+	// DisableSELinux is host-level policy: always applied.
+	DisableSELinux bool
+
+	// UserNS is host-level policy: always applied.
+	UserNS string
+}
+
+// SettingsOverride holds container settings that can come from either
+// per-project config or the global fallback. It is the container
+// package's counterpart to models.ContainerSettings.
+type SettingsOverride struct {
+	Image       string
+	Limits      ResourceLimits
+	Env         map[string]string
+	Tmpfs       []string
+	ExtraMounts []Mount
 }
 
 // NewResolver creates a Resolver with the given bot-level defaults.
-// The defaultImage and defaultLimits fill in gaps when a repository's
-// config does not specify those values. Pass empty values to rely
-// entirely on repository config or the built-in fallback.
-func NewResolver(defaultImage string, defaultLimits ResourceLimits, logger *zap.Logger) (*Resolver, error) {
+// The defaults fill in gaps when a repository's config does not
+// specify those values. Pass zero values to rely entirely on
+// repository config or the built-in fallback.
+func NewResolver(defaults ResolverDefaults, logger *zap.Logger) (*Resolver, error) {
 	if logger == nil {
 		return nil, errors.New("logger must not be nil")
 	}
 	return &Resolver{
-		defaultImage:  defaultImage,
-		defaultLimits: defaultLimits,
-		logger:        logger,
+		defaults: defaults,
+		logger:   logger,
 	}, nil
 }
 
 // Resolve determines the container configuration for the repository at
-// repoDir. See [Resolver] for the resolution chain and merging rules.
-func (r *Resolver) Resolve(repoDir string) (*Config, error) {
+// repoDir. The projectOverride, if non-nil, sits between repo-level
+// config and the global fallback in the resolution chain:
+//
+//  1. .ai-bot/container.json or .devcontainer/devcontainer.json (repo)
+//  2. projectOverride (per-project bot config)
+//  3. Global fallback (ResolverDefaults.Fallback)
+//  4. Built-in fallback (ubuntu:latest)
+//
+// Host policy (DisableSELinux, UserNS) is applied unconditionally.
+func (r *Resolver) Resolve(repoDir string, projectOverride *SettingsOverride) (*Config, error) {
 	// Try repo-level configs in priority order.
 	repoCfg, err := r.tryBotConfig(repoDir)
 	if err != nil {
@@ -77,18 +111,29 @@ func (r *Resolver) Resolve(repoDir string) (*Config, error) {
 		}
 	}
 
-	// Build the resolved config: start with built-in fallback, layer
-	// bot-level defaults, then overlay the repo-level config.
+	// Build the resolved config by layering sources from lowest to
+	// highest priority.
 	resolved := &Config{
 		Image:  DefaultFallbackImage,
 		Source: "built-in fallback",
 	}
 
-	r.applyDefaults(resolved)
+	// Layer 3: global fallback.
+	applySettingsOverride(resolved, &r.defaults.Fallback, "bot default")
 
+	// Layer 2: per-project override.
+	if projectOverride != nil {
+		applySettingsOverride(resolved, projectOverride, "project config")
+	}
+
+	// Layer 1: repo-level config.
 	if repoCfg != nil {
 		overlay(resolved, repoCfg)
 	}
+
+	// Host policy: always applied.
+	resolved.DisableSELinux = r.defaults.DisableSELinux
+	resolved.UserNS = r.defaults.UserNS
 
 	if resolved.Env == nil {
 		resolved.Env = make(map[string]string)
@@ -97,18 +142,31 @@ func (r *Resolver) Resolve(repoDir string) (*Config, error) {
 	return resolved, nil
 }
 
-// applyDefaults overlays bot-level defaults onto base. Non-empty
-// default values override the corresponding base values.
-func (r *Resolver) applyDefaults(base *Config) {
-	if r.defaultImage != "" {
-		base.Image = r.defaultImage
-		base.Source = "bot default"
+// applySettingsOverride overlays a SettingsOverride onto a Config.
+// Non-empty fields in the override replace the corresponding Config
+// fields.
+func applySettingsOverride(base *Config, so *SettingsOverride, source string) {
+	if so.Image != "" {
+		base.Image = so.Image
+		base.Source = source
 	}
-	if r.defaultLimits.Memory != "" {
-		base.ResourceLimits.Memory = r.defaultLimits.Memory
+	if so.Limits.Memory != "" {
+		base.ResourceLimits.Memory = so.Limits.Memory
 	}
-	if r.defaultLimits.CPUs != "" {
-		base.ResourceLimits.CPUs = r.defaultLimits.CPUs
+	if so.Limits.CPUs != "" {
+		base.ResourceLimits.CPUs = so.Limits.CPUs
+	}
+	if len(so.Env) > 0 {
+		if base.Env == nil {
+			base.Env = make(map[string]string)
+		}
+		maps.Copy(base.Env, so.Env)
+	}
+	if len(so.Tmpfs) > 0 {
+		base.Tmpfs = so.Tmpfs
+	}
+	if len(so.ExtraMounts) > 0 {
+		base.ExtraMounts = so.ExtraMounts
 	}
 }
 

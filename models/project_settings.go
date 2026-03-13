@@ -37,4 +37,10 @@ type ProjectSettings struct {
 	// AIProvider overrides the default AI provider for this project.
 	// Empty means use the pipeline's default provider.
 	AIProvider string
+
+	// Container holds per-project container settings from the bot
+	// config. These override the global fallback but are themselves
+	// overridden by repo-level config (.ai-bot/container.json).
+	// A zero-value means no per-project override is configured.
+	Container ContainerSettings
 }

@@ -73,11 +73,29 @@ func main() {
 		zap.String("path", detected.Path))
 
 	containerRunner := container.NewCLIRunner(detected)
+
+	fallbackMounts := make([]container.Mount, len(config.Container.Fallback.ExtraMounts))
+	for i, m := range config.Container.Fallback.ExtraMounts {
+		fallbackMounts[i] = container.Mount{
+			Source:  m.Source,
+			Target:  m.Target,
+			Options: m.Options,
+		}
+	}
+
 	containerResolver, err := container.NewResolver(
-		config.Container.DefaultImage,
-		container.ResourceLimits{
-			Memory: config.Container.ResourceLimits.Memory,
-			CPUs:   config.Container.ResourceLimits.CPUs,
+		container.ResolverDefaults{
+			Fallback: container.SettingsOverride{
+				Image: config.Container.Fallback.Image,
+				Limits: container.ResourceLimits{
+					Memory: config.Container.Fallback.ResourceLimits.Memory,
+					CPUs:   config.Container.Fallback.ResourceLimits.CPUs,
+				},
+				Tmpfs:       config.Container.Fallback.Tmpfs,
+				ExtraMounts: fallbackMounts,
+			},
+			DisableSELinux: config.Container.DisableSELinux,
+			UserNS:         config.Container.UserNS,
 		},
 		logger)
 	if err != nil {
@@ -124,7 +142,7 @@ func main() {
 		executor.Config{
 			BotUsername:       config.GitHub.BotUsername,
 			DefaultProvider:   config.AIProvider,
-			FallbackImage:     config.Container.DefaultImage,
+			FallbackImage:     config.Container.Fallback.Image,
 			AIAPIKeys:         aiAPIKeys,
 			SessionTimeout:    time.Duration(config.Guardrails.MaxContainerRuntimeMinutes) * time.Minute,
 			IgnoredUsernames:  config.GitHub.IgnoredUsernames,
@@ -357,15 +375,15 @@ func buildScanCriteria(config *models.Config) (todo, inReview models.SearchCrite
 	}
 
 	todo = models.SearchCriteria{
-		ProjectKeys:  projectKeys,
-		StatusByType: todoByType,
-		AssignedTo:   config.Jira.Username,
+		ProjectKeys:              projectKeys,
+		StatusByType:             todoByType,
+		ContributorIsCurrentUser: true,
 	}
 
 	inReview = models.SearchCriteria{
-		ProjectKeys:  projectKeys,
-		StatusByType: inReviewByType,
-		AssignedTo:   config.Jira.Username,
+		ProjectKeys:              projectKeys,
+		StatusByType:             inReviewByType,
+		ContributorIsCurrentUser: true,
 	}
 
 	return todo, inReview, activeStatuses
@@ -387,9 +405,9 @@ func buildInProgressCriteria(config *models.Config) models.SearchCriteria {
 	}
 
 	return models.SearchCriteria{
-		ProjectKeys:  projectKeys,
-		StatusByType: inProgressByType,
-		AssignedTo:   config.Jira.Username,
+		ProjectKeys:              projectKeys,
+		StatusByType:             inProgressByType,
+		ContributorIsCurrentUser: true,
 	}
 }
 

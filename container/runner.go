@@ -15,8 +15,16 @@ import (
 // [DetectedRuntime] that is passed to [NewCLIRunner] to create a
 // Runner.
 type Runner interface {
+	// Pull fetches a container image from a registry. This is a
+	// no-op if the image is already present and up to date. Pulling
+	// is separated from [Run] to allow different timeout profiles:
+	// large images (multi-GB) may take minutes to download, while
+	// container creation is near-instant.
+	Pull(ctx context.Context, image string) error
+
 	// Run creates and starts a container in detached mode. Returns
-	// the runtime-assigned container ID.
+	// the runtime-assigned container ID. The image must already be
+	// present (see [Pull]).
 	Run(ctx context.Context, opts RunOptions) (containerID string, err error)
 
 	// Exec runs a command inside a running container. Combined
@@ -67,6 +75,16 @@ type RunOptions struct {
 	// CPUs limit in runtime format (e.g., "4"). Empty means no
 	// limit.
 	CPUs string
+
+	// SecurityOpt holds --security-opt flags (e.g., "label=disable").
+	SecurityOpt []string
+
+	// UserNS sets the --userns flag (e.g., "keep-id",
+	// "keep-id:uid=1000,gid=1000"). Empty means runtime default.
+	UserNS string
+
+	// Tmpfs holds --tmpfs mount specs (e.g., "/tmp:size=4g").
+	Tmpfs []string
 
 	// Command is the entrypoint command to keep the container alive
 	// (e.g., ["sleep", "infinity"]).

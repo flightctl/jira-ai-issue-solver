@@ -11,6 +11,7 @@ import (
 	"jira-ai-issue-solver/executor"
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
+	"jira-ai-issue-solver/services"
 )
 
 // --- Happy path ---
@@ -207,7 +208,7 @@ func TestExecuteFeedback_NoNewComments(t *testing.T) {
 	}
 
 	containerStarted := false
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		containerStarted = true
 		return &container.Container{ID: "c1", Name: "test"}, nil
 	}
@@ -613,7 +614,7 @@ func TestExecuteFeedback_IgnoredUsersFiltered(t *testing.T) {
 	}
 
 	containerStarted := false
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		containerStarted = true
 		return &container.Container{ID: "c1", Name: "test"}, nil
 	}
@@ -649,7 +650,7 @@ func TestExecuteFeedback_KnownBotLoopFiltered(t *testing.T) {
 	}
 
 	containerStarted := false
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		containerStarted = true
 		return &container.Container{ID: "c1", Name: "test"}, nil
 	}
@@ -685,7 +686,7 @@ func TestExecuteFeedback_ThreadDepthExceeded(t *testing.T) {
 	}
 
 	containerStarted := false
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		containerStarted = true
 		return &container.Container{ID: "c1", Name: "test"}, nil
 	}
@@ -740,6 +741,88 @@ func TestExecuteFeedback_FilterKeepsActionableComments(t *testing.T) {
 	// Only comment 2 (reviewer) should be in the task — comment 1 (ignored) filtered out.
 	if len(taskNewComments) != 1 || taskNewComments[0].ID != 2 {
 		t.Errorf("taskNewComments = %v, want [comment 2 only]", taskNewComments)
+	}
+}
+
+// --- Auth strip/restore ---
+
+func TestExecuteFeedback_AuthStrippedBeforeAI(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	var sequence []string
+	d.git.StripRemoteAuthFunc = func(dir string) error {
+		sequence = append(sequence, "strip")
+		return nil
+	}
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		sequence = append(sequence, "exec")
+		return "", 0, nil
+	}
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		sequence = append(sequence, "restore")
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// strip → exec → restore (explicit restore, then defer is a no-op because authStripped=false)
+	if len(sequence) < 3 {
+		t.Fatalf("sequence = %v, want at least [strip exec restore]", sequence)
+	}
+	if sequence[0] != "strip" {
+		t.Errorf("sequence[0] = %q, want strip", sequence[0])
+	}
+	if sequence[1] != "exec" {
+		t.Errorf("sequence[1] = %q, want exec", sequence[1])
+	}
+	if sequence[2] != "restore" {
+		t.Errorf("sequence[2] = %q, want restore", sequence[2])
+	}
+}
+
+func TestExecuteFeedback_AuthRestoredOnExecFailure(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	var restored bool
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		restored = true
+		return nil
+	}
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		return "", 0, errors.New("AI crashed")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err == nil {
+		t.Fatal("expected error from exec failure")
+	}
+	if !restored {
+		t.Error("expected RestoreRemoteAuth to be called on exec failure")
+	}
+}
+
+// --- ErrNoChanges in feedback ---
+
+func TestExecuteFeedback_ErrNoChanges_ReturnsError(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+		return "", services.ErrNoChanges
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err == nil {
+		t.Fatal("expected error for ErrNoChanges")
+	}
+	if !strings.Contains(err.Error(), "no committable changes") {
+		t.Errorf("error = %q, want to mention no committable changes", err.Error())
 	}
 }
 

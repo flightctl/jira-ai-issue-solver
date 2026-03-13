@@ -3,12 +3,18 @@
 # Detect container runtime (podman preferred, fallback to docker)
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
-.PHONY: build clean run stop logs help debug debug-tests fmt lint tidy unit-test
+IMAGE_NAME := jira-ai-issue-solver
+TAG        := latest
+REGISTRY   ?=
+
+.PHONY: build build-flightctl-ai push clean run stop logs help debug debug-tests fmt lint tidy unit-test
 
 # Default target
 help:
 	@echo "Available targets:"
-	@echo "  build       - Build the container image"
+	@echo "  build              - Build the bot container image"
+	@echo "  build-flightctl-ai - Build the flightctl AI dev container"
+	@echo "  push               - Push to registry (REGISTRY=quay.io/myorg)"
 	@echo "  unit-test   - Run unit tests with race detector"
 	@echo "  fmt         - Auto-format code (gofmt, gci)"
 	@echo "  lint        - Run golangci-lint"
@@ -21,10 +27,24 @@ help:
 	@echo "  debug-tests - Debug tests"
 	@echo "  help        - Show this help message"
 
-# Build the container
+# Build the container image
 build:
-	@echo "Building jira-ai-issue-solver container..."
-	./build.sh
+	@echo "Building $(IMAGE_NAME):$(TAG)..."
+	$(CONTAINER_RUNTIME) build --no-cache --tag $(IMAGE_NAME):$(TAG) --file Dockerfile .
+
+# Build the flightctl AI dev container
+build-flightctl-ai:
+	@echo "Building flightctl-ai:$(TAG)..."
+	$(CONTAINER_RUNTIME) build --tag flightctl-ai:$(TAG) --file images/flightctl-ai/Containerfile .
+
+# Push the image to a remote registry
+# Usage: make push REGISTRY=quay.io/myorg
+push:
+ifndef REGISTRY
+	$(error REGISTRY is required. Usage: make push REGISTRY=quay.io/myorg)
+endif
+	$(CONTAINER_RUNTIME) tag $(IMAGE_NAME):$(TAG) $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+	$(CONTAINER_RUNTIME) push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
 
 # Run the container
 run:
@@ -33,7 +53,7 @@ run:
 		--name jira-ai-solver \
 		-p 8080:8080 \
 		-v ./config.yaml:/app/config.yaml:ro \
-		jira-ai-issue-solver:latest
+		$(IMAGE_NAME):$(TAG)
 
 # Stop the container
 stop:
@@ -50,7 +70,7 @@ logs:
 clean:
 	@echo "Cleaning up containers and images..."
 	$(CONTAINER_RUNTIME) rm -f jira-ai-solver jira-ai-test 2>/dev/null || true
-	$(CONTAINER_RUNTIME) rmi jira-ai-issue-solver:latest 2>/dev/null || true
+	$(CONTAINER_RUNTIME) rmi $(IMAGE_NAME):$(TAG) 2>/dev/null || true
 	rm -f test-config.yaml
 
 # Run with compose

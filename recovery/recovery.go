@@ -114,8 +114,8 @@ type Config struct {
 	// InProgressCriteria defines the search query for finding tickets
 	// stuck in "in progress" status. Typically uses StatusByType to
 	// handle projects where different ticket types have different
-	// "in progress" status names, combined with AssignedTo to limit
-	// results to the bot's tickets.
+	// "in progress" status names, combined with ContributorIsCurrentUser
+	// to limit results to tickets the bot is contributing to.
 	InProgressCriteria models.SearchCriteria
 
 	// ActiveStatuses is the set of all statuses that indicate a ticket

@@ -839,7 +839,7 @@ func TestRun_PassesInProgressCriteria(t *testing.T) {
 			"Bug":   {"Development"},
 			"Story": {"In Progress"},
 		},
-		AssignedTo: "ai-bot",
+		ContributorIsCurrentUser: true,
 	}
 
 	var receivedCriteria models.SearchCriteria
@@ -854,8 +854,8 @@ func TestRun_PassesInProgressCriteria(t *testing.T) {
 	})
 	_ = r.Run(context.Background())
 
-	if receivedCriteria.AssignedTo != "ai-bot" {
-		t.Errorf("AssignedTo = %q, want ai-bot", receivedCriteria.AssignedTo)
+	if !receivedCriteria.ContributorIsCurrentUser {
+		t.Error("ContributorIsCurrentUser should be true")
 	}
 	if len(receivedCriteria.ProjectKeys) != 1 || receivedCriteria.ProjectKeys[0] != "PROJ" {
 		t.Errorf("ProjectKeys = %v, want [PROJ]", receivedCriteria.ProjectKeys)

@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -830,7 +831,7 @@ func TestUpdateTicketField(t *testing.T) {
 		name          string
 		key           string
 		fieldID       string
-		value         interface{}
+		value         any
 		mockResponse  *http.Response
 		expectedError bool
 	}{
@@ -955,7 +956,7 @@ func TestUpdateTicketFieldByName(t *testing.T) {
 		name          string
 		key           string
 		fieldName     string
-		value         interface{}
+		value         any
 		mockResponses []*http.Response
 		expectedError bool
 	}{
@@ -1112,6 +1113,52 @@ func TestSearchTickets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSearchTickets_RequestedFields verifies that SearchTickets requests
+// all fields needed by mapFieldsToWorkItem.
+func TestSearchTickets_RequestedFields(t *testing.T) {
+	requiredFields := []string{
+		"summary", "description", "status", "issuetype",
+		"project", "components", "labels", "assignee", "security",
+	}
+
+	var requestBody map[string]any
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"total":0,"issues":[]}`))),
+		}, nil
+	})
+
+	service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+	_, err := service.SearchTickets("project = TEST")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fieldsRaw, ok := requestBody["fields"]
+	if !ok {
+		t.Fatal("request body missing 'fields' key")
+	}
+	fields, ok := fieldsRaw.([]any)
+	if !ok {
+		t.Fatalf("fields is %T, want []any", fieldsRaw)
+	}
+
+	fieldSet := make(map[string]bool)
+	for _, f := range fields {
+		fieldSet[f.(string)] = true
+	}
+
+	for _, required := range requiredFields {
+		if !fieldSet[required] {
+			t.Errorf("required field %q not included in search request", required)
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"jira-ai-issue-solver/executor/executortest"
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
+	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/taskfile/taskfiletest"
 	"jira-ai-issue-solver/tracker/trackertest"
 	"jira-ai-issue-solver/workspace/workspacetest"
@@ -340,7 +341,7 @@ func TestExecuteNewTicket_ContainerStartFailsFallbackSucceeds(t *testing.T) {
 	d := newTestDeps(t)
 
 	startAttempt := 0
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		startAttempt++
 		if startAttempt == 1 {
 			return nil, errors.New("image not found")
@@ -370,7 +371,7 @@ func TestExecuteNewTicket_ContainerStartFailsFallbackSucceeds(t *testing.T) {
 
 func TestExecuteNewTicket_ContainerStartFailsNoFallback(t *testing.T) {
 	d := newTestDeps(t)
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		return nil, errors.New("image not found")
 	}
 
@@ -695,6 +696,9 @@ func TestExecuteNewTicket_WorkspaceReused_SwitchesBranch(t *testing.T) {
 	d.workspaces.FindOrCreateFunc = func(ticketKey, repoURL string) (string, bool, error) {
 		return d.wsDir, true, nil // reused
 	}
+	d.git.RemoteBranchExistsFunc = func(owner, repo, branch string) (bool, error) {
+		return true, nil // remote branch still exists
+	}
 
 	branchSwitched := false
 	d.git.SwitchBranchFunc = func(dir, name string) error {
@@ -722,6 +726,44 @@ func TestExecuteNewTicket_WorkspaceReused_SwitchesBranch(t *testing.T) {
 	}
 	if branchCreated {
 		t.Error("expected CreateBranch NOT to be called on reuse")
+	}
+}
+
+func TestExecuteNewTicket_WorkspaceReused_RemoteBranchDeleted_RecreatesBranch(t *testing.T) {
+	d := newTestDeps(t)
+	d.workspaces.FindOrCreateFunc = func(ticketKey, repoURL string) (string, bool, error) {
+		return d.wsDir, true, nil // reused
+	}
+	d.git.RemoteBranchExistsFunc = func(owner, repo, branch string) (bool, error) {
+		return false, nil // remote branch was deleted
+	}
+
+	branchSwitched := false
+	d.git.SwitchBranchFunc = func(dir, name string) error {
+		branchSwitched = true
+		return nil
+	}
+
+	branchCreated := false
+	d.git.CreateBranchFunc = func(dir, name string) error {
+		branchCreated = true
+		if !strings.Contains(name, "PROJ-1") {
+			t.Errorf("branch name = %q, should contain ticket key", name)
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branchSwitched {
+		t.Error("expected SwitchBranch NOT to be called when remote branch deleted")
+	}
+	if !branchCreated {
+		t.Error("expected CreateBranch to be called when remote branch deleted")
 	}
 }
 
@@ -898,7 +940,7 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	}
 
 	var envVars map[string]string
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		envVars = env
 		return &container.Container{ID: "c1", Name: "test"}, nil
 	}
@@ -918,6 +960,169 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	}
 	if _, ok := envVars["GEMINI_API_KEY"]; !ok {
 		t.Error("expected GEMINI_API_KEY in container env")
+	}
+}
+
+// --- ErrNoChanges handling ---
+
+func TestExecuteNewTicket_ErrNoChanges_ReturnsError(t *testing.T) {
+	d := newTestDeps(t)
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+		return "", services.ErrNoChanges
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err == nil {
+		t.Fatal("expected error when CommitChanges returns ErrNoChanges")
+	}
+	if !strings.Contains(err.Error(), "no committable changes") {
+		t.Errorf("error = %q, should mention 'no committable changes'", err.Error())
+	}
+}
+
+// --- Auth strip/restore ---
+
+func TestExecuteNewTicket_AuthStrippedBeforeAI(t *testing.T) {
+	d := newTestDeps(t)
+
+	var order []string
+	d.git.StripRemoteAuthFunc = func(dir string) error {
+		order = append(order, "strip")
+		return nil
+	}
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		order = append(order, "restore")
+		return nil
+	}
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		order = append(order, "exec")
+		return "", 0, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify ordering: strip must happen before exec, restore after exec.
+	stripIdx, execIdx, restoreIdx := -1, -1, -1
+	for i, v := range order {
+		switch v {
+		case "strip":
+			stripIdx = i
+		case "exec":
+			execIdx = i
+		case "restore":
+			if restoreIdx == -1 {
+				restoreIdx = i
+			}
+		}
+	}
+
+	if stripIdx < 0 {
+		t.Fatal("StripRemoteAuth was not called")
+	}
+	if execIdx < 0 {
+		t.Fatal("container Exec was not called")
+	}
+	if restoreIdx < 0 {
+		t.Fatal("RestoreRemoteAuth was not called")
+	}
+	if stripIdx >= execIdx {
+		t.Error("StripRemoteAuth must be called before container Exec")
+	}
+	if execIdx >= restoreIdx {
+		t.Error("RestoreRemoteAuth must be called after container Exec")
+	}
+}
+
+func TestExecuteNewTicket_AuthRestoredOnExecFailure(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		return "", 1, errors.New("exec failed")
+	}
+
+	restored := false
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		restored = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, _ = p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if !restored {
+		t.Error("RestoreRemoteAuth should be called even when exec fails")
+	}
+}
+
+// --- Container settings override ---
+
+func TestExecuteNewTicket_ContainerSettingsPassedToResolve(t *testing.T) {
+	d := newTestDeps(t)
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			Container: models.ContainerSettings{
+				Image: "project-image:v1",
+				ResourceLimits: models.ContainerResourceLimits{
+					Memory: "16g",
+				},
+			},
+		}, nil
+	}
+
+	var receivedOverride *container.SettingsOverride
+	d.containers.ResolveConfigFunc = func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
+		receivedOverride = projectOverride
+		return &container.Config{Image: "project-image:v1"}, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedOverride == nil {
+		t.Fatal("expected project override to be passed to ResolveConfig")
+	}
+	if receivedOverride.Image != "project-image:v1" {
+		t.Errorf("override image = %q, want %q", receivedOverride.Image, "project-image:v1")
+	}
+	if receivedOverride.Limits.Memory != "16g" {
+		t.Errorf("override memory = %q, want %q", receivedOverride.Limits.Memory, "16g")
+	}
+}
+
+func TestExecuteNewTicket_EmptyContainerSettingsNoOverride(t *testing.T) {
+	d := newTestDeps(t)
+
+	var receivedOverride *container.SettingsOverride
+	d.containers.ResolveConfigFunc = func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
+		receivedOverride = projectOverride
+		return &container.Config{Image: "default:latest"}, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedOverride != nil {
+		t.Error("expected nil override when project has no container settings")
 	}
 }
 
@@ -963,10 +1168,10 @@ func newTestDeps(t *testing.T) *testDeps {
 			},
 		},
 		containers: &containertest.StubManager{
-			ResolveConfigFunc: func(repoDir string) (*container.Config, error) {
+			ResolveConfigFunc: func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
 				return &container.Config{Image: "test:latest"}, nil
 			},
-			StartFunc: func(ctx context.Context, cfg *container.Config, wsDir string, env map[string]string) (*container.Container, error) {
+			StartFunc: func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 				return &container.Container{ID: "c1", Name: "test-c1"}, nil
 			},
 		},

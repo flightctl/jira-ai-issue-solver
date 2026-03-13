@@ -35,15 +35,18 @@ func (s *Stub) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager.Job
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubGitService struct {
-	CreateBranchFunc   func(dir, name string) error
-	SwitchBranchFunc   func(dir, name string) error
-	HasChangesFunc     func(dir string) (bool, error)
-	CommitChangesFunc  func(owner, repo, branch, message, dir string, coAuthor *models.Author) (string, error)
-	SyncWithRemoteFunc func(dir, branch string) error
-	CreatePRFunc       func(params models.PRParams) (*models.PR, error)
-	GetPRForBranchFunc func(owner, repo, head string) (*models.PRDetails, error)
-	GetPRCommentsFunc  func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
-	ReplyToCommentFunc func(owner, repo string, prNumber int, commentID int64, body string) error
+	CreateBranchFunc       func(dir, name string) error
+	SwitchBranchFunc       func(dir, name string) error
+	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
+	HasChangesFunc         func(dir string) (bool, error)
+	CommitChangesFunc      func(owner, repo, branch, message, dir string, coAuthor *models.Author) (string, error)
+	StripRemoteAuthFunc    func(dir string) error
+	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
+	SyncWithRemoteFunc     func(dir, branch string) error
+	CreatePRFunc           func(params models.PRParams) (*models.PR, error)
+	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
+	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
+	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
 }
 
 func (s *StubGitService) CreateBranch(dir, name string) error {
@@ -60,6 +63,13 @@ func (s *StubGitService) SwitchBranch(dir, name string) error {
 	return nil
 }
 
+func (s *StubGitService) RemoteBranchExists(owner, repo, branch string) (bool, error) {
+	if s.RemoteBranchExistsFunc != nil {
+		return s.RemoteBranchExistsFunc(owner, repo, branch)
+	}
+	return false, nil
+}
+
 func (s *StubGitService) HasChanges(dir string) (bool, error) {
 	if s.HasChangesFunc != nil {
 		return s.HasChangesFunc(dir)
@@ -72,6 +82,20 @@ func (s *StubGitService) CommitChanges(owner, repo, branch, message, dir string,
 		return s.CommitChangesFunc(owner, repo, branch, message, dir, coAuthor)
 	}
 	return "", nil
+}
+
+func (s *StubGitService) StripRemoteAuth(dir string) error {
+	if s.StripRemoteAuthFunc != nil {
+		return s.StripRemoteAuthFunc(dir)
+	}
+	return nil
+}
+
+func (s *StubGitService) RestoreRemoteAuth(dir, owner, repo string) error {
+	if s.RestoreRemoteAuthFunc != nil {
+		return s.RestoreRemoteAuthFunc(dir, owner, repo)
+	}
+	return nil
 }
 
 func (s *StubGitService) SyncWithRemote(dir, branch string) error {

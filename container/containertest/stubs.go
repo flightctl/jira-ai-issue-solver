@@ -18,11 +18,19 @@ var (
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubRunner struct {
+	PullFunc           func(ctx context.Context, image string) error
 	RunFunc            func(ctx context.Context, opts container.RunOptions) (string, error)
 	ExecFunc           func(ctx context.Context, containerID string, cmd []string) (string, int, error)
 	StopFunc           func(ctx context.Context, containerID string, timeout time.Duration) error
 	RemoveFunc         func(ctx context.Context, containerID string) error
 	ListContainersFunc func(ctx context.Context, namePrefix string) ([]string, error)
+}
+
+func (s *StubRunner) Pull(ctx context.Context, image string) error {
+	if s.PullFunc != nil {
+		return s.PullFunc(ctx, image)
+	}
+	return nil
 }
 
 func (s *StubRunner) Run(ctx context.Context, opts container.RunOptions) (string, error) {
@@ -64,23 +72,23 @@ func (s *StubRunner) ListContainers(ctx context.Context, namePrefix string) ([]s
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubManager struct {
-	ResolveConfigFunc  func(repoDir string) (*container.Config, error)
-	StartFunc          func(ctx context.Context, cfg *container.Config, workspaceDir string, env map[string]string) (*container.Container, error)
+	ResolveConfigFunc  func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error)
+	StartFunc          func(ctx context.Context, cfg *container.Config, workspaceDir, ticketKey string, env map[string]string) (*container.Container, error)
 	ExecFunc           func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error)
 	StopFunc           func(ctx context.Context, ctr *container.Container) error
 	CleanupOrphansFunc func(ctx context.Context, prefix string) error
 }
 
-func (s *StubManager) ResolveConfig(repoDir string) (*container.Config, error) {
+func (s *StubManager) ResolveConfig(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
 	if s.ResolveConfigFunc != nil {
-		return s.ResolveConfigFunc(repoDir)
+		return s.ResolveConfigFunc(repoDir, projectOverride)
 	}
 	return &container.Config{}, nil
 }
 
-func (s *StubManager) Start(ctx context.Context, cfg *container.Config, workspaceDir string, env map[string]string) (*container.Container, error) {
+func (s *StubManager) Start(ctx context.Context, cfg *container.Config, workspaceDir, ticketKey string, env map[string]string) (*container.Container, error) {
 	if s.StartFunc != nil {
-		return s.StartFunc(ctx, cfg, workspaceDir, env)
+		return s.StartFunc(ctx, cfg, workspaceDir, ticketKey, env)
 	}
 	return &container.Container{}, nil
 }

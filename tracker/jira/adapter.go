@@ -164,7 +164,7 @@ func jqlQuote(v string) string {
 // buildJQL converts a SearchCriteria into a Jira JQL query string.
 //
 // Conditions are emitted in a fixed order (project, type+status, status,
-// assignee, labels) and joined with AND. Map keys are sorted to ensure
+// contributor, labels) and joined with AND. Map keys are sorted to ensure
 // deterministic output for testability.
 func buildJQL(criteria models.SearchCriteria) string {
 	var conditions []string
@@ -209,8 +209,8 @@ func buildJQL(criteria models.SearchCriteria) string {
 		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(quoted, ", ")))
 	}
 
-	if criteria.AssignedTo != "" {
-		conditions = append(conditions, fmt.Sprintf("assignee = %s", jqlQuote(criteria.AssignedTo)))
+	if criteria.ContributorIsCurrentUser {
+		conditions = append(conditions, "Contributors = currentUser()")
 	}
 
 	if len(criteria.Labels) > 0 {

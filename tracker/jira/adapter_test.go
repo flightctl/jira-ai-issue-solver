@@ -377,11 +377,11 @@ func TestAdapter_SearchWorkItems_JQL(t *testing.T) {
 			wantJQL: `status IN ("In Progress", "In Review")`,
 		},
 		{
-			name: "assignee filter",
+			name: "contributor filter",
 			criteria: models.SearchCriteria{
-				AssignedTo: "bot-user",
+				ContributorIsCurrentUser: true,
 			},
-			wantJQL: `assignee = "bot-user"`,
+			wantJQL: `Contributors = currentUser()`,
 		},
 		{
 			name: "labels filter",
@@ -412,11 +412,11 @@ func TestAdapter_SearchWorkItems_JQL(t *testing.T) {
 				StatusByType: map[string][]string{
 					"Bug": {"Open"},
 				},
-				AssignedTo: "bot-user",
-				Labels:     []string{"good-for-ai"},
-				OrderBy:    "updated DESC",
+				ContributorIsCurrentUser: true,
+				Labels:                   []string{"good-for-ai"},
+				OrderBy:                  "updated DESC",
 			},
-			wantJQL: `project IN ("PROJ1") AND ((issuetype = "Bug" AND status = "Open")) AND assignee = "bot-user" AND labels IN ("good-for-ai") ORDER BY updated DESC`,
+			wantJQL: `project IN ("PROJ1") AND ((issuetype = "Bug" AND status = "Open")) AND Contributors = currentUser() AND labels IN ("good-for-ai") ORDER BY updated DESC`,
 		},
 		{
 			name:     "empty criteria produces empty JQL",

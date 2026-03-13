@@ -16,14 +16,14 @@ import (
 // --- NewResolver ---
 
 func TestNewResolver_RejectsNilLogger(t *testing.T) {
-	_, err := container.NewResolver("", container.ResourceLimits{}, nil)
+	_, err := container.NewResolver(container.ResolverDefaults{}, nil)
 	if err == nil {
 		t.Fatal("expected error for nil logger")
 	}
 }
 
 func TestNewResolver_AcceptsEmptyDefaults(t *testing.T) {
-	r, err := container.NewResolver("", container.ResourceLimits{}, zap.NewNop())
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestResolve_BotConfigTakesPriority(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestResolve_FallsBackToDevcontainer(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestResolve_FallsBackToBotDefault(t *testing.T) {
 	repoDir := t.TempDir()
 
 	r := newTestResolver(t, "admin-default:latest", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestResolve_FallsBackToBuiltInDefault(t *testing.T) {
 	repoDir := t.TempDir()
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestResolve_ResourceLimitsFallThrough(t *testing.T) {
 		Memory: "8g",
 		CPUs:   "4",
 	})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestResolve_RepoOverridesResourceLimits(t *testing.T) {
 		Memory: "8g",
 		CPUs:   "4",
 	})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestResolve_RepoConfigNoImage_UsesDefault(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "admin-default:latest", container.ResourceLimits{Memory: "4g"})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestResolve_EnvFromBotConfig(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestResolve_PostCreateCommandFromBotConfig(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestResolve_PostCreateCommandFromBotConfig(t *testing.T) {
 func TestResolve_EnvAlwaysNonNil(t *testing.T) {
 	repoDir := t.TempDir()
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestResolve_DevcontainerPostCreateCommandString(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestResolve_DevcontainerPostCreateCommandArray(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,12 +279,12 @@ func TestResolve_DevcontainerPostCreateCommandObjectIgnored(t *testing.T) {
 	core, logs := observer.New(zapcore.WarnLevel)
 	logger := zap.New(core)
 
-	r, err := container.NewResolver("", container.ResourceLimits{}, logger)
+	r, err := container.NewResolver(container.ResolverDefaults{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestResolve_DevcontainerContainerEnv(t *testing.T) {
 	})
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,12 +328,12 @@ func TestResolve_DevcontainerUnsupportedFieldsLogged(t *testing.T) {
 	core, logs := observer.New(zapcore.WarnLevel)
 	logger := zap.New(core)
 
-	r, err := container.NewResolver("", container.ResourceLimits{}, logger)
+	r, err := container.NewResolver(container.ResolverDefaults{}, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestResolve_DevcontainerJSONCComments(t *testing.T) {
 	writeRawDevcontainer(t, repoDir, jsonc)
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestResolve_DevcontainerJSONCUnterminatedComment(t *testing.T) {
 	writeRawDevcontainer(t, repoDir, jsonc)
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	_, err := r.Resolve(repoDir)
+	_, err := r.Resolve(repoDir, nil)
 	if err == nil {
 		t.Fatal("expected error for JSONC with unterminated multi-line comment")
 	}
@@ -406,7 +406,7 @@ func TestResolve_DevcontainerJSONCPreservesURLsInStrings(t *testing.T) {
 	writeRawDevcontainer(t, repoDir, jsonc)
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestResolve_DevcontainerTrailingCommaInStringPreserved(t *testing.T) {
 	writeRawDevcontainer(t, repoDir, jsonc)
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestResolve_InvalidBotConfigJSON(t *testing.T) {
 	}
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	_, err := r.Resolve(repoDir)
+	_, err := r.Resolve(repoDir, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -472,7 +472,7 @@ func TestResolve_InvalidDevcontainerJSON(t *testing.T) {
 	}
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	_, err := r.Resolve(repoDir)
+	_, err := r.Resolve(repoDir, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid devcontainer JSON")
 	}
@@ -483,7 +483,7 @@ func TestResolve_EmptyBotConfig(t *testing.T) {
 	writeBotConfig(t, repoDir, map[string]any{})
 
 	r := newTestResolver(t, "admin:latest", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir)
+	cfg, err := r.Resolve(repoDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestResolve_SourceTracking(t *testing.T) {
 			tt.setup(t, repoDir)
 
 			r := newTestResolver(t, tt.defImage, container.ResourceLimits{})
-			cfg, err := r.Resolve(repoDir)
+			cfg, err := r.Resolve(repoDir, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -556,11 +556,265 @@ func TestResolve_SourceTracking(t *testing.T) {
 	}
 }
 
+// --- Project override ---
+
+func TestResolve_ProjectOverrideEnvMergedWithFallback(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		Fallback: container.SettingsOverride{
+			Image: "default:latest",
+			Env:   map[string]string{"FROM_FALLBACK": "yes", "SHARED": "fallback"},
+		},
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		Env: map[string]string{"FROM_PROJECT": "yes", "SHARED": "project"},
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fallback env should be preserved.
+	if cfg.Env["FROM_FALLBACK"] != "yes" {
+		t.Errorf("Env[FROM_FALLBACK] = %q, want yes", cfg.Env["FROM_FALLBACK"])
+	}
+	// Project override env should be added.
+	if cfg.Env["FROM_PROJECT"] != "yes" {
+		t.Errorf("Env[FROM_PROJECT] = %q, want yes", cfg.Env["FROM_PROJECT"])
+	}
+	// Project override wins on shared keys.
+	if cfg.Env["SHARED"] != "project" {
+		t.Errorf("Env[SHARED] = %q, want project (project override wins)", cfg.Env["SHARED"])
+	}
+}
+
+func TestResolve_ProjectOverrideImageOverridesFallback(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		Fallback: container.SettingsOverride{
+			Image: "default:latest",
+		},
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		Image: "project:latest",
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Image != "project:latest" {
+		t.Errorf("Image = %q, want project:latest", cfg.Image)
+	}
+	if cfg.Source != "project config" {
+		t.Errorf("Source = %q, want project config", cfg.Source)
+	}
+}
+
+func TestResolve_RepoConfigEnvOverridesProjectAndFallback(t *testing.T) {
+	repoDir := t.TempDir()
+	writeBotConfig(t, repoDir, map[string]any{
+		"image": "repo:latest",
+		"env":   map[string]string{"FROM_REPO": "yes", "SHARED": "repo"},
+	})
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		Fallback: container.SettingsOverride{
+			Env: map[string]string{"FROM_FALLBACK": "yes", "SHARED": "fallback"},
+		},
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		Env: map[string]string{"FROM_PROJECT": "yes", "SHARED": "project"},
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All three env sources should be present.
+	if cfg.Env["FROM_FALLBACK"] != "yes" {
+		t.Errorf("Env[FROM_FALLBACK] = %q, want yes", cfg.Env["FROM_FALLBACK"])
+	}
+	if cfg.Env["FROM_PROJECT"] != "yes" {
+		t.Errorf("Env[FROM_PROJECT] = %q, want yes", cfg.Env["FROM_PROJECT"])
+	}
+	if cfg.Env["FROM_REPO"] != "yes" {
+		t.Errorf("Env[FROM_REPO] = %q, want yes", cfg.Env["FROM_REPO"])
+	}
+	// Repo-level wins on shared keys.
+	if cfg.Env["SHARED"] != "repo" {
+		t.Errorf("Env[SHARED] = %q, want repo (repo-level wins)", cfg.Env["SHARED"])
+	}
+}
+
+// --- Host policy ---
+
+func TestResolve_HostPolicyDisableSELinux(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		DisableSELinux: true,
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := r.Resolve(repoDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DisableSELinux {
+		t.Error("expected DisableSELinux = true from host policy")
+	}
+}
+
+func TestResolve_HostPolicyUserNS(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		UserNS: "keep-id",
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := r.Resolve(repoDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UserNS != "keep-id" {
+		t.Errorf("UserNS = %q, want keep-id", cfg.UserNS)
+	}
+}
+
+func TestResolve_HostPolicyOverridesRepoConfig(t *testing.T) {
+	// Repo config cannot override host-level policy. Even if a repo
+	// somehow provides conflicting values, host policy wins.
+	repoDir := t.TempDir()
+	writeBotConfig(t, repoDir, map[string]any{
+		"image": "repo:latest",
+	})
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		DisableSELinux: true,
+		UserNS:         "keep-id:uid=1000,gid=1000",
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := r.Resolve(repoDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DisableSELinux {
+		t.Error("expected DisableSELinux = true (host policy overrides)")
+	}
+	if cfg.UserNS != "keep-id:uid=1000,gid=1000" {
+		t.Errorf("UserNS = %q, want keep-id:uid=1000,gid=1000", cfg.UserNS)
+	}
+}
+
+// --- SettingsOverride Tmpfs and ExtraMounts ---
+
+func TestResolve_ProjectOverrideTmpfs(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		Tmpfs: []string{"/tmp:size=4g", "/run"},
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Tmpfs) != 2 || cfg.Tmpfs[0] != "/tmp:size=4g" {
+		t.Errorf("Tmpfs = %v, want [/tmp:size=4g /run]", cfg.Tmpfs)
+	}
+}
+
+func TestResolve_ProjectOverrideExtraMounts(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		ExtraMounts: []container.Mount{
+			{Source: "/host/cache", Target: "/cache", Options: "ro"},
+		},
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ExtraMounts) != 1 {
+		t.Fatalf("ExtraMounts count = %d, want 1", len(cfg.ExtraMounts))
+	}
+	if cfg.ExtraMounts[0].Source != "/host/cache" || cfg.ExtraMounts[0].Target != "/cache" {
+		t.Errorf("ExtraMounts[0] = %+v, want cache mount", cfg.ExtraMounts[0])
+	}
+}
+
+func TestResolve_FallbackTmpfsOverriddenByProject(t *testing.T) {
+	repoDir := t.TempDir()
+
+	r, err := container.NewResolver(container.ResolverDefaults{
+		Fallback: container.SettingsOverride{
+			Tmpfs: []string{"/tmp:size=2g"},
+		},
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		Tmpfs: []string{"/tmp:size=8g"},
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Tmpfs) != 1 || cfg.Tmpfs[0] != "/tmp:size=8g" {
+		t.Errorf("Tmpfs = %v, want [/tmp:size=8g] (project overrides fallback)", cfg.Tmpfs)
+	}
+}
+
 // --- helpers ---
 
 func newTestResolver(t *testing.T, defaultImage string, defaultLimits container.ResourceLimits) *container.Resolver {
 	t.Helper()
-	r, err := container.NewResolver(defaultImage, defaultLimits, zap.NewNop())
+	r, err := container.NewResolver(container.ResolverDefaults{
+		Fallback: container.SettingsOverride{
+			Image:  defaultImage,
+			Limits: defaultLimits,
+		},
+	}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}

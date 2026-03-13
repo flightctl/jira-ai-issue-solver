@@ -496,6 +496,128 @@ func TestLocateRepo_URLParsing(t *testing.T) {
 	}
 }
 
+// --- Case-insensitive component matching ---
+
+func TestResolveProject_ComponentMatchingCaseInsensitive(t *testing.T) {
+	// Viper lowercases YAML map keys, so "FlightCtl" in YAML becomes
+	// "flightctl" in the loaded config. The component from Jira retains
+	// original casing ("FlightCtl-Core"). Case-insensitive matching
+	// bridges this gap.
+	cfg := minimalConfig()
+	cfg.Jira.Projects[0].ComponentToRepo["flightctl"] = "https://github.com/org/flightctl.git"
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"FlightCtl"},
+	}
+
+	ps, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ps.Repo != "flightctl" {
+		t.Errorf("repo = %q, want %q", ps.Repo, "flightctl")
+	}
+}
+
+func TestResolveProject_ComponentMatchingExactTakesPriority(t *testing.T) {
+	cfg := minimalConfig()
+	// Exact match for "Backend" and case-insensitive match for "backend"
+	// should both exist. Exact match should win.
+	cfg.Jira.Projects[0].ComponentToRepo["Backend"] = "https://github.com/org/exact.git"
+	// "backend" already exists from minimalConfig
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"Backend"},
+	}
+
+	ps, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ps.Repo != "exact" {
+		t.Errorf("repo = %q, want %q (exact match should take priority)", ps.Repo, "exact")
+	}
+}
+
+func TestResolveProject_ComponentMatchingUppercase(t *testing.T) {
+	cfg := minimalConfig()
+	// Config has lowercase "backend", Jira component is "BACKEND"
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"BACKEND"},
+	}
+
+	ps, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ps.Repo != "backend" {
+		t.Errorf("repo = %q, want %q", ps.Repo, "backend")
+	}
+}
+
+// --- Container settings passthrough ---
+
+func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Jira.Projects[0].Container = models.ContainerSettings{
+		Image: "custom-image:latest",
+		ResourceLimits: models.ContainerResourceLimits{
+			Memory: "16g",
+			CPUs:   "8",
+		},
+	}
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"backend"},
+	}
+
+	ps, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ps.Container.Image != "custom-image:latest" {
+		t.Errorf("container image = %q, want %q", ps.Container.Image, "custom-image:latest")
+	}
+	if ps.Container.ResourceLimits.Memory != "16g" {
+		t.Errorf("container memory = %q, want %q", ps.Container.ResourceLimits.Memory, "16g")
+	}
+	if ps.Container.ResourceLimits.CPUs != "8" {
+		t.Errorf("container cpus = %q, want %q", ps.Container.ResourceLimits.CPUs, "8")
+	}
+}
+
 // --- helpers ---
 
 // minimalConfig returns a Config with a single project, one component

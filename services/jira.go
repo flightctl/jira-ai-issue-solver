@@ -505,7 +505,7 @@ func (s *JiraServiceImpl) SearchTickets(jql string) (*models.JiraSearchResponse,
 		"jql":        jql,
 		"startAt":    0,
 		"maxResults": 100,
-		"fields":     []string{"summary", "description", "status", "project", "components", "labels", "created", "updated", "creator", "reporter"},
+		"fields":     []string{"summary", "description", "status", "issuetype", "project", "components", "labels", "assignee", "security", "created", "updated", "creator", "reporter"},
 	}
 
 	jsonPayload, err := json.Marshal(payload)

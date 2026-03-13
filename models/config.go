@@ -272,6 +272,12 @@ type ProjectConfig struct {
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
 	ComponentToRepo         ComponentToRepoMap          `yaml:"component_to_repo" mapstructure:"component_to_repo"`
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
+
+	// Container holds per-project container settings. When set,
+	// these override the global fallback (container.fallback) but
+	// are still overridden by repo-level config
+	// (.ai-bot/container.json or .devcontainer/devcontainer.json).
+	Container ContainerSettings `yaml:"container" mapstructure:"container"`
 }
 
 type JiraConfig struct {
@@ -341,22 +347,63 @@ type Config struct {
 	Guardrails GuardrailsConfig `yaml:"guardrails" mapstructure:"guardrails"`
 }
 
-// ContainerCfg holds bot-level container configuration. These values
-// serve as defaults when no repo-level container config is found.
+// ContainerCfg holds bot-level container configuration: host-level
+// runtime policy and a global fallback for container settings.
 type ContainerCfg struct {
 	// Runtime specifies the container runtime preference. Valid values
 	// are "auto" (detect, preferring podman), "podman", or "docker".
 	Runtime string `yaml:"runtime" mapstructure:"runtime" default:"auto"`
 
-	// DefaultImage is the fallback container image used when no
-	// repo-level container config (.ai-bot/container.json or
-	// .devcontainer/devcontainer.json) provides an image. If empty,
-	// a built-in minimal fallback image is used.
-	DefaultImage string `yaml:"default_image" mapstructure:"default_image"`
+	// DisableSELinux disables SELinux confinement for all spawned
+	// containers (--security-opt=label=disable). This is host-level
+	// policy and applies regardless of per-project container config.
+	DisableSELinux bool `yaml:"disable_selinux" mapstructure:"disable_selinux"`
 
-	// ResourceLimits are the default resource limits applied to
-	// containers. Repo-level config can override these.
+	// UserNS sets the user namespace mode for all spawned containers
+	// (e.g., "keep-id", "keep-id:uid=1000,gid=1000"). This is
+	// host-level policy. Empty means the container runtime's default.
+	UserNS string `yaml:"userns" mapstructure:"userns"`
+
+	// Fallback holds the global fallback container settings, used
+	// when neither the target repo nor the project config specifies
+	// container settings.
+	Fallback ContainerSettings `yaml:"fallback" mapstructure:"fallback"`
+}
+
+// ContainerSettings holds per-environment container settings. This
+// type is shared between the global fallback (container.fallback) and
+// per-project overrides (jira.projects[].container). Both sit below
+// repo-level config (.ai-bot/container.json) in the resolution chain.
+type ContainerSettings struct {
+	// Image is the container image reference (e.g., "my-org/dev:latest").
+	Image string `yaml:"image" mapstructure:"image"`
+
+	// ResourceLimits constrain the container's resource usage.
 	ResourceLimits ContainerResourceLimits `yaml:"resource_limits" mapstructure:"resource_limits"`
+
+	// Env holds static environment variables injected into the
+	// container. These are merged additively through the resolution
+	// chain: higher-priority sources override keys from lower-priority
+	// sources, but keys not present in the higher source are preserved.
+	// These are separate from runtime env vars (API keys, etc.) passed
+	// by the executor at start time.
+	Env map[string]string `yaml:"env" mapstructure:"env"`
+
+	// Tmpfs specifies tmpfs mounts. Each entry uses the standard
+	// runtime format (e.g., "/tmp:size=4g").
+	Tmpfs []string `yaml:"tmpfs" mapstructure:"tmpfs"`
+
+	// ExtraMounts specifies additional volume mounts beyond the
+	// workspace mount. Useful for persistent caches (Go module
+	// cache, build cache) that survive across container restarts.
+	ExtraMounts []ExtraMountCfg `yaml:"extra_mounts" mapstructure:"extra_mounts"`
+}
+
+// ExtraMountCfg represents an additional volume mount for containers.
+type ExtraMountCfg struct {
+	Source  string `yaml:"source" mapstructure:"source"`
+	Target  string `yaml:"target" mapstructure:"target"`
+	Options string `yaml:"options" mapstructure:"options"`
 }
 
 // ContainerResourceLimits holds default resource limits for containers.
@@ -539,9 +586,11 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// Container configuration
 	bindEnv("container.runtime")
-	bindEnv("container.default_image")
-	bindEnv("container.resource_limits.memory")
-	bindEnv("container.resource_limits.cpus")
+	bindEnv("container.disable_selinux")
+	bindEnv("container.userns")
+	bindEnv("container.fallback.image")
+	bindEnv("container.fallback.resource_limits.memory")
+	bindEnv("container.fallback.resource_limits.cpus")
 
 	// Guardrails configuration
 	bindEnv("guardrails.max_concurrent_jobs")
