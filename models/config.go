@@ -284,6 +284,12 @@ type ProjectConfig struct {
 	// imports declared in the target repo's .ai-bot/config.yaml
 	// (repo-level imports take precedence on path conflicts).
 	Imports []ImportConfig `yaml:"imports" mapstructure:"imports"`
+
+	// Instructions provides project-level AI instructions that are
+	// appended to the task prompt. Used to prototype instructions
+	// before committing .ai-bot/instructions.md to the target repo.
+	// The repo-level file takes precedence when it exists.
+	Instructions string `yaml:"instructions" mapstructure:"instructions"`
 }
 
 // ImportConfig declares an auxiliary repository to clone into the workspace.

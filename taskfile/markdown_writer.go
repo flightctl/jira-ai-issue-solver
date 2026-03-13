@@ -24,7 +24,7 @@ func NewMarkdownWriter() *MarkdownWriter {
 	return &MarkdownWriter{}
 }
 
-func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir string) error {
+func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions string) error {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# Task: %s\n\n", workItem.Key)
@@ -38,7 +38,7 @@ func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir string
 
 	writeNewTicketInstructions(&b, workItem.HasSecurityLevel())
 
-	if err := appendInstructions(&b, dir); err != nil {
+	if err := appendInstructions(&b, dir, fallbackInstructions); err != nil {
 		return err
 	}
 
@@ -48,7 +48,7 @@ func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir string
 func (w *MarkdownWriter) WriteFeedbackTask(
 	prDetails models.PRDetails,
 	newComments, addressedComments []models.PRComment,
-	dir string,
+	dir, fallbackInstructions string,
 ) error {
 	var b strings.Builder
 
@@ -70,7 +70,7 @@ func (w *MarkdownWriter) WriteFeedbackTask(
 
 	writeFeedbackInstructions(&b)
 
-	if err := appendInstructions(&b, dir); err != nil {
+	if err := appendInstructions(&b, dir, fallbackInstructions); err != nil {
 		return err
 	}
 
@@ -102,20 +102,24 @@ func writeFeedbackInstructions(b *strings.Builder) {
 
 // appendInstructions reads .ai-bot/instructions.md from the workspace
 // and appends its content as a "Project Instructions" section. If the
-// file does not exist, nothing is appended. Returns an error only if
-// the file exists but cannot be read.
-func appendInstructions(b *strings.Builder, dir string) error {
+// file does not exist, the fallback string is used instead (typically
+// from the project config for prototyping). If both are empty, nothing
+// is appended.
+func appendInstructions(b *strings.Builder, dir, fallback string) error {
 	path := filepath.Join(dir, InstructionsPath)
 
 	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read instructions file: %w", err)
 	}
 
 	content := strings.TrimSpace(string(data))
+
+	// Repo-level file takes precedence; fall back to project config.
+	if content == "" {
+		content = strings.TrimSpace(fallback)
+	}
+
 	if content == "" {
 		return nil
 	}

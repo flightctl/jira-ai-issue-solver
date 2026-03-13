@@ -73,6 +73,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		AIProvider:           r.config.AIProvider,
 		Container:            pc.Container,
 		Imports:              imports,
+		Instructions:         pc.Instructions,
 	}, nil
 }
 

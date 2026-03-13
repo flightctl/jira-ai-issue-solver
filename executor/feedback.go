@@ -108,7 +108,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 9: Write feedback task file ---
 	if err := p.taskWriter.WriteFeedbackTask(
-		*prDetails, newComments, addressedComments, wsPath); err != nil {
+		*prDetails, newComments, addressedComments, wsPath, settings.Instructions); err != nil {
 		return result, fmt.Errorf("write task file: %w", err)
 	}
 

@@ -49,4 +49,9 @@ type ProjectSettings struct {
 	// These are merged with repo-level imports from
 	// .ai-bot/config.yaml (repo-level wins on path conflicts).
 	Imports []ImportConfig
+
+	// Instructions provides project-level AI instructions appended
+	// to the task prompt. Used as a fallback when the target repo
+	// does not have .ai-bot/instructions.md.
+	Instructions string
 }

@@ -102,7 +102,7 @@ flowchart TB
 | `tracker/` | `IssueTracker` interface for work item operations. `jira/` sub-package adapts `JiraService`. |
 | `workspace/` | Per-ticket workspace lifecycle: clone, branch, TTL-based cleanup, self-healing re-clone. |
 | `container/` | Container runtime detection, image resolution from repo config, container lifecycle with resource limits. |
-| `taskfile/` | Generates markdown task files describing the work for the AI. Appends `.ai-bot/instructions.md` when present. |
+| `taskfile/` | Generates markdown task files describing the work for the AI. Appends project instructions from `.ai-bot/instructions.md` or project-config fallback. |
 | `projectresolver/` | Maps ticket keys to project settings (component-to-repo, status transitions, imports). |
 | `costtracker/` | Tracks daily AI session costs with file-based persistence and budget enforcement. |
 | `commentfilter/` | Shared bot-loop prevention: ignored users, known bots, thread depth limits. |
@@ -157,7 +157,7 @@ sequenceDiagram
     WS->>GH: Clone repository
     P->>P: Load repo config (.ai-bot/config.yaml)
     P->>GH: Clone imports (auxiliary repos into workspace)
-    P->>P: Write task file (.ai-bot/task.md + instructions.md)
+    P->>P: Write task file (.ai-bot/task.md + instructions)
     P->>CTR: Resolve container config
     P->>CTR: Start container (workspace mounted)
     P->>CTR: Run import install commands (if configured)
@@ -200,7 +200,7 @@ sequenceDiagram
     C->>P: Execute(job)
     P->>P: Reuse existing workspace (sync with remote)
     P->>P: Load repo config, clone imports (if new)
-    P->>P: Write feedback task file (+ instructions.md)
+    P->>P: Write feedback task file (+ instructions)
     P->>CTR: Start container
     P->>CTR: Run import install commands (if configured)
     CTR->>AI: Run AI CLI with feedback task

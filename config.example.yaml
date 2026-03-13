@@ -94,6 +94,18 @@ jira:
       #     ref: main                          # branch/tag/commit (optional)
       #     install: .ai-workflows/install.sh  # shell command to run inside container after cloning (optional)
 
+      # Per-project instructions for the AI agent (optional). Injected
+      # into the task file as "Project Instructions". Useful for
+      # prototyping workflow guidance before committing
+      # .ai-bot/instructions.md to the target repo. Repo-level file
+      # takes precedence when present.
+      # instructions: |
+      #   Follow the bugfix workflow at .ai-workflows/bugfix/skills/controller.md.
+      #   After making changes, run:
+      #   - `make build`
+      #   - `make test`
+      #   - `make lint`
+
     # Example project 2 - using PR URLs in comments instead of git field
     - project_keys:
         - "PROJ3"

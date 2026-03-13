@@ -41,13 +41,18 @@ const (
 type Writer interface {
 	// WriteNewTicketTask generates a task file for implementing a new
 	// ticket. The file is written to <dir>/.ai-bot/task.md.
-	WriteNewTicketTask(workItem models.WorkItem, dir string) error
+	// fallbackInstructions is used when .ai-bot/instructions.md does
+	// not exist in the workspace (e.g., project-level instructions
+	// for prototyping).
+	WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions string) error
 
 	// WriteFeedbackTask generates a task file for addressing PR review
 	// feedback. newComments are comments requiring action;
 	// addressedComments are previously handled comments included for
 	// context. The file is written to <dir>/.ai-bot/task.md.
+	// fallbackInstructions is used when .ai-bot/instructions.md does
+	// not exist in the workspace.
 	WriteFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
-		dir string) error
+		dir, fallbackInstructions string) error
 }
