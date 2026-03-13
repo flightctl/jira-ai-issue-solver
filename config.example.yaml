@@ -90,8 +90,9 @@ jira:
       # without requiring each repo to declare imports individually.
       # imports:
       #   - repo: https://github.com/your-org/ai-workflows
-      #     path: .ai-workflows       # destination relative to workspace root
-      #     ref: main                  # branch/tag/commit (optional)
+      #     path: .ai-workflows                # destination relative to workspace root
+      #     ref: main                          # branch/tag/commit (optional)
+      #     install: .ai-workflows/install.sh  # shell command to run inside container after cloning (optional)
 
     # Example project 2 - using PR URLs in comments instead of git field
     - project_keys:

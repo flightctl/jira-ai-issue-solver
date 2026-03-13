@@ -170,7 +170,8 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	// --- Step 7: Clone imports ---
-	if err := p.cloneImports(logger, wsPath, settings, repoCfg); err != nil {
+	mergedImports, err := p.cloneImports(logger, wsPath, settings, repoCfg)
+	if err != nil {
 		return result, err
 	}
 
@@ -193,7 +194,12 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		return result, fmt.Errorf("start container: %w", err)
 	}
 
-	// --- Step 11a: Strip remote auth before AI execution ---
+	// --- Step 11a: Run import install commands inside container ---
+	if err := p.runImportInstalls(ctx, logger, ctr, mergedImports); err != nil {
+		return result, fmt.Errorf("import install: %w", err)
+	}
+
+	// --- Step 11b: Strip remote auth before AI execution ---
 	// Prevent the AI from pushing directly to the remote.
 	if err := p.git.StripRemoteAuth(wsPath); err != nil {
 		return result, fmt.Errorf("strip remote auth: %w", err)
@@ -387,15 +393,16 @@ func toSettingsOverride(settings *models.ProjectSettings) *container.SettingsOve
 // wins on path conflicts) and clones each into the workspace. Existing
 // directories are skipped (workspace reuse). Cloned import paths are
 // added to .git/info/exclude so they never leak into commits.
+// Returns the merged import list for use by runImportInstalls.
 func (p *Pipeline) cloneImports(
 	logger *zap.Logger,
 	wsPath string,
 	settings *models.ProjectSettings,
 	repoCfg *repoconfig.Config,
-) error {
+) ([]importEntry, error) {
 	merged := mergeImports(settings, repoCfg)
 	if len(merged) == 0 {
-		return nil
+		return merged, nil
 	}
 
 	for _, imp := range merged {
@@ -414,7 +421,7 @@ func (p *Pipeline) cloneImports(
 			zap.String("ref", imp.Ref))
 
 		if err := p.git.CloneImport(imp.Repo, destDir, imp.Ref); err != nil {
-			return fmt.Errorf("clone import %s into %s: %w", imp.Repo, imp.Path, err)
+			return nil, fmt.Errorf("clone import %s into %s: %w", imp.Repo, imp.Path, err)
 		}
 	}
 
@@ -425,7 +432,7 @@ func (p *Pipeline) cloneImports(
 			zap.Error(err))
 	}
 
-	return nil
+	return merged, nil
 }
 
 // excludeImportPaths appends import paths to .git/info/exclude so git
@@ -474,11 +481,48 @@ func excludeImportPaths(wsPath string, imports []importEntry) error {
 	return nil
 }
 
+// runImportInstalls executes install commands for imports that declare
+// one. Commands run inside the container from /workspace, with access
+// to the container's full toolchain. This is plumbing — the bot sets
+// up the environment so the AI finds it ready to use.
+func (p *Pipeline) runImportInstalls(
+	ctx context.Context,
+	logger *zap.Logger,
+	ctr *container.Container,
+	imports []importEntry,
+) error {
+	for _, imp := range imports {
+		if imp.Install == "" {
+			continue
+		}
+
+		logger.Info("Running import install command",
+			zap.String("path", imp.Path),
+			zap.String("command", imp.Install))
+
+		cmd := []string{
+			"sh", "-c",
+			"cd /workspace && " + imp.Install,
+		}
+		output, exitCode, err := p.containers.Exec(ctx, ctr, cmd)
+		if err != nil {
+			return fmt.Errorf("install command for import %s: %w", imp.Path, err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf(
+				"install command for import %s exited with code %d: %s",
+				imp.Path, exitCode, output)
+		}
+	}
+	return nil
+}
+
 // importEntry is the unified type used during import merging.
 type importEntry struct {
-	Repo string
-	Path string
-	Ref  string
+	Repo    string
+	Path    string
+	Ref     string
+	Install string
 }
 
 // mergeImports combines project-level and repo-level imports. When both
@@ -494,13 +538,13 @@ func mergeImports(
 	// Project-level imports go in first.
 	for _, imp := range settings.Imports {
 		p := filepath.Clean(imp.Path)
-		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref}
+		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install}
 	}
 
 	// Repo-level imports override on path conflict.
 	for _, imp := range repoCfg.Imports {
 		p := filepath.Clean(imp.Path)
-		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref}
+		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install}
 	}
 
 	// Deterministic order: sort by path.

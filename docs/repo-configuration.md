@@ -201,6 +201,7 @@ imports:
   - repo: https://github.com/your-org/ai-workflows
     path: .ai-workflows       # destination relative to workspace root
     ref: main                  # branch/tag/commit (optional; default branch if omitted)
+    install: .ai-workflows/install.sh  # shell command run inside container after cloning (optional)
 
 # Pull request creation settings.
 pr:
@@ -248,6 +249,7 @@ config, etc.).
 | `imports[].repo` | string | — | Clone URL of the auxiliary repo (required) |
 | `imports[].path` | string | — | Destination directory relative to workspace root (required) |
 | `imports[].ref` | string | `""` | Branch, tag, or commit to check out (default branch if empty) |
+| `imports[].install` | string | `""` | Shell command to run inside the container after cloning (from `/workspace`) |
 | `pr.draft` | bool | `false` | Create PRs as drafts |
 | `pr.title_prefix` | string | `""` | Prefix for PR titles |
 | `pr.labels` | string[] | `[]` | Labels to apply to PRs |
@@ -290,6 +292,7 @@ imports:
   - repo: https://github.com/your-org/ai-workflows
     path: .ai-workflows
     ref: main
+    install: .ai-workflows/install.sh
 
 validation_commands:
   - make build

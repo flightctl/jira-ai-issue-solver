@@ -298,6 +298,12 @@ type ImportConfig struct {
 	// Ref is the branch, tag, or commit to check out. Empty means
 	// the remote's default branch.
 	Ref string `yaml:"ref" mapstructure:"ref"`
+
+	// Install is a shell command to run inside the container after
+	// cloning. The command runs from the workspace root (/workspace)
+	// and has access to the container's toolchain. Empty means no
+	// install step. Example: ".ai-workflows/install.sh".
+	Install string `yaml:"install" mapstructure:"install"`
 }
 
 type JiraConfig struct {

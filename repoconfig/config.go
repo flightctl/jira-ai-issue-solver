@@ -63,6 +63,11 @@ type Import struct {
 	// Ref is the branch, tag, or commit to check out. Empty means
 	// the remote's default branch.
 	Ref string `yaml:"ref"`
+
+	// Install is a shell command to run inside the container after
+	// cloning. Runs from the workspace root with access to the
+	// container's toolchain. Empty means no install step.
+	Install string `yaml:"install"`
 }
 
 // PRConfig contains settings for pull request creation.

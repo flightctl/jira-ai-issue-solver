@@ -1520,6 +1520,285 @@ func TestExcludeImportPaths_CreatesExcludeFileIfMissing(t *testing.T) {
 	}
 }
 
+// --- runImportInstalls ---
+
+func TestRunImportInstalls_RunsInstallCommands(t *testing.T) {
+	d := newTestDeps(t)
+
+	var execCmds [][]string
+	d.containers.ExecFunc = func(_ context.Context, _ *container.Container, cmd []string) (string, int, error) {
+		execCmds = append(execCmds, cmd)
+		return "", 0, nil
+	}
+
+	p := d.pipeline(t)
+	ctr := &container.Container{ID: "c1", Name: "test-c1"}
+	imports := []executor.ImportEntry{
+		{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main", Install: ".ai-workflows/install.sh"},
+		{Repo: "https://github.com/org/tools", Path: "tools", Ref: "", Install: "tools/setup.sh --flag"},
+	}
+
+	err := p.RunImportInstalls(context.Background(), zap.NewNop(), ctr, imports)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(execCmds) != 2 {
+		t.Fatalf("expected 2 exec calls, got %d", len(execCmds))
+	}
+
+	// Verify command structure: sh -c "cd /workspace && <install>"
+	wantCmd0 := []string{"sh", "-c", "cd /workspace && .ai-workflows/install.sh"}
+	if !equalSlice(execCmds[0], wantCmd0) {
+		t.Errorf("exec cmd[0] = %v, want %v", execCmds[0], wantCmd0)
+	}
+	wantCmd1 := []string{"sh", "-c", "cd /workspace && tools/setup.sh --flag"}
+	if !equalSlice(execCmds[1], wantCmd1) {
+		t.Errorf("exec cmd[1] = %v, want %v", execCmds[1], wantCmd1)
+	}
+}
+
+func TestRunImportInstalls_SkipsEmptyInstall(t *testing.T) {
+	d := newTestDeps(t)
+
+	execCalled := false
+	d.containers.ExecFunc = func(_ context.Context, _ *container.Container, _ []string) (string, int, error) {
+		execCalled = true
+		return "", 0, nil
+	}
+
+	p := d.pipeline(t)
+	ctr := &container.Container{ID: "c1", Name: "test-c1"}
+	imports := []executor.ImportEntry{
+		{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"},
+		{Repo: "https://github.com/org/tools", Path: "tools", Ref: "v1"},
+	}
+
+	err := p.RunImportInstalls(context.Background(), zap.NewNop(), ctr, imports)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if execCalled {
+		t.Error("Exec should not be called when no import has an install command")
+	}
+}
+
+func TestRunImportInstalls_ExecError(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.containers.ExecFunc = func(_ context.Context, _ *container.Container, _ []string) (string, int, error) {
+		return "", 0, errors.New("exec failed")
+	}
+
+	p := d.pipeline(t)
+	ctr := &container.Container{ID: "c1", Name: "test-c1"}
+	imports := []executor.ImportEntry{
+		{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Install: "./install.sh"},
+	}
+
+	err := p.RunImportInstalls(context.Background(), zap.NewNop(), ctr, imports)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "install command for import .ai-workflows") {
+		t.Errorf("error should reference import path, got: %v", err)
+	}
+}
+
+func TestRunImportInstalls_NonZeroExitCode(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.containers.ExecFunc = func(_ context.Context, _ *container.Container, _ []string) (string, int, error) {
+		return "some output", 1, nil
+	}
+
+	p := d.pipeline(t)
+	ctr := &container.Container{ID: "c1", Name: "test-c1"}
+	imports := []executor.ImportEntry{
+		{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Install: "./install.sh"},
+	}
+
+	err := p.RunImportInstalls(context.Background(), zap.NewNop(), ctr, imports)
+	if err == nil {
+		t.Fatal("expected error on non-zero exit code")
+	}
+	if !strings.Contains(err.Error(), "exited with code 1") {
+		t.Errorf("error should include exit code, got: %v", err)
+	}
+}
+
+func TestRunImportInstalls_NilImports(t *testing.T) {
+	d := newTestDeps(t)
+	p := d.pipeline(t)
+	ctr := &container.Container{ID: "c1", Name: "test-c1"}
+
+	err := p.RunImportInstalls(context.Background(), zap.NewNop(), ctr, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMergeImports_InstallFieldPropagated(t *testing.T) {
+	settings := &models.ProjectSettings{
+		Imports: []models.ImportConfig{
+			{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main", Install: "proj-install.sh"},
+		},
+	}
+	repoCfg := &repoconfig.Config{
+		Imports: []repoconfig.Import{
+			{Repo: "https://github.com/org/tools", Path: "tools", Ref: "v1", Install: "tools/setup.sh"},
+		},
+	}
+
+	result := executor.MergeImports(settings, repoCfg)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+
+	// Sorted by path: .ai-workflows before tools.
+	if result[0].Install != "proj-install.sh" {
+		t.Errorf("result[0].Install = %q, want %q", result[0].Install, "proj-install.sh")
+	}
+	if result[1].Install != "tools/setup.sh" {
+		t.Errorf("result[1].Install = %q, want %q", result[1].Install, "tools/setup.sh")
+	}
+}
+
+func TestMergeImports_RepoOverridesInstall(t *testing.T) {
+	settings := &models.ProjectSettings{
+		Imports: []models.ImportConfig{
+			{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Install: "old-install.sh"},
+		},
+	}
+	repoCfg := &repoconfig.Config{
+		Imports: []repoconfig.Import{
+			{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Install: "new-install.sh"},
+		},
+	}
+
+	result := executor.MergeImports(settings, repoCfg)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	if result[0].Install != "new-install.sh" {
+		t.Errorf("Install = %q, want %q (repo-level should override)", result[0].Install, "new-install.sh")
+	}
+}
+
+func TestExecuteNewTicket_RunsImportInstallAfterContainerStart(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Ref: "main", Install: ".ai-workflows/install.sh"},
+			},
+		}, nil
+	}
+
+	d.git.CloneImportFunc = func(_, _, _ string) error { return nil }
+
+	// Track the order: container start, then install exec, then AI exec.
+	var events []string
+	d.containers.StartFunc = func(_ context.Context, _ *container.Config, _, _ string, _ map[string]string) (*container.Container, error) {
+		events = append(events, "start")
+		return &container.Container{ID: "c1", Name: "test-c1"}, nil
+	}
+	d.containers.ExecFunc = func(_ context.Context, _ *container.Container, cmd []string) (string, int, error) {
+		if len(cmd) == 3 && strings.Contains(cmd[2], "install.sh") {
+			events = append(events, "install")
+		} else {
+			events = append(events, "ai-exec")
+		}
+		return "", 0, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify ordering: start → install → ai-exec.
+	if len(events) < 3 {
+		t.Fatalf("expected at least 3 events, got %d: %v", len(events), events)
+	}
+	if events[0] != "start" {
+		t.Errorf("events[0] = %q, want start", events[0])
+	}
+	if events[1] != "install" {
+		t.Errorf("events[1] = %q, want install", events[1])
+	}
+	if events[2] != "ai-exec" {
+		t.Errorf("events[2] = %q, want ai-exec", events[2])
+	}
+}
+
+func TestExecuteNewTicket_ImportInstallFailure_StopsContainer(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Install: "install.sh"},
+			},
+		}, nil
+	}
+
+	d.git.CloneImportFunc = func(_, _, _ string) error { return nil }
+
+	d.containers.ExecFunc = func(_ context.Context, _ *container.Container, cmd []string) (string, int, error) {
+		if len(cmd) == 3 && strings.Contains(cmd[2], "install.sh") {
+			return "install failed", 1, nil
+		}
+		return "", 0, nil
+	}
+
+	stopCalled := false
+	d.containers.StopFunc = func(_ context.Context, _ *container.Container) error {
+		stopCalled = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err == nil {
+		t.Fatal("expected error from install failure")
+	}
+	if !strings.Contains(err.Error(), "import install") {
+		t.Errorf("error should mention import install, got: %v", err)
+	}
+	if !stopCalled {
+		t.Error("container should be stopped on install failure")
+	}
+}
+
+func equalSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // testDeps holds the stub dependencies used by test cases. Individual
 // tests override specific Func fields to control behavior.
 type testDeps struct {

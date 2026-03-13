@@ -50,7 +50,7 @@ Key configuration features:
 - `GetProjectConfigForTicket()` retrieves the appropriate project config based on ticket key
 - `StatusTransitions` maps ticket types to their workflow statuses (todo, in_progress, in_review)
 - `ComponentToRepo` maps Jira components to GitHub repository URLs (case-insensitive; viper lowercases YAML map keys)
-- `Imports` (project-level) declares auxiliary repos to clone into the workspace; merged with repo-level imports from `.ai-bot/config.yaml`
+- `Imports` (project-level) declares auxiliary repos to clone into the workspace; merged with repo-level imports from `.ai-bot/config.yaml`; optional `install` command runs inside the container after cloning
 
 ### Workflow
 
@@ -62,7 +62,7 @@ Key configuration features:
    - Loads repo config (`.ai-bot/config.yaml`) and clones any declared imports into the workspace
    - Generates a task file describing the work (appends `.ai-bot/instructions.md` if present)
    - Resolves container image from repo-level config (`.ai-bot/container.json`, `.devcontainer/`) or global default
-   - Runs the AI provider inside a container with the workspace mounted
+   - Starts a container, runs import install commands (if configured), then runs the AI provider
    - Commits changes, pushes, and creates a PR
    - Transitions the ticket through configured statuses and posts PR link
 4. **PR Feedback Processing**: `FeedbackScanner` monitors "in review" tickets, finds unaddressed review comments (filtering bots and ignored users), and submits feedback jobs through the same `Coordinator` → `Pipeline` path

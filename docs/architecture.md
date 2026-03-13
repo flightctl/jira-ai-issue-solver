@@ -160,6 +160,7 @@ sequenceDiagram
     P->>P: Write task file (.ai-bot/task.md + instructions.md)
     P->>CTR: Resolve container config
     P->>CTR: Start container (workspace mounted)
+    P->>CTR: Run import install commands (if configured)
     CTR->>AI: Run AI CLI with task file
     AI->>AI: Read task, write code, validate
     AI-->>CTR: Exit
@@ -201,6 +202,7 @@ sequenceDiagram
     P->>P: Load repo config, clone imports (if new)
     P->>P: Write feedback task file (+ instructions.md)
     P->>CTR: Start container
+    P->>CTR: Run import install commands (if configured)
     CTR->>AI: Run AI CLI with feedback task
     AI->>AI: Address review comments
     AI-->>CTR: Exit

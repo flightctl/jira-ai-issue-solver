@@ -101,7 +101,8 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	// --- Step 8: Clone imports ---
-	if err := p.cloneImports(logger, wsPath, settings, repoCfg); err != nil {
+	mergedImports, err := p.cloneImports(logger, wsPath, settings, repoCfg)
+	if err != nil {
 		return result, err
 	}
 
@@ -125,7 +126,12 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("start container: %w", err)
 	}
 
-	// --- Step 12a: Strip remote auth before AI execution ---
+	// --- Step 12a: Run import install commands inside container ---
+	if err := p.runImportInstalls(ctx, logger, ctr, mergedImports); err != nil {
+		return result, fmt.Errorf("import install: %w", err)
+	}
+
+	// --- Step 12b: Strip remote auth before AI execution ---
 	if err := p.git.StripRemoteAuth(wsPath); err != nil {
 		return result, fmt.Errorf("strip remote auth: %w", err)
 	}
