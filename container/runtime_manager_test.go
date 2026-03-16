@@ -913,14 +913,21 @@ func TestResolveConfig_DelegatesToResolver(t *testing.T) {
 
 	mgr := mustManager(t, runner, "test", 0)
 
-	cfg, err := mgr.ResolveConfig(repoDir, nil)
+	// With no repo config and no profile override, the resolver
+	// returns an error (no image configured).
+	_, err := mgr.ResolveConfig(repoDir, nil)
+	if err == nil {
+		t.Fatal("expected error when no image is configured")
+	}
+
+	// With a profile override providing an image, it succeeds.
+	override := &container.SettingsOverride{Image: "test:latest"}
+	cfg, err := mgr.ResolveConfig(repoDir, override)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// With no repo config and empty defaults, the resolver returns
-	// the built-in fallback.
-	if cfg.Image != container.DefaultFallbackImage {
-		t.Errorf("Image = %q, want %q", cfg.Image, container.DefaultFallbackImage)
+	if cfg.Image != "test:latest" {
+		t.Errorf("Image = %q, want test:latest", cfg.Image)
 	}
 }
 

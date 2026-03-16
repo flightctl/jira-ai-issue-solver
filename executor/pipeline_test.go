@@ -336,47 +336,14 @@ func TestExecuteNewTicket_ParentContextCancelled(t *testing.T) {
 	}
 }
 
-// --- Container start failure with fallback ---
+// --- Container start failure ---
 
-func TestExecuteNewTicket_ContainerStartFailsFallbackSucceeds(t *testing.T) {
-	d := newTestDeps(t)
-
-	startAttempt := 0
-	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
-		startAttempt++
-		if startAttempt == 1 {
-			return nil, errors.New("image not found")
-		}
-		// Second attempt (fallback) succeeds.
-		return &container.Container{ID: "c1", Name: "fallback-c1"}, nil
-	}
-
-	p := d.pipelineWithConfig(t, executor.Config{
-		BotUsername:     "ai-bot",
-		DefaultProvider: "claude",
-		FallbackImage:   "ubuntu:latest",
-		AIAPIKeys:       map[string]string{"claude": "test-key"},
-	})
-
-	result, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if startAttempt != 2 {
-		t.Errorf("start attempts = %d, want 2", startAttempt)
-	}
-	if result.PRURL == "" {
-		t.Error("expected PR to be created")
-	}
-}
-
-func TestExecuteNewTicket_ContainerStartFailsNoFallback(t *testing.T) {
+func TestExecuteNewTicket_ContainerStartFails(t *testing.T) {
 	d := newTestDeps(t)
 	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
 		return nil, errors.New("image not found")
 	}
 
-	// No fallback image configured (empty FallbackImage).
 	p := d.pipeline(t)
 	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
 

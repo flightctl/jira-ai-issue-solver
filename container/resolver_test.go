@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -69,46 +70,53 @@ func TestResolve_FallsBackToDevcontainer(t *testing.T) {
 	}
 }
 
-func TestResolve_FallsBackToBotDefault(t *testing.T) {
+func TestResolve_ProfileOverrideProvidesImage(t *testing.T) {
 	repoDir := t.TempDir()
 
-	r := newTestResolver(t, "admin-default:latest", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir, nil)
+	r := newTestResolver(t, "", container.ResourceLimits{})
+	override := &container.SettingsOverride{Image: "admin-default:latest"}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Image != "admin-default:latest" {
 		t.Errorf("Image = %q, want admin-default:latest", cfg.Image)
 	}
+	if cfg.Source != "profile" {
+		t.Errorf("Source = %q, want profile", cfg.Source)
+	}
 }
 
-func TestResolve_FallsBackToBuiltInDefault(t *testing.T) {
+func TestResolve_ErrorWhenNoImageConfigured(t *testing.T) {
 	repoDir := t.TempDir()
 
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir, nil)
-	if err != nil {
-		t.Fatal(err)
+	_, err := r.Resolve(repoDir, nil)
+	if err == nil {
+		t.Fatal("expected error when no image is configured")
 	}
-	if cfg.Image != container.DefaultFallbackImage {
-		t.Errorf("Image = %q, want %q", cfg.Image, container.DefaultFallbackImage)
+	if !strings.Contains(err.Error(), "no container image configured") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 // --- Field merging ---
 
-func TestResolve_ResourceLimitsFallThrough(t *testing.T) {
+func TestResolve_ProfileLimitsFillGapsInRepoConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	// Repo config sets image but not resource limits.
 	writeBotConfig(t, repoDir, map[string]any{
 		"image": "repo-image:latest",
 	})
 
-	r := newTestResolver(t, "", container.ResourceLimits{
-		Memory: "8g",
-		CPUs:   "4",
-	})
-	cfg, err := r.Resolve(repoDir, nil)
+	r := newTestResolver(t, "", container.ResourceLimits{})
+	override := &container.SettingsOverride{
+		Limits: container.ResourceLimits{
+			Memory: "8g",
+			CPUs:   "4",
+		},
+	}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,40 +131,49 @@ func TestResolve_ResourceLimitsFallThrough(t *testing.T) {
 	}
 }
 
-func TestResolve_RepoOverridesResourceLimits(t *testing.T) {
+func TestResolve_ProfileLimitsOverrideRepoLimits(t *testing.T) {
 	repoDir := t.TempDir()
 	writeBotConfig(t, repoDir, map[string]any{
 		"image": "repo-image:latest",
 		"resourceLimits": map[string]string{
 			"memory": "16g",
+			"cpus":   "2",
 		},
 	})
 
-	r := newTestResolver(t, "", container.ResourceLimits{
-		Memory: "8g",
-		CPUs:   "4",
-	})
-	cfg, err := r.Resolve(repoDir, nil)
+	r := newTestResolver(t, "", container.ResourceLimits{})
+	override := &container.SettingsOverride{
+		Limits: container.ResourceLimits{
+			Memory: "8g",
+			CPUs:   "4",
+		},
+	}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ResourceLimits.Memory != "16g" {
-		t.Errorf("Memory = %q, want 16g (repo override)", cfg.ResourceLimits.Memory)
+	// Profile limits win over repo limits.
+	if cfg.ResourceLimits.Memory != "8g" {
+		t.Errorf("Memory = %q, want 8g (profile override wins)", cfg.ResourceLimits.Memory)
 	}
 	if cfg.ResourceLimits.CPUs != "4" {
-		t.Errorf("CPUs = %q, want 4 (bot default fallthrough)", cfg.ResourceLimits.CPUs)
+		t.Errorf("CPUs = %q, want 4 (profile override wins)", cfg.ResourceLimits.CPUs)
 	}
 }
 
-func TestResolve_RepoConfigNoImage_UsesDefault(t *testing.T) {
+func TestResolve_RepoConfigNoImage_ProfileProvidesImage(t *testing.T) {
 	repoDir := t.TempDir()
 	// Repo config sets only env, not image.
 	writeBotConfig(t, repoDir, map[string]any{
 		"env": map[string]string{"KEY": "val"},
 	})
 
-	r := newTestResolver(t, "admin-default:latest", container.ResourceLimits{Memory: "4g"})
-	cfg, err := r.Resolve(repoDir, nil)
+	r := newTestResolver(t, "", container.ResourceLimits{})
+	override := &container.SettingsOverride{
+		Image:  "admin-default:latest",
+		Limits: container.ResourceLimits{Memory: "4g"},
+	}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,8 +186,9 @@ func TestResolve_RepoConfigNoImage_UsesDefault(t *testing.T) {
 	if cfg.ResourceLimits.Memory != "4g" {
 		t.Errorf("Memory = %q, want 4g", cfg.ResourceLimits.Memory)
 	}
-	if cfg.Source != ".ai-bot/container.json" {
-		t.Errorf("Source = %q, want .ai-bot/container.json", cfg.Source)
+	// Profile provided the image, so source is "profile".
+	if cfg.Source != "profile" {
+		t.Errorf("Source = %q, want profile", cfg.Source)
 	}
 }
 
@@ -217,7 +235,8 @@ func TestResolve_PostCreateCommandFromBotConfig(t *testing.T) {
 func TestResolve_EnvAlwaysNonNil(t *testing.T) {
 	repoDir := t.TempDir()
 	r := newTestResolver(t, "", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir, nil)
+	override := &container.SettingsOverride{Image: "test:latest"}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,22 +497,35 @@ func TestResolve_InvalidDevcontainerJSON(t *testing.T) {
 	}
 }
 
-func TestResolve_EmptyBotConfig(t *testing.T) {
+func TestResolve_EmptyBotConfig_NoProfile_Errors(t *testing.T) {
 	repoDir := t.TempDir()
 	writeBotConfig(t, repoDir, map[string]any{})
 
-	r := newTestResolver(t, "admin:latest", container.ResourceLimits{})
-	cfg, err := r.Resolve(repoDir, nil)
+	r := newTestResolver(t, "", container.ResourceLimits{})
+	_, err := r.Resolve(repoDir, nil)
+	if err == nil {
+		t.Fatal("expected error when repo config has no image and no profile override")
+	}
+	if !strings.Contains(err.Error(), "no container image configured") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestResolve_EmptyBotConfig_ProfileProvidesImage(t *testing.T) {
+	repoDir := t.TempDir()
+	writeBotConfig(t, repoDir, map[string]any{})
+
+	r := newTestResolver(t, "", container.ResourceLimits{})
+	override := &container.SettingsOverride{Image: "admin:latest"}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No image in repo config, so bot default should be used.
 	if cfg.Image != "admin:latest" {
 		t.Errorf("Image = %q, want admin:latest", cfg.Image)
 	}
-	// But source should reflect that a repo config was found.
-	if cfg.Source != ".ai-bot/container.json" {
-		t.Errorf("Source = %q, want .ai-bot/container.json", cfg.Source)
+	if cfg.Source != "profile" {
+		t.Errorf("Source = %q, want profile", cfg.Source)
 	}
 }
 
@@ -503,19 +535,14 @@ func TestResolve_SourceTracking(t *testing.T) {
 	tests := []struct {
 		name     string
 		setup    func(t *testing.T, repoDir string)
-		defImage string
+		override *container.SettingsOverride
 		wantSrc  string
 	}{
 		{
-			name:    "built-in fallback",
-			setup:   func(_ *testing.T, _ string) {},
-			wantSrc: "built-in fallback",
-		},
-		{
-			name:     "bot default",
+			name:     "profile",
 			setup:    func(_ *testing.T, _ string) {},
-			defImage: "admin:latest",
-			wantSrc:  "bot default",
+			override: &container.SettingsOverride{Image: "profile:latest"},
+			wantSrc:  "profile",
 		},
 		{
 			name: "devcontainer",
@@ -544,8 +571,8 @@ func TestResolve_SourceTracking(t *testing.T) {
 			repoDir := t.TempDir()
 			tt.setup(t, repoDir)
 
-			r := newTestResolver(t, tt.defImage, container.ResourceLimits{})
-			cfg, err := r.Resolve(repoDir, nil)
+			r := newTestResolver(t, "", container.ResourceLimits{})
+			cfg, err := r.Resolve(repoDir, tt.override)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -556,90 +583,46 @@ func TestResolve_SourceTracking(t *testing.T) {
 	}
 }
 
-// --- Project override ---
+// --- Profile override ---
 
-func TestResolve_ProjectOverrideEnvMergedWithFallback(t *testing.T) {
+func TestResolve_ProfileOverrideSetsImage(t *testing.T) {
 	repoDir := t.TempDir()
 
-	r, err := container.NewResolver(container.ResolverDefaults{
-		Fallback: container.SettingsOverride{
-			Image: "default:latest",
-			Env:   map[string]string{"FROM_FALLBACK": "yes", "SHARED": "fallback"},
-		},
-	}, zap.NewNop())
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	override := &container.SettingsOverride{
-		Env: map[string]string{"FROM_PROJECT": "yes", "SHARED": "project"},
+		Image: "profile:latest",
 	}
 
 	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Fallback env should be preserved.
-	if cfg.Env["FROM_FALLBACK"] != "yes" {
-		t.Errorf("Env[FROM_FALLBACK] = %q, want yes", cfg.Env["FROM_FALLBACK"])
+	if cfg.Image != "profile:latest" {
+		t.Errorf("Image = %q, want profile:latest", cfg.Image)
 	}
-	// Project override env should be added.
-	if cfg.Env["FROM_PROJECT"] != "yes" {
-		t.Errorf("Env[FROM_PROJECT] = %q, want yes", cfg.Env["FROM_PROJECT"])
-	}
-	// Project override wins on shared keys.
-	if cfg.Env["SHARED"] != "project" {
-		t.Errorf("Env[SHARED] = %q, want project (project override wins)", cfg.Env["SHARED"])
+	if cfg.Source != "profile" {
+		t.Errorf("Source = %q, want profile", cfg.Source)
 	}
 }
 
-func TestResolve_ProjectOverrideImageOverridesFallback(t *testing.T) {
-	repoDir := t.TempDir()
-
-	r, err := container.NewResolver(container.ResolverDefaults{
-		Fallback: container.SettingsOverride{
-			Image: "default:latest",
-		},
-	}, zap.NewNop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	override := &container.SettingsOverride{
-		Image: "project:latest",
-	}
-
-	cfg, err := r.Resolve(repoDir, override)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Image != "project:latest" {
-		t.Errorf("Image = %q, want project:latest", cfg.Image)
-	}
-	if cfg.Source != "project config" {
-		t.Errorf("Source = %q, want project config", cfg.Source)
-	}
-}
-
-func TestResolve_RepoConfigEnvOverridesProjectAndFallback(t *testing.T) {
+func TestResolve_ProfileOverrideEnvMergedWithRepoConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	writeBotConfig(t, repoDir, map[string]any{
 		"image": "repo:latest",
 		"env":   map[string]string{"FROM_REPO": "yes", "SHARED": "repo"},
 	})
 
-	r, err := container.NewResolver(container.ResolverDefaults{
-		Fallback: container.SettingsOverride{
-			Env: map[string]string{"FROM_FALLBACK": "yes", "SHARED": "fallback"},
-		},
-	}, zap.NewNop())
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	override := &container.SettingsOverride{
-		Env: map[string]string{"FROM_PROJECT": "yes", "SHARED": "project"},
+		Env: map[string]string{"FROM_PROFILE": "yes", "SHARED": "profile"},
 	}
 
 	cfg, err := r.Resolve(repoDir, override)
@@ -647,19 +630,41 @@ func TestResolve_RepoConfigEnvOverridesProjectAndFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// All three env sources should be present.
-	if cfg.Env["FROM_FALLBACK"] != "yes" {
-		t.Errorf("Env[FROM_FALLBACK] = %q, want yes", cfg.Env["FROM_FALLBACK"])
-	}
-	if cfg.Env["FROM_PROJECT"] != "yes" {
-		t.Errorf("Env[FROM_PROJECT] = %q, want yes", cfg.Env["FROM_PROJECT"])
-	}
+	// Repo env should be preserved.
 	if cfg.Env["FROM_REPO"] != "yes" {
 		t.Errorf("Env[FROM_REPO] = %q, want yes", cfg.Env["FROM_REPO"])
 	}
-	// Repo-level wins on shared keys.
-	if cfg.Env["SHARED"] != "repo" {
-		t.Errorf("Env[SHARED] = %q, want repo (repo-level wins)", cfg.Env["SHARED"])
+	// Profile override env should be added.
+	if cfg.Env["FROM_PROFILE"] != "yes" {
+		t.Errorf("Env[FROM_PROFILE] = %q, want yes", cfg.Env["FROM_PROFILE"])
+	}
+	// Profile override wins on shared keys (operator wins).
+	if cfg.Env["SHARED"] != "profile" {
+		t.Errorf("Env[SHARED] = %q, want profile (profile override wins)", cfg.Env["SHARED"])
+	}
+}
+
+func TestResolve_ProfileOverrideImageOverridesRepoConfig(t *testing.T) {
+	repoDir := t.TempDir()
+	writeBotConfig(t, repoDir, map[string]any{
+		"image": "repo:latest",
+	})
+
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	override := &container.SettingsOverride{
+		Image: "profile:latest",
+	}
+
+	cfg, err := r.Resolve(repoDir, override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Image != "profile:latest" {
+		t.Errorf("Image = %q, want profile:latest (profile wins over repo)", cfg.Image)
 	}
 }
 
@@ -675,7 +680,8 @@ func TestResolve_HostPolicyDisableSELinux(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := r.Resolve(repoDir, nil)
+	override := &container.SettingsOverride{Image: "test:latest"}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +700,8 @@ func TestResolve_HostPolicyUserNS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := r.Resolve(repoDir, nil)
+	override := &container.SettingsOverride{Image: "test:latest"}
+	cfg, err := r.Resolve(repoDir, override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +740,7 @@ func TestResolve_HostPolicyOverridesRepoConfig(t *testing.T) {
 
 // --- SettingsOverride Tmpfs and ExtraMounts ---
 
-func TestResolve_ProjectOverrideTmpfs(t *testing.T) {
+func TestResolve_ProfileOverrideTmpfs(t *testing.T) {
 	repoDir := t.TempDir()
 
 	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
@@ -742,6 +749,7 @@ func TestResolve_ProjectOverrideTmpfs(t *testing.T) {
 	}
 
 	override := &container.SettingsOverride{
+		Image: "test:latest",
 		Tmpfs: []string{"/tmp:size=4g", "/run"},
 	}
 
@@ -754,7 +762,7 @@ func TestResolve_ProjectOverrideTmpfs(t *testing.T) {
 	}
 }
 
-func TestResolve_ProjectOverrideExtraMounts(t *testing.T) {
+func TestResolve_ProfileOverrideExtraMounts(t *testing.T) {
 	repoDir := t.TempDir()
 
 	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
@@ -763,6 +771,7 @@ func TestResolve_ProjectOverrideExtraMounts(t *testing.T) {
 	}
 
 	override := &container.SettingsOverride{
+		Image: "test:latest",
 		ExtraMounts: []container.Mount{
 			{Source: "/host/cache", Target: "/cache", Options: "ro"},
 		},
@@ -780,41 +789,11 @@ func TestResolve_ProjectOverrideExtraMounts(t *testing.T) {
 	}
 }
 
-func TestResolve_FallbackTmpfsOverriddenByProject(t *testing.T) {
-	repoDir := t.TempDir()
-
-	r, err := container.NewResolver(container.ResolverDefaults{
-		Fallback: container.SettingsOverride{
-			Tmpfs: []string{"/tmp:size=2g"},
-		},
-	}, zap.NewNop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	override := &container.SettingsOverride{
-		Tmpfs: []string{"/tmp:size=8g"},
-	}
-
-	cfg, err := r.Resolve(repoDir, override)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Tmpfs) != 1 || cfg.Tmpfs[0] != "/tmp:size=8g" {
-		t.Errorf("Tmpfs = %v, want [/tmp:size=8g] (project overrides fallback)", cfg.Tmpfs)
-	}
-}
-
 // --- helpers ---
 
-func newTestResolver(t *testing.T, defaultImage string, defaultLimits container.ResourceLimits) *container.Resolver {
+func newTestResolver(t *testing.T, _ string, _ container.ResourceLimits) *container.Resolver {
 	t.Helper()
-	r, err := container.NewResolver(container.ResolverDefaults{
-		Fallback: container.SettingsOverride{
-			Image:  defaultImage,
-			Limits: defaultLimits,
-		},
-	}, zap.NewNop())
+	r, err := container.NewResolver(container.ResolverDefaults{}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}

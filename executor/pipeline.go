@@ -188,7 +188,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	execCommand := buildExecCommand(sp)
 
 	// --- Step 11: Resolve and start container ---
-	ctr, err = p.startContainer(ctx, logger, wsPath, job.TicketKey, provider, settings)
+	ctr, err = p.startContainer(ctx, wsPath, job.TicketKey, provider, settings)
 	if err != nil {
 		return result, fmt.Errorf("start container: %w", err)
 	}
@@ -329,44 +329,25 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	return result, nil
 }
 
-// startContainer resolves configuration, starts a container, and
-// falls back to the fallback image if the primary start fails.
+// startContainer resolves configuration and starts a container.
 func (p *Pipeline) startContainer(
 	ctx context.Context,
-	logger *zap.Logger,
 	wsPath, ticketKey, provider string,
 	settings *models.ProjectSettings,
 ) (*container.Container, error) {
-	projectOverride := toSettingsOverride(settings)
-	containerCfg, err := p.containers.ResolveConfig(wsPath, projectOverride)
+	profileOverride := toSettingsOverride(settings)
+	containerCfg, err := p.containers.ResolveConfig(wsPath, profileOverride)
 	if err != nil {
 		return nil, fmt.Errorf("resolve container config: %w", err)
 	}
 
 	env := p.buildContainerEnv(provider)
-
-	ctr, err := p.containers.Start(ctx, containerCfg, wsPath, ticketKey, env)
-	if err == nil {
-		return ctr, nil
-	}
-
-	// Primary image failed. Try fallback if configured.
-	if p.cfg.FallbackImage == "" {
-		return nil, err
-	}
-
-	logger.Warn("Container start failed, trying fallback image",
-		zap.String("original_image", containerCfg.Image),
-		zap.String("fallback_image", p.cfg.FallbackImage),
-		zap.Error(err))
-
-	fallbackCfg := &container.Config{Image: p.cfg.FallbackImage}
-	return p.containers.Start(ctx, fallbackCfg, wsPath, ticketKey, env)
+	return p.containers.Start(ctx, containerCfg, wsPath, ticketKey, env)
 }
 
-// toSettingsOverride converts per-project container settings to the
-// container package's override type. Returns nil if no per-project
-// container settings are configured (zero-value ContainerSettings).
+// toSettingsOverride converts profile container settings to the
+// container package's override type. Returns nil if no container
+// settings are configured (zero-value ContainerSettings).
 func toSettingsOverride(settings *models.ProjectSettings) *container.SettingsOverride {
 	cs := settings.Container
 	if cs.Image == "" && cs.ResourceLimits.Memory == "" && cs.ResourceLimits.CPUs == "" &&

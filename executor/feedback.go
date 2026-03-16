@@ -121,7 +121,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	execCommand := buildExecCommand(sp)
 
 	// --- Step 12: Resolve and start container ---
-	ctr, err = p.startContainer(ctx, logger, wsPath, job.TicketKey, provider, settings)
+	ctr, err = p.startContainer(ctx, wsPath, job.TicketKey, provider, settings)
 	if err != nil {
 		return result, fmt.Errorf("start container: %w", err)
 	}

@@ -82,7 +82,9 @@ func TestResolveProject_HappyPath(t *testing.T) {
 
 func TestResolveProject_MultipleComponents_FirstMatchUsed(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].ComponentToRepo["frontend"] = "https://github.com/my-org/frontend.git"
+	cfg.Jira.Projects[0].Components["frontend"] = models.ComponentConfig{
+		Repo: "https://github.com/my-org/frontend.git", Profile: "default",
+	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -108,7 +110,9 @@ func TestResolveProject_MultipleComponents_FirstMatchUsed(t *testing.T) {
 
 func TestResolveProject_MultipleComponents_SecondMatches(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].ComponentToRepo["frontend"] = "https://github.com/my-org/frontend"
+	cfg.Jira.Projects[0].Components["frontend"] = models.ComponentConfig{
+		Repo: "https://github.com/my-org/frontend", Profile: "default",
+	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -169,7 +173,7 @@ func TestResolveProject_NoMatchingComponent(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-matching component")
 	}
-	assertContains(t, err.Error(), "no component-to-repo mapping")
+	assertContains(t, err.Error(), "no component mapping found")
 }
 
 func TestResolveProject_NoProjectConfig(t *testing.T) {
@@ -244,7 +248,9 @@ func TestResolveProject_URLWithGitSuffix(t *testing.T) {
 
 func TestResolveProject_URLWithoutGitSuffix(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].ComponentToRepo["backend"] = "https://github.com/my-org/backend"
+	cfg.Jira.Projects[0].Components["backend"] = models.ComponentConfig{
+		Repo: "https://github.com/my-org/backend", Profile: "default",
+	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -269,7 +275,9 @@ func TestResolveProject_URLWithoutGitSuffix(t *testing.T) {
 
 func TestResolveProject_URLWithTrailingSlash(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].ComponentToRepo["backend"] = "https://github.com/my-org/backend/"
+	cfg.Jira.Projects[0].Components["backend"] = models.ComponentConfig{
+		Repo: "https://github.com/my-org/backend/", Profile: "default",
+	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -468,7 +476,9 @@ func TestLocateRepo_URLParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := minimalConfig()
-			cfg.Jira.Projects[0].ComponentToRepo["backend"] = tt.url
+			cfg.Jira.Projects[0].Components["backend"] = models.ComponentConfig{
+				Repo: tt.url, Profile: "default",
+			}
 
 			r, err := projectresolver.NewConfigResolver(cfg)
 			if err != nil {
@@ -504,7 +514,9 @@ func TestResolveProject_ComponentMatchingCaseInsensitive(t *testing.T) {
 	// original casing ("FlightCtl-Core"). Case-insensitive matching
 	// bridges this gap.
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].ComponentToRepo["flightctl"] = "https://github.com/org/flightctl.git"
+	cfg.Jira.Projects[0].Components["flightctl"] = models.ComponentConfig{
+		Repo: "https://github.com/org/flightctl.git", Profile: "default",
+	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -531,7 +543,9 @@ func TestResolveProject_ComponentMatchingExactTakesPriority(t *testing.T) {
 	cfg := minimalConfig()
 	// Exact match for "Backend" and case-insensitive match for "backend"
 	// should both exist. Exact match should win.
-	cfg.Jira.Projects[0].ComponentToRepo["Backend"] = "https://github.com/org/exact.git"
+	cfg.Jira.Projects[0].Components["Backend"] = models.ComponentConfig{
+		Repo: "https://github.com/org/exact.git", Profile: "default",
+	}
 	// "backend" already exists from minimalConfig
 
 	r, err := projectresolver.NewConfigResolver(cfg)
@@ -583,11 +597,13 @@ func TestResolveProject_ComponentMatchingUppercase(t *testing.T) {
 
 func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Container = models.ContainerSettings{
-		Image: "custom-image:latest",
-		ResourceLimits: models.ContainerResourceLimits{
-			Memory: "16g",
-			CPUs:   "8",
+	cfg.Jira.Projects[0].Profiles["default"] = models.Profile{
+		Container: models.ContainerSettings{
+			Image: "custom-image:latest",
+			ResourceLimits: models.ContainerResourceLimits{
+				Memory: "16g",
+				CPUs:   "8",
+			},
 		},
 	}
 
@@ -622,9 +638,11 @@ func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
 
 func TestResolveProject_PropagatesImports(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Imports = []models.ImportConfig{
-		{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"},
-		{Repo: "https://github.com/org/tools", Path: ".tools"},
+	cfg.Jira.Projects[0].Profiles["default"] = models.Profile{
+		Imports: []models.ImportConfig{
+			{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"},
+			{Repo: "https://github.com/org/tools", Path: ".tools"},
+		},
 	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
@@ -701,8 +719,14 @@ func minimalConfig() *models.Config {
 						},
 					},
 					GitPullRequestFieldName: "customfield_10100",
-					ComponentToRepo: models.ComponentToRepoMap{
-						"backend": "https://github.com/my-org/backend.git",
+					Components: models.ComponentMap{
+						"backend": models.ComponentConfig{
+							Repo:    "https://github.com/my-org/backend.git",
+							Profile: "default",
+						},
+					},
+					Profiles: map[string]models.Profile{
+						"default": {},
 					},
 				},
 			},

@@ -34,16 +34,16 @@ func NewConfigResolver(config *models.Config) (*ConfigResolver, error) {
 }
 
 // ResolveProject returns project-specific settings for the work item.
-// It locates the project configuration, resolves the repository from
-// the work item's components, and maps status transitions for the
-// work item's type.
+// It locates the project configuration, resolves the component to a
+// repository and profile, and maps status transitions for the work
+// item's type.
 func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.ProjectSettings, error) {
 	pc, err := r.findProjectConfig(workItem)
 	if err != nil {
 		return nil, err
 	}
 
-	repoURL, err := r.matchComponentRepo(workItem, pc)
+	repoURL, profile, err := r.resolveComponent(workItem, pc)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 
 	transitions := pc.StatusTransitions.GetStatusTransitions(workItem.Type)
 
-	imports := pc.Imports
+	imports := profile.Imports
 	if imports == nil {
 		imports = []models.ImportConfig{}
 	}
@@ -71,10 +71,10 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		PRURLFieldName:       pc.GitPullRequestFieldName,
 		DisableErrorComments: pc.DisableErrorComments,
 		AIProvider:           r.config.AIProvider,
-		Container:            pc.Container,
+		Container:            profile.Container,
 		Imports:              imports,
-		Instructions:         pc.Instructions,
-		NewTicketWorkflow:    pc.NewTicketWorkflow,
+		Instructions:         profile.Instructions,
+		NewTicketWorkflow:    profile.NewTicketWorkflow,
 	}, nil
 }
 
@@ -85,7 +85,7 @@ func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, e
 		return "", "", err
 	}
 
-	repoURL, err := r.matchComponentRepo(workItem, pc)
+	repoURL, _, err := r.resolveComponent(workItem, pc)
 	if err != nil {
 		return "", "", err
 	}
@@ -108,35 +108,64 @@ func (r *ConfigResolver) findProjectConfig(workItem models.WorkItem) (*models.Pr
 	return pc, nil
 }
 
-// matchComponentRepo finds the first work item component that has a
-// mapping in the project's ComponentToRepo. Returns an error if the
-// work item has no components or none match.
+// resolveComponent finds the first work item component that has a
+// mapping in the project's Components, then looks up the referenced
+// profile. Returns the repo URL and profile. Returns an error if
+// the work item has no components, none match, or the referenced
+// profile does not exist.
 //
 // Matching is case-insensitive because viper lowercases YAML map keys
 // internally, so configured keys like "FlightCtl" become "flightctl"
 // in the loaded config regardless of the original YAML casing.
-func (r *ConfigResolver) matchComponentRepo(workItem models.WorkItem, pc *models.ProjectConfig) (string, error) {
+func (r *ConfigResolver) resolveComponent(workItem models.WorkItem, pc *models.ProjectConfig) (string, *models.Profile, error) {
 	if len(workItem.Components) == 0 {
-		return "", fmt.Errorf("work item %s has no components; cannot resolve repository", workItem.Key)
+		return "", nil, fmt.Errorf("work item %s has no components; cannot resolve repository", workItem.Key)
 	}
 
+	var comp *models.ComponentConfig
 	for _, component := range workItem.Components {
 		// Try exact match first.
-		if repoURL, ok := pc.ComponentToRepo[component]; ok {
-			return repoURL, nil
+		if c, ok := pc.Components[component]; ok {
+			comp = &c
+			break
 		}
 		// Fall back to case-insensitive match (viper lowercases map keys).
 		lower := strings.ToLower(component)
-		for key, repoURL := range pc.ComponentToRepo {
+		for key, c := range pc.Components {
 			if strings.ToLower(key) == lower {
-				return repoURL, nil
+				cc := c
+				comp = &cc
+				break
 			}
+		}
+		if comp != nil {
+			break
 		}
 	}
 
-	return "", fmt.Errorf(
-		"no component-to-repo mapping found for %s; components %v do not match any configured mapping",
-		workItem.Key, workItem.Components)
+	if comp == nil {
+		return "", nil, fmt.Errorf(
+			"no component mapping found for %s; components %v do not match any configured mapping",
+			workItem.Key, workItem.Components)
+	}
+
+	// Look up profile (case-insensitive).
+	profile, ok := pc.Profiles[comp.Profile]
+	if !ok {
+		lower := strings.ToLower(comp.Profile)
+		for key, p := range pc.Profiles {
+			if strings.ToLower(key) == lower {
+				profile = p
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return "", nil, fmt.Errorf("profile %q referenced by component does not exist in project config for %s", comp.Profile, workItem.Key)
+		}
+	}
+
+	return comp.Repo, &profile, nil
 }
 
 // parseRepoURL extracts the owner and repository name from a GitHub

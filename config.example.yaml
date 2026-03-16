@@ -55,84 +55,77 @@ jira:
           in_progress: "In Progress"
           in_review: "Review"
 
-      # Component to Repository Mapping for this project
-      # Note: Component names are matched case-insensitively
-      component_to_repo:
-        frontend: https://github.com/your-org/frontend.git
-        backend: https://github.com/your-org/backend.git
-        api: https://github.com/your-org/api.git
+      # Profiles bundle container, imports, instructions, and workflow
+      # settings. Multiple components can reference the same profile
+      # to avoid duplication. Operator-defined profile settings take
+      # precedence over repo-level config (.ai-bot/container.json)
+      # on conflicts.
+      profiles:
+        # Profile for Go projects
+        go-dev:
+          container:
+            image: "your-org/dev-environment:latest"
+            resource_limits:
+              memory: "8g"
+              cpus: "4"
+            env:
+              CONTAINER_HOST: "unix:///run/podman/podman.sock"
+            tmpfs:
+              - "/tmp:size=4g"
+            extra_mounts:
+              - source: "/run/user/1000/podman/podman.sock"
+                target: "/run/podman/podman.sock"
+              - source: "/home/user/.cache/go-build"
+                target: "/home/builder/.cache/go-build"
 
-      # Per-project container settings (optional). Same shape as
-      # container.fallback. Overrides the global fallback but is
-      # itself overridden by repo-level config (.ai-bot/container.json).
-      # Useful for prototyping container config without pushing to
-      # the target repo.
-      # container:
-      #   image: "your-org/dev-environment:latest"
-      #   resource_limits:
-      #     memory: "16g"
-      #     cpus: "8"
-      #   env:
-      #     CONTAINER_HOST: "unix:///run/podman/podman.sock"
-      #   tmpfs:
-      #     - "/tmp:size=4g"
-      #   extra_mounts:
-      #     - source: "/run/user/1000/podman/podman.sock"
-      #       target: "/run/podman/podman.sock"
-      #     - source: "/home/user/.cache/go-build"
-      #       target: "/home/builder/.cache/go-build"
+          # Auxiliary repositories to clone into the workspace before AI
+          # execution. Useful for providing shared AI workflows, skills,
+          # or guidelines without requiring each repo to declare imports.
+          imports:
+            - repo: https://github.com/your-org/ai-workflows
+              path: .ai-workflows                # destination relative to workspace root
+              ref: main                          # branch/tag/commit (optional)
+              install: .ai-workflows/install.sh  # shell command to run inside container after cloning (optional)
 
-      # Auxiliary repositories to clone into the workspace before AI
-      # execution (optional). These are merged with imports from the
-      # target repo's .ai-bot/config.yaml — repo-level imports take
-      # precedence on path conflicts. Useful for providing shared
-      # AI workflows, skills, or guidelines to all repos in a project
-      # without requiring each repo to declare imports individually.
-      # imports:
-      #   - repo: https://github.com/your-org/ai-workflows
-      #     path: .ai-workflows                # destination relative to workspace root
-      #     ref: main                          # branch/tag/commit (optional)
-      #     install: .ai-workflows/install.sh  # shell command to run inside container after cloning (optional)
+          # Universal instructions for the AI agent. Appended to ALL
+          # task types (new tickets AND feedback). Use for validation
+          # commands and coding standards. Repo-level
+          # .ai-bot/instructions.md takes precedence when the profile
+          # instructions field is empty.
+          instructions: |
+            After making changes, validate with:
+            - `make build`
+            - `make test`
+            - `make lint`
 
-      # Universal instructions for the AI agent (optional). Appended to
-      # ALL task types (new tickets AND feedback). Use for validation
-      # commands and coding standards that apply regardless of task type.
-      # Repo-level .ai-bot/instructions.md takes precedence when present.
-      # instructions: |
-      #   After making changes, validate with:
-      #   - `make build`
-      #   - `make test`
-      #   - `make lint`
+          # Workflow for new tickets only. Appended ONLY to new-ticket
+          # task files — feedback tasks do not receive this. Use for
+          # multi-phase workflows (assess → diagnose → fix → test → review).
+          # Repo-level .ai-bot/new-ticket-workflow.md takes precedence
+          # when the profile field is empty.
+          # new_ticket_workflow: |
+          #   Execute the following bugfix workflow phases in order.
+          #   ...
 
-      # Workflow for new tickets only (optional). Appended ONLY to new-
-      # ticket task files — feedback tasks do not receive this. Use for
-      # multi-phase workflows (assess → diagnose → fix → test → review).
-      # Repo-level .ai-bot/new-ticket-workflow.md takes precedence.
-      # new_ticket_workflow: |
-      #   Execute the following bugfix workflow phases in order.
-      #   Each phase is defined in the corresponding skill file.
-      #
-      #   1. Read and execute .ai-workflows/bugfix/skills/assess.md
-      #      The bug report is in .ai-bot/task.md. Do not ask clarifying
-      #      questions — make reasonable assumptions where needed.
-      #
-      #   2. Read and execute .ai-workflows/bugfix/skills/diagnose.md
-      #      Write your root cause analysis to .ai-bot/diagnosis.md.
-      #
-      #   3. Read and execute .ai-workflows/bugfix/skills/fix.md
-      #      Implement the minimal fix. Do not run tests yet.
-      #
-      #   4. Read and execute .ai-workflows/bugfix/skills/test.md
-      #      Write regression tests and run the full suite. If tests fail,
-      #      revise your fix and retest (up to 5 iterations).
-      #
-      #   5. Read and execute .ai-workflows/bugfix/skills/review.md
-      #      Self-review your changes. If issues are found, correct them,
-      #      retest, and re-review (up to 4 iterations).
-      #
-      #   6. Write a PR title and description to .ai-bot/pr.md.
-      #      First line is the title. Remaining lines are the body.
-      #      Include a Root Cause section from .ai-bot/diagnosis.md.
+        # Profile for a different language/toolchain
+        # rust-dev:
+        #   container:
+        #     image: "rust:1.78"
+        #   instructions: |
+        #     Run `cargo test` before committing.
+
+      # Components map Jira component names to their repository URL
+      # and profile. Component names are matched case-insensitively.
+      components:
+        frontend:
+          repo: https://github.com/your-org/frontend.git
+          profile: go-dev
+        backend:
+          repo: https://github.com/your-org/backend.git
+          profile: go-dev
+        api:
+          repo: https://github.com/your-org/api.git
+          profile: go-dev
 
     # Example project 2 - using PR URLs in comments instead of git field
     - project_keys:
@@ -144,8 +137,14 @@ jira:
           todo: "NEW"
           in_progress: "ASSIGNED"
           in_review: "POST"
-      component_to_repo:
-        mobile: https://github.com/your-org/mobile.git
+      profiles:
+        default:
+          container:
+            image: "your-org/mobile-dev:latest"
+      components:
+        mobile:
+          repo: https://github.com/your-org/mobile.git
+          profile: default
 
 # GitHub Configuration - GitHub App Authentication (Required)
 github:
@@ -230,14 +229,12 @@ workspaces:
 # The bot manages container lifecycle; the AI manages thinking.
 #
 # Container settings are resolved from multiple sources in priority order:
-#   1. .ai-bot/container.json in the target repo (highest priority)
-#   2. .devcontainer/devcontainer.json in the target repo
-#   3. Per-project container config (jira.projects[].container)
-#   4. Global fallback (container.fallback)
-#   5. Built-in fallback: ubuntu:latest (lowest priority)
+#   1. Profile container settings (operator-defined, highest priority)
+#   2. .ai-bot/container.json in the target repo
+#   3. .devcontainer/devcontainer.json in the target repo
 #
-# Per-project container config lets you prototype what should eventually
-# go into .ai-bot/container.json without pushing commits to target repos.
+# Every component must have a container image configured via its profile
+# or repo-level config. There is no global fallback image.
 container:
   # Container runtime preference: "auto" (detect, preferring podman),
   # "podman", or "docker".
@@ -255,19 +252,6 @@ container:
   #   "keep-id"                      - map host UID into container
   #   "keep-id:uid=1000,gid=1000"    - map to specific UID/GID
   # userns: "keep-id:uid=1000,gid=1000"
-
-  # Global fallback container settings. Used when neither the target
-  # repo nor the per-project config specifies container settings.
-  fallback:
-    image: "mcr.microsoft.com/devcontainers/universal:2"
-    resource_limits:
-      memory: "8g"
-      cpus: "4"
-    # tmpfs:
-    #   - "/tmp:size=4g"
-    # extra_mounts:
-    #   - source: "/home/user/.cache/go-build"
-    #     target: "/home/builder/.cache/go-build"
 
 # Guardrails Configuration
 # Safety and resource limits to prevent runaway costs and cascading failures.

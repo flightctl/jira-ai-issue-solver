@@ -89,7 +89,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -137,7 +142,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -163,7 +173,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -189,7 +204,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -209,7 +229,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						{
 							ProjectKeys:       ProjectKeys{"PROJ1"},
 							StatusTransitions: TicketTypeStatusTransitions{},
-							ComponentToRepo:   ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -235,7 +260,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -266,7 +296,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "Testing",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -311,8 +346,12 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
@@ -389,8 +428,12 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
@@ -448,11 +491,21 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        FlightCtl: https://github.com/your-org/flightctl.git
-        flightctl: https://github.com/your-org/flightctl-lowercase.git
-        Backend: https://github.com/your-org/backend.git
-        backend: https://github.com/your-org/backend-lowercase.git
+      components:
+        FlightCtl:
+          repo: https://github.com/your-org/flightctl.git
+          profile: default
+        flightctl:
+          repo: https://github.com/your-org/flightctl-lowercase.git
+          profile: default
+        Backend:
+          repo: https://github.com/your-org/backend.git
+          profile: default
+        backend:
+          repo: https://github.com/your-org/backend-lowercase.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
@@ -488,11 +541,11 @@ workspaces:
 	}
 
 	// Verify component mappings (keys converted to lowercase by Viper)
-	if projectConfig.ComponentToRepo["flightctl"] != "https://github.com/your-org/flightctl.git" {
-		t.Errorf("Expected flightctl to map to flightctl.git, got '%s'", projectConfig.ComponentToRepo["flightctl"])
+	if projectConfig.Components["flightctl"].Repo != "https://github.com/your-org/flightctl.git" {
+		t.Errorf("Expected flightctl to map to flightctl.git, got '%s'", projectConfig.Components["flightctl"].Repo)
 	}
-	if projectConfig.ComponentToRepo["backend"] != "https://github.com/your-org/backend.git" {
-		t.Errorf("Expected backend to map to backend.git, got '%s'", projectConfig.ComponentToRepo["backend"])
+	if projectConfig.Components["backend"].Repo != "https://github.com/your-org/backend.git" {
+		t.Errorf("Expected backend to map to backend.git, got '%s'", projectConfig.Components["backend"].Repo)
 	}
 
 	// The test was originally designed to test case sensitivity, but Viper converts keys to lowercase
@@ -528,8 +581,12 @@ jira:
           todo: "Backlog"
           in_progress: "Development"
           in_review: "Testing"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
@@ -691,8 +748,12 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        "test-component": "https://github.com/test/repo"
+      components:
+        "test-component":
+          repo: "https://github.com/test/repo"
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
@@ -777,7 +838,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -832,7 +898,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -883,7 +954,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -933,7 +1009,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -1013,8 +1094,12 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "` + tempKeyFile.Name() + `"
@@ -1127,8 +1212,11 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 							InReview:   "In Review",
 						},
 					},
-					ComponentToRepo: ComponentToRepoMap{
-						"component1": "https://github.com/test/repo1.git",
+					Components: ComponentMap{
+						"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+					},
+					Profiles: map[string]Profile{
+						"default": {},
 					},
 				},
 			}
@@ -1214,8 +1302,11 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 							InReview:   "In Review",
 						},
 					},
-					ComponentToRepo: ComponentToRepoMap{
-						"component1": "https://github.com/test/repo1.git",
+					Components: ComponentMap{
+						"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+					},
+					Profiles: map[string]Profile{
+						"default": {},
 					},
 				},
 			}

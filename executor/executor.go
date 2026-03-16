@@ -33,7 +33,7 @@
 //  6. Write task file for the AI agent
 //  7. Write provider-specific wrapper script
 //  8. Load repo-level configuration hints
-//  9. Resolve and start dev container (with fallback on failure)
+//  9. Resolve and start dev container
 //  10. Execute AI agent inside container
 //  11. Check for changes; fail if none
 //  12. Commit changes via GitHub API
@@ -168,11 +168,6 @@ type Config struct {
 	// DefaultProvider is the AI provider used when the project
 	// doesn't specify one (e.g., "claude", "gemini").
 	DefaultProvider string
-
-	// FallbackImage is the container image to try when the
-	// project's resolved container image fails to start. Empty
-	// disables fallback (start failure is immediately fatal).
-	FallbackImage string
 
 	// AIAPIKeys maps provider names to API key values injected
 	// into the container environment (e.g., {"claude": "sk-..."}).

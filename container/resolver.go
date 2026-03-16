@@ -13,12 +13,6 @@ import (
 )
 
 const (
-	// DefaultFallbackImage is the built-in fallback container image
-	// used when no other configuration source provides an image.
-	// This is a minimal image; teams should provide their own image
-	// with their toolchain and AI CLI installed.
-	DefaultFallbackImage = "ubuntu:latest"
-
 	// botConfigPath is the path (relative to repo root) for the
 	// bot-specific container configuration file.
 	botConfigPath = ".ai-bot/container.json"
@@ -29,32 +23,26 @@ const (
 )
 
 // Resolver resolves container configuration for a repository by
-// checking multiple sources in priority order and merging with defaults.
+// checking multiple sources in priority order.
 //
 // The resolution chain (highest to lowest priority):
-//  1. .ai-bot/container.json in the repository
-//  2. .devcontainer/devcontainer.json in the repository (practical subset)
-//  3. Bot-level defaults (defaultImage, defaultLimits)
-//  4. Built-in minimal fallback ([DefaultFallbackImage])
+//  1. Profile container settings (operator-defined)
+//  2. .ai-bot/container.json in the repository
+//  3. .devcontainer/devcontainer.json in the repository (practical subset)
 //
-// Only the highest-priority repo-level source is used: sources 1 and 2
-// do not stack. Within the selected source, any field left unset falls
-// through to bot-level defaults, then to the built-in fallback.
+// Only the highest-priority repo-level source is used: sources 2 and 3
+// do not stack. Profile settings override repo-level values on conflict.
+// If no source provides a container image, Resolve returns an error.
 type Resolver struct {
 	defaults ResolverDefaults
 	logger   *zap.Logger
 }
 
-// ResolverDefaults holds the global fallback container settings and
-// host-level runtime policy. The fallback settings fill in gaps when
-// neither the target repo nor the per-project config provides values.
-// Host policy (DisableSELinux, UserNS) is always applied regardless
-// of the resolution chain.
+// ResolverDefaults holds host-level runtime policy applied to all
+// spawned containers. There is no global fallback image: every
+// component must have a container image configured via its profile
+// or repo-level config (.ai-bot/container.json or devcontainer.json).
 type ResolverDefaults struct {
-	// Fallback holds image, resource limits, and other settings
-	// used when no higher-priority source provides them.
-	Fallback SettingsOverride
-
 	// DisableSELinux is host-level policy: always applied.
 	DisableSELinux bool
 
@@ -88,16 +76,16 @@ func NewResolver(defaults ResolverDefaults, logger *zap.Logger) (*Resolver, erro
 }
 
 // Resolve determines the container configuration for the repository at
-// repoDir. The projectOverride, if non-nil, sits between repo-level
-// config and the global fallback in the resolution chain:
+// repoDir. The profileOverride, if non-nil, provides settings from
+// the matched component's profile:
 //
-//  1. .ai-bot/container.json or .devcontainer/devcontainer.json (repo)
-//  2. projectOverride (per-project bot config)
-//  3. Global fallback (ResolverDefaults.Fallback)
-//  4. Built-in fallback (ubuntu:latest)
+//  1. profileOverride (operator-defined profile)
+//  2. .ai-bot/container.json or .devcontainer/devcontainer.json (repo)
 //
+// Operator profile settings win on conflicts with repo-level config.
+// If neither source provides a container image, Resolve returns an error.
 // Host policy (DisableSELinux, UserNS) is applied unconditionally.
-func (r *Resolver) Resolve(repoDir string, projectOverride *SettingsOverride) (*Config, error) {
+func (r *Resolver) Resolve(repoDir string, profileOverride *SettingsOverride) (*Config, error) {
 	// Try repo-level configs in priority order.
 	repoCfg, err := r.tryBotConfig(repoDir)
 	if err != nil {
@@ -111,24 +99,20 @@ func (r *Resolver) Resolve(repoDir string, projectOverride *SettingsOverride) (*
 		}
 	}
 
-	// Build the resolved config by layering sources from lowest to
-	// highest priority.
+	// Build the resolved config by layering sources. Repo-level
+	// config goes first (lowest priority), then profile overrides.
 	resolved := &Config{
-		Image:  DefaultFallbackImage,
-		Source: "built-in fallback",
+		Source: "none",
 	}
 
-	// Layer 3: global fallback.
-	applySettingsOverride(resolved, &r.defaults.Fallback, "bot default")
-
-	// Layer 2: per-project override.
-	if projectOverride != nil {
-		applySettingsOverride(resolved, projectOverride, "project config")
-	}
-
-	// Layer 1: repo-level config.
+	// Layer 2: repo-level config (lower priority).
 	if repoCfg != nil {
 		overlay(resolved, repoCfg)
+	}
+
+	// Layer 1: profile override (higher priority, operator-defined).
+	if profileOverride != nil {
+		applySettingsOverride(resolved, profileOverride, "profile")
 	}
 
 	// Host policy: always applied.
@@ -137,6 +121,10 @@ func (r *Resolver) Resolve(repoDir string, projectOverride *SettingsOverride) (*
 
 	if resolved.Env == nil {
 		resolved.Env = make(map[string]string)
+	}
+
+	if resolved.Image == "" {
+		return nil, fmt.Errorf("no container image configured: set image in profile container settings, .ai-bot/container.json, or .devcontainer/devcontainer.json")
 	}
 
 	return resolved, nil

@@ -74,26 +74,8 @@ func main() {
 
 	containerRunner := container.NewCLIRunner(detected)
 
-	fallbackMounts := make([]container.Mount, len(config.Container.Fallback.ExtraMounts))
-	for i, m := range config.Container.Fallback.ExtraMounts {
-		fallbackMounts[i] = container.Mount{
-			Source:  m.Source,
-			Target:  m.Target,
-			Options: m.Options,
-		}
-	}
-
 	containerResolver, err := container.NewResolver(
 		container.ResolverDefaults{
-			Fallback: container.SettingsOverride{
-				Image: config.Container.Fallback.Image,
-				Limits: container.ResourceLimits{
-					Memory: config.Container.Fallback.ResourceLimits.Memory,
-					CPUs:   config.Container.Fallback.ResourceLimits.CPUs,
-				},
-				Tmpfs:       config.Container.Fallback.Tmpfs,
-				ExtraMounts: fallbackMounts,
-			},
 			DisableSELinux: config.Container.DisableSELinux,
 			UserNS:         config.Container.UserNS,
 		},
@@ -142,7 +124,6 @@ func main() {
 		executor.Config{
 			BotUsername:       config.GitHub.BotUsername,
 			DefaultProvider:   config.AIProvider,
-			FallbackImage:     config.Container.Fallback.Image,
 			AIAPIKeys:         aiAPIKeys,
 			SessionTimeout:    time.Duration(config.Guardrails.MaxContainerRuntimeMinutes) * time.Minute,
 			IgnoredUsernames:  config.GitHub.IgnoredUsernames,

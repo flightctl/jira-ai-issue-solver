@@ -93,25 +93,58 @@ func (f *LogFormat) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// ComponentToRepoMap is a custom type for parsing component_to_repo from environment variables and YAML
-type ComponentToRepoMap map[string]string
+// Profile bundles container, imports, instructions, and workflow
+// settings for a group of components. Multiple components can reference
+// the same profile to avoid config duplication. Operator-defined
+// profiles take precedence over repo-level config on conflicts.
+type Profile struct {
+	Container         ContainerSettings `yaml:"container" mapstructure:"container"`
+	Imports           []ImportConfig    `yaml:"imports" mapstructure:"imports"`
+	Instructions      string            `yaml:"instructions" mapstructure:"instructions"`
+	NewTicketWorkflow string            `yaml:"new_ticket_workflow" mapstructure:"new_ticket_workflow"`
+}
 
-// UnmarshalText implements encoding.TextUnmarshaler for parsing from environment variables
-func (c *ComponentToRepoMap) UnmarshalText(text []byte) error {
-	if len(text) == 0 {
-		*c = make(map[string]string)
-		return nil
+// ComponentConfig maps a Jira component to its repository and profile.
+type ComponentConfig struct {
+	Repo    string `yaml:"repo" mapstructure:"repo"`
+	Profile string `yaml:"profile" mapstructure:"profile"`
+}
+
+// ComponentMap preserves the case of component names when parsing YAML.
+// Viper lowercases map keys by default; this custom unmarshaler bypasses
+// that to keep the original casing (component names are matched
+// case-insensitively at lookup time).
+type ComponentMap map[string]ComponentConfig
+
+// UnmarshalYAML implements custom unmarshaling to preserve component name case.
+func (c *ComponentMap) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("expected mapping node for ComponentMap, got %v", value.Kind)
 	}
 
-	str := string(text)
-	pairs := strings.Split(str, ",")
-	result := make(map[string]string)
-
-	for _, pair := range pairs {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			result[parts[0]] = parts[1]
+	result := make(map[string]ComponentConfig)
+	for i := 0; i < len(value.Content); i += 2 {
+		if i+1 >= len(value.Content) {
+			break
 		}
+		keyNode := value.Content[i]
+		valueNode := value.Content[i+1]
+
+		if keyNode.Kind != yaml.ScalarNode {
+			continue
+		}
+
+		var key string
+		if err := keyNode.Decode(&key); err != nil {
+			continue
+		}
+
+		var val ComponentConfig
+		if err := valueNode.Decode(&val); err != nil {
+			return fmt.Errorf("decode component %q: %w", key, err)
+		}
+
+		result[key] = val
 	}
 
 	*c = result
@@ -140,40 +173,6 @@ func (p *ProjectKeys) UnmarshalText(text []byte) error {
 	}
 
 	*p = result
-	return nil
-}
-
-// UnmarshalYAML implements custom unmarshaling for YAML to preserve case sensitivity
-func (c *ComponentToRepoMap) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind != yaml.MappingNode {
-		return fmt.Errorf("expected mapping node for ComponentToRepoMap, got %v", value.Kind)
-	}
-
-	result := make(map[string]string)
-	for i := 0; i < len(value.Content); i += 2 {
-		if i+1 >= len(value.Content) {
-			break
-		}
-		keyNode := value.Content[i]
-		valueNode := value.Content[i+1]
-
-		if keyNode.Kind != yaml.ScalarNode {
-			continue
-		}
-
-		var key, val string
-		if err := keyNode.Decode(&key); err != nil {
-			continue
-		}
-		if err := valueNode.Decode(&val); err != nil {
-			continue
-		}
-
-		// Preserve the exact case of the key as it appears in YAML
-		result[key] = val
-	}
-
-	*c = result
 	return nil
 }
 
@@ -265,38 +264,23 @@ func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) er
 	return fmt.Errorf("unsupported data type for TicketTypeStatusTransitions: %T", data)
 }
 
-// ProjectConfig represents configuration for a specific project or group of projects
+// ProjectConfig represents configuration for a specific project or group of projects.
 type ProjectConfig struct {
 	ProjectKeys             ProjectKeys                 `yaml:"project_keys" mapstructure:"project_keys"`
 	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
-	ComponentToRepo         ComponentToRepoMap          `yaml:"component_to_repo" mapstructure:"component_to_repo"`
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
 
-	// Container holds per-project container settings. When set,
-	// these override the global fallback (container.fallback) but
-	// are still overridden by repo-level config
-	// (.ai-bot/container.json or .devcontainer/devcontainer.json).
-	Container ContainerSettings `yaml:"container" mapstructure:"container"`
+	// Profiles maps profile names to their settings. Each profile
+	// bundles container settings, imports, instructions, and
+	// workflow for a group of components. Multiple components can
+	// reference the same profile to avoid duplication.
+	Profiles map[string]Profile `yaml:"profiles" mapstructure:"profiles"`
 
-	// Imports declares auxiliary repositories to clone into the
-	// workspace before AI execution. These are merged with any
-	// imports declared in the target repo's .ai-bot/config.yaml
-	// (repo-level imports take precedence on path conflicts).
-	Imports []ImportConfig `yaml:"imports" mapstructure:"imports"`
-
-	// Instructions provides universal project-level AI instructions
-	// (validation commands, coding standards) appended to all task
-	// types. Used to prototype before committing
-	// .ai-bot/instructions.md to the target repo. The repo-level
-	// file takes precedence when it exists.
-	Instructions string `yaml:"instructions" mapstructure:"instructions"`
-
-	// NewTicketWorkflow provides workflow instructions appended only
-	// to new-ticket task files (not feedback). Used for multi-phase
-	// workflows (assess → diagnose → fix → test → review). The
-	// repo-level .ai-bot/new-ticket-workflow.md takes precedence.
-	NewTicketWorkflow string `yaml:"new_ticket_workflow" mapstructure:"new_ticket_workflow"`
+	// Components maps Jira component names to their repository URL
+	// and profile. Component names are matched case-insensitively
+	// at lookup time.
+	Components ComponentMap `yaml:"components" mapstructure:"components"`
 }
 
 // ImportConfig declares an auxiliary repository to clone into the workspace.
@@ -387,7 +371,7 @@ type Config struct {
 }
 
 // ContainerCfg holds bot-level container configuration: host-level
-// runtime policy and a global fallback for container settings.
+// runtime policy applied to all spawned containers.
 type ContainerCfg struct {
 	// Runtime specifies the container runtime preference. Valid values
 	// are "auto" (detect, preferring podman), "podman", or "docker".
@@ -395,18 +379,13 @@ type ContainerCfg struct {
 
 	// DisableSELinux disables SELinux confinement for all spawned
 	// containers (--security-opt=label=disable). This is host-level
-	// policy and applies regardless of per-project container config.
+	// policy and applies regardless of profile container config.
 	DisableSELinux bool `yaml:"disable_selinux" mapstructure:"disable_selinux"`
 
 	// UserNS sets the user namespace mode for all spawned containers
 	// (e.g., "keep-id", "keep-id:uid=1000,gid=1000"). This is
 	// host-level policy. Empty means the container runtime's default.
 	UserNS string `yaml:"userns" mapstructure:"userns"`
-
-	// Fallback holds the global fallback container settings, used
-	// when neither the target repo nor the project config specifies
-	// container settings.
-	Fallback ContainerSettings `yaml:"fallback" mapstructure:"fallback"`
 }
 
 // ContainerSettings holds per-environment container settings. This
@@ -627,9 +606,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("container.runtime")
 	bindEnv("container.disable_selinux")
 	bindEnv("container.userns")
-	bindEnv("container.fallback.image")
-	bindEnv("container.fallback.resource_limits.memory")
-	bindEnv("container.fallback.resource_limits.cpus")
 
 	// Guardrails configuration
 	bindEnv("guardrails.max_concurrent_jobs")
@@ -690,20 +666,29 @@ func LoadConfig(configPath string) (*Config, error) {
 		// Create a default project from environment variables
 		defaultProject := ProjectConfig{}
 
-		// Handle component_to_repo from environment
+		// Handle component_to_repo from environment. Creates a
+		// "default" profile with no container/imports/instructions
+		// and maps each component to that profile. Operators who need
+		// profiles must use a YAML config file.
 		componentToRepoStr := v.GetString("component_to_repo")
 		if componentToRepoStr != "" {
 			pairs := strings.Split(componentToRepoStr, ",")
-			result := make(map[string]string)
+			components := make(ComponentMap)
 
 			for _, pair := range pairs {
 				parts := strings.SplitN(pair, "=", 2)
 				if len(parts) == 2 {
-					result[parts[0]] = parts[1]
+					components[parts[0]] = ComponentConfig{
+						Repo:    parts[1],
+						Profile: "default",
+					}
 				}
 			}
 
-			defaultProject.ComponentToRepo = ComponentToRepoMap(result)
+			defaultProject.Components = components
+			defaultProject.Profiles = map[string]Profile{
+				"default": {},
+			}
 		}
 
 		// Handle status transitions from environment
@@ -732,7 +717,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		defaultProject.DisableErrorComments = v.GetBool("jira.disable_error_comments")
 
 		// Only add the default project if it has some configuration
-		if len(defaultProject.ComponentToRepo) > 0 || len(defaultProject.StatusTransitions) > 0 || len(defaultProject.ProjectKeys) > 0 {
+		if len(defaultProject.Components) > 0 || len(defaultProject.StatusTransitions) > 0 || len(defaultProject.ProjectKeys) > 0 {
 			config.Jira.Projects = []ProjectConfig{defaultProject}
 		}
 	}
@@ -968,8 +953,36 @@ func (p *ProjectConfig) validate(index int) error {
 		return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", prefix)
 	}
 
-	if len(p.ComponentToRepo) == 0 {
-		return fmt.Errorf("%s.component_to_repo: at least one component_to_repo mapping is required", prefix)
+	if len(p.Components) == 0 {
+		return fmt.Errorf("%s.components: at least one component mapping is required", prefix)
+	}
+
+	if len(p.Profiles) == 0 {
+		return fmt.Errorf("%s.profiles: at least one profile must be configured", prefix)
+	}
+
+	// Verify every component references a valid profile.
+	for name, comp := range p.Components {
+		if comp.Repo == "" {
+			return fmt.Errorf("%s.components.%s.repo is required", prefix, name)
+		}
+		if comp.Profile == "" {
+			return fmt.Errorf("%s.components.%s.profile is required", prefix, name)
+		}
+		if _, ok := p.Profiles[comp.Profile]; !ok {
+			// Case-insensitive fallback.
+			found := false
+			lower := strings.ToLower(comp.Profile)
+			for key := range p.Profiles {
+				if strings.ToLower(key) == lower {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("%s.components.%s.profile: profile %q does not exist", prefix, name, comp.Profile)
+			}
+		}
 	}
 
 	return nil
