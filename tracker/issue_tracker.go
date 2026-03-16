@@ -37,11 +37,6 @@ type IssueTracker interface {
 	// AddComment posts a comment to a work item.
 	AddComment(key, body string) error
 
-	// GetFieldValue reads the value of a named field from a work item.
-	// Returns an empty string (not an error) when the field exists but
-	// has no value. Returns an error when the field name is not found.
-	GetFieldValue(key, field string) (string, error)
-
 	// SetFieldValue writes a string value to a named field on a work item.
 	SetFieldValue(key, field, value string) error
 }

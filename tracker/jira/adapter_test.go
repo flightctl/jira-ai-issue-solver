@@ -66,6 +66,87 @@ func TestNewAdapter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// NewAdapter — contributor field resolution
+// ---------------------------------------------------------------------------
+
+func TestNewAdapter_ContributorFieldResolution(t *testing.T) {
+	t.Run("resolves custom field to cf[ID] syntax", func(t *testing.T) {
+		var capturedJQL string
+		mock := &jiratest.Stub{
+			GetFieldIDByNameFunc: func(name string) (string, error) {
+				if name == "Contributors" {
+					return "customfield_10466", nil
+				}
+				return name, nil
+			},
+			SearchTicketsFunc: func(jql string) (*models.JiraSearchResponse, error) {
+				capturedJQL = jql
+				return &models.JiraSearchResponse{}, nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		_, err := adapter.SearchWorkItems(models.SearchCriteria{
+			ContributorIsCurrentUser: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedJQL != `cf[10466] = currentUser()` {
+			t.Errorf("JQL mismatch\ngot:  %q\nwant: %q", capturedJQL, `cf[10466] = currentUser()`)
+		}
+	})
+
+	t.Run("falls back to display name on lookup error", func(t *testing.T) {
+		var capturedJQL string
+		mock := &jiratest.Stub{
+			GetFieldIDByNameFunc: func(string) (string, error) {
+				return "", errors.New("field not found")
+			},
+			SearchTicketsFunc: func(jql string) (*models.JiraSearchResponse, error) {
+				capturedJQL = jql
+				return &models.JiraSearchResponse{}, nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		_, err := adapter.SearchWorkItems(models.SearchCriteria{
+			ContributorIsCurrentUser: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedJQL != `Contributors = currentUser()` {
+			t.Errorf("JQL mismatch\ngot:  %q\nwant: %q", capturedJQL, `Contributors = currentUser()`)
+		}
+	})
+
+	t.Run("uses system field ID directly when not a custom field", func(t *testing.T) {
+		var capturedJQL string
+		mock := &jiratest.Stub{
+			GetFieldIDByNameFunc: func(string) (string, error) {
+				return "contributors", nil
+			},
+			SearchTicketsFunc: func(jql string) (*models.JiraSearchResponse, error) {
+				capturedJQL = jql
+				return &models.JiraSearchResponse{}, nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		_, err := adapter.SearchWorkItems(models.SearchCriteria{
+			ContributorIsCurrentUser: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedJQL != `contributors = currentUser()` {
+			t.Errorf("JQL mismatch\ngot:  %q\nwant: %q", capturedJQL, `contributors = currentUser()`)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // GetWorkItem
 // ---------------------------------------------------------------------------
 
@@ -377,7 +458,7 @@ func TestAdapter_SearchWorkItems_JQL(t *testing.T) {
 			wantJQL: `status IN ("In Progress", "In Review")`,
 		},
 		{
-			name: "contributor filter",
+			name: "contributor filter uses resolved field reference",
 			criteria: models.SearchCriteria{
 				ContributorIsCurrentUser: true,
 			},
@@ -473,7 +554,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
 				return &models.JiraSearchResponse{
-					Total: 2,
+					IsLast: true,
 					Issues: []models.JiraIssue{
 						{
 							Key: "PROJ-1",
@@ -547,7 +628,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 	t.Run("returns empty slice for no results", func(t *testing.T) {
 		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
-				return &models.JiraSearchResponse{Total: 0}, nil
+				return &models.JiraSearchResponse{IsLast: true}, nil
 			},
 		}
 
@@ -568,7 +649,7 @@ func TestAdapter_SearchWorkItems_ResultMapping(t *testing.T) {
 		mock := &jiratest.Stub{
 			SearchTicketsFunc: func(string) (*models.JiraSearchResponse, error) {
 				return &models.JiraSearchResponse{
-					Total: 1,
+					IsLast: true,
 					Issues: []models.JiraIssue{
 						{
 							Key: "SEC-1",
@@ -722,120 +803,11 @@ func TestAdapter_AddComment(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetFieldValue
-// ---------------------------------------------------------------------------
-
-func TestAdapter_GetFieldValue(t *testing.T) {
-	t.Run("returns string field value", func(t *testing.T) {
-		mock := &jiratest.Stub{
-			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
-				fields := map[string]any{
-					"customfield_10001": "https://github.com/org/repo/pull/42",
-				}
-				names := map[string]string{
-					"customfield_10001": "Git Pull Request",
-				}
-				return fields, names, nil
-			},
-		}
-
-		adapter := mustNewAdapter(t, mock)
-		got, err := adapter.GetFieldValue("PROJ-123", "Git Pull Request")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != "https://github.com/org/repo/pull/42" {
-			t.Errorf("value = %q, want %q", got, "https://github.com/org/repo/pull/42")
-		}
-	})
-
-	t.Run("converts numeric field value to string", func(t *testing.T) {
-		mock := &jiratest.Stub{
-			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
-				fields := map[string]any{
-					"customfield_10002": float64(42),
-				}
-				names := map[string]string{
-					"customfield_10002": "Story Points",
-				}
-				return fields, names, nil
-			},
-		}
-
-		adapter := mustNewAdapter(t, mock)
-		got, err := adapter.GetFieldValue("PROJ-123", "Story Points")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != "42" {
-			t.Errorf("value = %q, want %q", got, "42")
-		}
-	})
-
-	t.Run("returns empty string for nil field value", func(t *testing.T) {
-		mock := &jiratest.Stub{
-			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
-				fields := map[string]any{
-					"customfield_10001": nil,
-				}
-				names := map[string]string{
-					"customfield_10001": "Git Pull Request",
-				}
-				return fields, names, nil
-			},
-		}
-
-		adapter := mustNewAdapter(t, mock)
-		got, err := adapter.GetFieldValue("PROJ-123", "Git Pull Request")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != "" {
-			t.Errorf("value = %q, want empty string", got)
-		}
-	})
-
-	t.Run("returns error when field name not found", func(t *testing.T) {
-		mock := &jiratest.Stub{
-			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
-				return map[string]any{}, map[string]string{}, nil
-			},
-		}
-
-		adapter := mustNewAdapter(t, mock)
-		_, err := adapter.GetFieldValue("PROJ-123", "Nonexistent Field")
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if got := err.Error(); !strings.Contains(got, "not found") {
-			t.Errorf("expected error to contain %q, got %q", "not found", got)
-		}
-	})
-
-	t.Run("propagates API error", func(t *testing.T) {
-		mock := &jiratest.Stub{
-			GetTicketWithExpandedFieldsFunc: func(string) (map[string]any, map[string]string, error) {
-				return nil, nil, errors.New("api timeout")
-			},
-		}
-
-		adapter := mustNewAdapter(t, mock)
-		_, err := adapter.GetFieldValue("PROJ-123", "Git Pull Request")
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if got := err.Error(); !strings.Contains(got, "api timeout") {
-			t.Errorf("expected error to contain %q, got %q", "api timeout", got)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // SetFieldValue
 // ---------------------------------------------------------------------------
 
 func TestAdapter_SetFieldValue(t *testing.T) {
-	t.Run("delegates to JiraService with correct arguments", func(t *testing.T) {
+	t.Run("wraps value in ADF and delegates to JiraService", func(t *testing.T) {
 		var gotKey, gotField string
 		var gotValue any
 		mock := &jiratest.Stub{
@@ -858,8 +830,11 @@ func TestAdapter_SetFieldValue(t *testing.T) {
 		if gotField != "Git Pull Request" {
 			t.Errorf("field = %q, want %q", gotField, "Git Pull Request")
 		}
-		if gotValue != "https://github.com/org/repo/pull/42" {
-			t.Errorf("value = %v, want %q", gotValue, "https://github.com/org/repo/pull/42")
+
+		// Value should be ADF wrapping the original string.
+		wantValue := models.TextToADF("https://github.com/org/repo/pull/42")
+		if !reflect.DeepEqual(gotValue, wantValue) {
+			t.Errorf("value mismatch\ngot:  %v\nwant: %v", gotValue, wantValue)
 		}
 	})
 

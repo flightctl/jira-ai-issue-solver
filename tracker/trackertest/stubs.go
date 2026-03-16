@@ -17,7 +17,6 @@ type Stub struct {
 	GetWorkItemFunc      func(key string) (*models.WorkItem, error)
 	TransitionStatusFunc func(key, status string) error
 	AddCommentFunc       func(key, body string) error
-	GetFieldValueFunc    func(key, field string) (string, error)
 	SetFieldValueFunc    func(key, field, value string) error
 }
 
@@ -47,13 +46,6 @@ func (s *Stub) AddComment(key, body string) error {
 		return s.AddCommentFunc(key, body)
 	}
 	return nil
-}
-
-func (s *Stub) GetFieldValue(key, field string) (string, error) {
-	if s.GetFieldValueFunc != nil {
-		return s.GetFieldValueFunc(key, field)
-	}
-	return "", nil
 }
 
 func (s *Stub) SetFieldValue(key, field, value string) error {

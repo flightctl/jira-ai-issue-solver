@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -75,6 +76,10 @@ type JiraServiceImpl struct {
 	executor models.CommandExecutor
 	logger   *zap.Logger
 	sleepFn  func(time.Duration) <-chan time.Time // Returns a channel for select-based waiting
+
+	// fieldNameToID caches the field name→ID mapping from /rest/api/3/field.
+	// Populated on first call to GetFieldIDByName; nil until then.
+	fieldNameToID map[string]string
 }
 
 // NewJiraService creates a new JiraServiceImpl with production defaults.
@@ -129,7 +134,9 @@ func (s *JiraServiceImpl) doOperation(
 			return nil, fmt.Errorf("failed to create %s request: %w", operation, err)
 		}
 
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.Jira.APIToken))
+		credentials := base64.StdEncoding.EncodeToString(
+			[]byte(s.config.Jira.Username + ":" + s.config.Jira.APIToken))
+		req.Header.Set("Authorization", "Basic "+credentials)
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := s.client.Do(req)
@@ -259,7 +266,7 @@ func (s *JiraServiceImpl) doPost(url string, bodyReader io.Reader) ([]byte, erro
 
 // GetTicket fetches a ticket from Jira
 func (s *JiraServiceImpl) GetTicket(key string) (*models.JiraTicketResponse, error) {
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s", s.config.Jira.BaseURL, key)
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s", s.config.Jira.BaseURL, key)
 
 	body, err := s.doGet(url)
 	if err != nil {
@@ -275,7 +282,7 @@ func (s *JiraServiceImpl) GetTicket(key string) (*models.JiraTicketResponse, err
 
 // GetTicketWithExpandedFields fetches a ticket from Jira with expanded fields for custom field access
 func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]interface{}, map[string]string, error) {
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s?expand=names", s.config.Jira.BaseURL, key)
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s?expand=names", s.config.Jira.BaseURL, key)
 
 	body, err := s.doGet(url)
 	if err != nil {
@@ -294,78 +301,10 @@ func (s *JiraServiceImpl) GetTicketWithExpandedFields(key string) (map[string]in
 	return ticketWithFields.Fields, ticketWithFields.Names, nil
 }
 
-// GetTicketWithComments fetches a ticket from Jira with comments expanded
-func (s *JiraServiceImpl) GetTicketWithComments(key string) (*models.JiraTicketResponse, error) {
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s?expand=comment", s.config.Jira.BaseURL, key)
-
-	body, err := s.doGet(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get ticket with comments, err: %w", err)
-	}
-
-	var ticket models.JiraTicketResponse
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&ticket); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &ticket, nil
-}
-
-// UpdateTicketLabels updates the labels of a ticket
-func (s *JiraServiceImpl) UpdateTicketLabels(key string, addLabels, removeLabels []string) error {
-	// First, get the current labels
-	ticket, err := s.GetTicket(key)
-	if err != nil {
-		return fmt.Errorf("failed to get ticket: %w", err)
-	}
-
-	// Create a map of current labels for easy lookup
-	currentLabels := make(map[string]bool)
-	for _, label := range ticket.Fields.Labels {
-		currentLabels[label] = true
-	}
-
-	// Remove labels
-	for _, label := range removeLabels {
-		delete(currentLabels, label)
-	}
-
-	// Add labels
-	for _, label := range addLabels {
-		currentLabels[label] = true
-	}
-
-	// Convert map back to slice
-	labels := make([]string, 0, len(currentLabels))
-	for label := range currentLabels {
-		labels = append(labels, label)
-	}
-
-	// Update the ticket
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s", s.config.Jira.BaseURL, key)
-
-	payload := map[string]interface{}{
-		"fields": map[string]interface{}{
-			"labels": labels,
-		},
-	}
-
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	if _, err := s.doPut(url, bytes.NewReader(jsonPayload)); err != nil {
-		return fmt.Errorf("failed to update ticket labels: %w", err)
-	}
-
-	return nil
-}
-
 // UpdateTicketStatus updates the status of a ticket
 func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 	// Get available transitions
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", s.config.Jira.BaseURL, key)
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s/transitions", s.config.Jira.BaseURL, key)
 
 	body, err := s.doGet(url)
 	if err != nil {
@@ -418,12 +357,14 @@ func (s *JiraServiceImpl) UpdateTicketStatus(key string, status string) error {
 	return nil
 }
 
-// AddComment adds a comment to a ticket
+// AddComment adds a comment to a ticket.
+// The comment text is converted to Atlassian Document Format (ADF)
+// for Jira Cloud API v3.
 func (s *JiraServiceImpl) AddComment(key string, comment string) error {
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s/comment", s.config.Jira.BaseURL, key)
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s/comment", s.config.Jira.BaseURL, key)
 
-	payload := map[string]string{
-		"body": comment,
+	payload := map[string]any{
+		"body": models.TextToADF(comment),
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -440,7 +381,7 @@ func (s *JiraServiceImpl) AddComment(key string, comment string) error {
 
 // UpdateTicketField updates a specific field of a ticket
 func (s *JiraServiceImpl) UpdateTicketField(key string, fieldID string, value interface{}) error {
-	url := fmt.Sprintf("%s/rest/api/2/issue/%s", s.config.Jira.BaseURL, key)
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s", s.config.Jira.BaseURL, key)
 
 	payload := map[string]interface{}{
 		"fields": map[string]interface{}{
@@ -469,13 +410,30 @@ func (s *JiraServiceImpl) UpdateTicketFieldByName(key string, fieldName string, 
 	return s.UpdateTicketField(key, fieldID, value)
 }
 
-// GetFieldIDByName resolves a field name to its ID
+// GetFieldIDByName resolves a field name to its ID. The full field list
+// is fetched from Jira on the first call and cached for subsequent lookups.
 func (s *JiraServiceImpl) GetFieldIDByName(fieldName string) (string, error) {
-	url := fmt.Sprintf("%s/rest/api/2/field", s.config.Jira.BaseURL)
+	if s.fieldNameToID == nil {
+		if err := s.loadFieldCache(); err != nil {
+			return "", err
+		}
+	}
+
+	id, ok := s.fieldNameToID[fieldName]
+	if !ok {
+		return "", fmt.Errorf("field with name '%s' not found", fieldName)
+	}
+	return id, nil
+}
+
+// loadFieldCache fetches all field definitions from Jira and populates
+// the name→ID cache.
+func (s *JiraServiceImpl) loadFieldCache() error {
+	url := fmt.Sprintf("%s/rest/api/3/field", s.config.Jira.BaseURL)
 
 	body, err := s.doGet(url)
 	if err != nil {
-		return "", fmt.Errorf("failed to get fields, err: %w", err)
+		return fmt.Errorf("failed to get fields, err: %w", err)
 	}
 
 	var fields []struct {
@@ -484,26 +442,25 @@ func (s *JiraServiceImpl) GetFieldIDByName(fieldName string) (string, error) {
 	}
 
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&fields); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Search for the field by name
+	s.fieldNameToID = make(map[string]string, len(fields))
 	for _, field := range fields {
-		if field.Name == fieldName {
-			return field.ID, nil
-		}
+		s.fieldNameToID[field.Name] = field.ID
 	}
 
-	return "", fmt.Errorf("field with name '%s' not found", fieldName)
+	s.logger.Info("Cached Jira field definitions", zap.Int("count", len(s.fieldNameToID)))
+	return nil
 }
 
-// SearchTickets searches for tickets using JQL
+// SearchTickets searches for tickets using JQL via the Jira Cloud
+// enhanced search endpoint (POST /rest/api/3/search/jql).
 func (s *JiraServiceImpl) SearchTickets(jql string) (*models.JiraSearchResponse, error) {
-	url := fmt.Sprintf("%s/rest/api/2/search", s.config.Jira.BaseURL)
+	url := fmt.Sprintf("%s/rest/api/3/search/jql", s.config.Jira.BaseURL)
 
 	payload := map[string]interface{}{
 		"jql":        jql,
-		"startAt":    0,
 		"maxResults": 100,
 		"fields":     []string{"summary", "description", "status", "issuetype", "project", "components", "labels", "assignee", "security", "created", "updated", "creator", "reporter"},
 	}
@@ -513,7 +470,7 @@ func (s *JiraServiceImpl) SearchTickets(jql string) (*models.JiraSearchResponse,
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	body, err := s.doPost(url, bytes.NewBuffer(jsonPayload))
+	body, err := s.doPost(url, bytes.NewReader(jsonPayload))
 	if err != nil {
 		return nil, fmt.Errorf("failed to search tickets: %w", err)
 	}

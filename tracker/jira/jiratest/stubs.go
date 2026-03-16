@@ -13,13 +13,13 @@ var _ jira.JiraClient = (*Stub)(nil)
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type Stub struct {
-	SearchTicketsFunc               func(jql string) (*models.JiraSearchResponse, error)
-	GetTicketFunc                   func(key string) (*models.JiraTicketResponse, error)
-	GetTicketSecurityLevelFunc      func(key string) (*models.JiraSecurity, error)
-	UpdateTicketStatusFunc          func(key string, status string) error
-	AddCommentFunc                  func(key string, comment string) error
-	GetTicketWithExpandedFieldsFunc func(key string) (map[string]interface{}, map[string]string, error)
-	UpdateTicketFieldByNameFunc     func(key string, fieldName string, value interface{}) error
+	SearchTicketsFunc           func(jql string) (*models.JiraSearchResponse, error)
+	GetTicketFunc               func(key string) (*models.JiraTicketResponse, error)
+	GetTicketSecurityLevelFunc  func(key string) (*models.JiraSecurity, error)
+	UpdateTicketStatusFunc      func(key string, status string) error
+	AddCommentFunc              func(key string, comment string) error
+	UpdateTicketFieldByNameFunc func(key string, fieldName string, value interface{}) error
+	GetFieldIDByNameFunc        func(fieldName string) (string, error)
 }
 
 func (s *Stub) SearchTickets(jql string) (*models.JiraSearchResponse, error) {
@@ -57,16 +57,16 @@ func (s *Stub) AddComment(key string, comment string) error {
 	return nil
 }
 
-func (s *Stub) GetTicketWithExpandedFields(key string) (map[string]interface{}, map[string]string, error) {
-	if s.GetTicketWithExpandedFieldsFunc != nil {
-		return s.GetTicketWithExpandedFieldsFunc(key)
-	}
-	return nil, nil, nil
-}
-
 func (s *Stub) UpdateTicketFieldByName(key string, fieldName string, value interface{}) error {
 	if s.UpdateTicketFieldByNameFunc != nil {
 		return s.UpdateTicketFieldByNameFunc(key, fieldName, value)
 	}
 	return nil
+}
+
+func (s *Stub) GetFieldIDByName(fieldName string) (string, error) {
+	if s.GetFieldIDByNameFunc != nil {
+		return s.GetFieldIDByNameFunc(fieldName)
+	}
+	return fieldName, nil
 }

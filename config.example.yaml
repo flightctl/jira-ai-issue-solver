@@ -10,8 +10,8 @@ logging:
 # Jira Configuration
 jira:
   base_url: https://your-domain.atlassian.net
-  username: your-username
-  api_token: your-jira-api-token
+  username: your-email@example.com  # Jira Cloud email (used for Basic Auth)
+  api_token: your-jira-api-token    # Jira Cloud API token (https://id.atlassian.com/manage-profile/security/api-tokens)
   interval_seconds: 300
 
   # Map Jira assignee email/username to GitHub username

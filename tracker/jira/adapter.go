@@ -27,8 +27,8 @@ type JiraClient interface {
 	GetTicketSecurityLevel(key string) (*models.JiraSecurity, error)
 	UpdateTicketStatus(key string, status string) error
 	AddComment(key string, comment string) error
-	GetTicketWithExpandedFields(key string) (map[string]interface{}, map[string]string, error)
 	UpdateTicketFieldByName(key string, fieldName string, value interface{}) error
+	GetFieldIDByName(fieldName string) (string, error)
 }
 
 // Compile-time check that Adapter implements tracker.IssueTracker.
@@ -36,12 +36,16 @@ var _ tracker.IssueTracker = (*Adapter)(nil)
 
 // Adapter implements tracker.IssueTracker by delegating to a JiraClient.
 type Adapter struct {
-	jira   JiraClient
-	logger *zap.Logger
+	jira                JiraClient
+	logger              *zap.Logger
+	contributorFieldRef string
 }
 
 // NewAdapter creates a Jira issue tracker adapter that wraps the given
-// JiraClient. Returns an error if jira or logger is nil.
+// JiraClient. At construction time it resolves the "Contributors" custom
+// field ID so that JQL queries use the cf[ID] syntax, which is reliable
+// across Jira Cloud instances where the display name may not match the
+// JQL field name. If the lookup fails, it falls back to the display name.
 func NewAdapter(jira JiraClient, logger *zap.Logger) (*Adapter, error) {
 	if jira == nil {
 		return nil, errors.New("jira service must not be nil")
@@ -49,10 +53,40 @@ func NewAdapter(jira JiraClient, logger *zap.Logger) (*Adapter, error) {
 	if logger == nil {
 		return nil, errors.New("logger must not be nil")
 	}
+
+	contributorRef := resolveContributorField(jira, logger)
+
 	return &Adapter{
-		jira:   jira,
-		logger: logger,
+		jira:                jira,
+		logger:              logger,
+		contributorFieldRef: contributorRef,
 	}, nil
+}
+
+// resolveContributorField looks up the "Contributors" field in Jira and
+// returns a JQL-safe reference. Custom fields (customfield_NNNNN) are
+// converted to cf[NNNNN] syntax; system fields use their ID directly.
+// Falls back to "Contributors" if the lookup fails.
+func resolveContributorField(client JiraClient, logger *zap.Logger) string {
+	const fieldName = "Contributors"
+
+	fieldID, err := client.GetFieldIDByName(fieldName)
+	if err != nil {
+		logger.Warn("Could not resolve Contributors field ID, falling back to display name",
+			zap.Error(err))
+		return fieldName
+	}
+
+	numericID, isCustom := strings.CutPrefix(fieldID, "customfield_")
+	if isCustom {
+		ref := fmt.Sprintf("cf[%s]", numericID)
+		logger.Info("Resolved Contributors field",
+			zap.String("fieldID", fieldID),
+			zap.String("jqlRef", ref))
+		return ref
+	}
+
+	return fieldID
 }
 
 func (a *Adapter) SearchWorkItems(criteria models.SearchCriteria) ([]models.WorkItem, error) {
@@ -60,7 +94,7 @@ func (a *Adapter) SearchWorkItems(criteria models.SearchCriteria) ([]models.Work
 		return nil, fmt.Errorf("search work items: %w", err)
 	}
 
-	jql := buildJQL(criteria)
+	jql := buildJQL(criteria, a.contributorFieldRef)
 	a.logger.Debug("Searching work items", zap.String("jql", jql))
 
 	resp, err := a.jira.SearchTickets(jql)
@@ -110,46 +144,11 @@ func (a *Adapter) AddComment(key, body string) error {
 	return nil
 }
 
-func (a *Adapter) GetFieldValue(key, field string) (string, error) {
-	fields, names, err := a.jira.GetTicketWithExpandedFields(key)
-	if err != nil {
-		return "", fmt.Errorf("get field %q for %s: %w", field, key, err)
-	}
-
-	// The names map is fieldID → human-readable name. We need to reverse-
-	// look up to find the field ID for the requested name. Jira allows
-	// duplicate display names across custom fields, so we warn if multiple
-	// IDs match.
-	var fieldID string
-	for id, name := range names {
-		if name == field {
-			if fieldID != "" {
-				a.logger.Warn("multiple field IDs share the same display name",
-					zap.String("field", field),
-					zap.String("ticket", key),
-					zap.String("firstID", fieldID),
-					zap.String("duplicateID", id))
-			}
-			fieldID = id
-		}
-	}
-	if fieldID == "" {
-		return "", fmt.Errorf("field %q not found on %s", field, key)
-	}
-
-	value, ok := fields[fieldID]
-	if !ok || value == nil {
-		return "", nil
-	}
-
-	if s, ok := value.(string); ok {
-		return s, nil
-	}
-	return fmt.Sprintf("%v", value), nil
-}
-
 func (a *Adapter) SetFieldValue(key, field, value string) error {
-	if err := a.jira.UpdateTicketFieldByName(key, field, value); err != nil {
+	// Jira Cloud API v3 requires Atlassian Document Format for text-type
+	// custom fields. Wrap the plain string in ADF so the update succeeds.
+	adfValue := models.TextToADF(value)
+	if err := a.jira.UpdateTicketFieldByName(key, field, adfValue); err != nil {
 		return fmt.Errorf("set field %q on %s: %w", field, key, err)
 	}
 	return nil
@@ -166,7 +165,10 @@ func jqlQuote(v string) string {
 // Conditions are emitted in a fixed order (project, type+status, status,
 // contributor, labels) and joined with AND. Map keys are sorted to ensure
 // deterministic output for testability.
-func buildJQL(criteria models.SearchCriteria) string {
+//
+// contributorFieldRef is the JQL field reference for the Contributors
+// field (e.g., "cf[10466]" or "Contributors").
+func buildJQL(criteria models.SearchCriteria, contributorFieldRef string) string {
 	var conditions []string
 
 	if len(criteria.ProjectKeys) > 0 {
@@ -210,7 +212,7 @@ func buildJQL(criteria models.SearchCriteria) string {
 	}
 
 	if criteria.ContributorIsCurrentUser {
-		conditions = append(conditions, "Contributors = currentUser()")
+		conditions = append(conditions, fmt.Sprintf("%s = currentUser()", contributorFieldRef))
 	}
 
 	if len(criteria.Labels) > 0 {
@@ -264,7 +266,7 @@ func mapFieldsToWorkItem(key string, fields models.JiraFields, security *models.
 	return models.WorkItem{
 		Key:           key,
 		Summary:       fields.Summary,
-		Description:   fields.Description,
+		Description:   string(fields.Description),
 		Type:          fields.IssueType.Name,
 		Status:        fields.Status.Name,
 		ProjectKey:    fields.Project.Key,
