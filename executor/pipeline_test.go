@@ -1711,6 +1711,39 @@ func TestReadPRDescription_TitleOnly(t *testing.T) {
 	}
 }
 
+func TestReadPRDescription_StripsMarkdownHeading(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"h1 prefix", "# Fix the bug\n\nBody text.", "Fix the bug"},
+		{"h2 prefix", "## Fix the bug\n\nBody text.", "Fix the bug"},
+		{"h1 with ticket key", "# EDM-2747: Fix compose apps\n\nBody.", "EDM-2747: Fix compose apps"},
+		{"no heading", "Fix the bug\n\nBody text.", "Fix the bug"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			aiBotDir := filepath.Join(dir, ".ai-bot")
+			if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			pr := executor.ReadPRDescription(dir)
+			if pr == nil {
+				t.Fatal("expected non-nil PRDescription")
+			}
+			if pr.Title != tt.want {
+				t.Errorf("Title = %q, want %q", pr.Title, tt.want)
+			}
+		})
+	}
+}
+
 // --- buildPRContent ---
 
 func TestBuildPRContent_Default(t *testing.T) {
@@ -1778,6 +1811,19 @@ func TestBuildPRContent_AIPREmptyTitle_FallsBack(t *testing.T) {
 	title, _ := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
 	if title != "PROJ-1: Fix bug" {
 		t.Errorf("Title = %q, want Jira fallback %q", title, "PROJ-1: Fix bug")
+	}
+}
+
+func TestBuildPRContent_AITitleWithTicketKey(t *testing.T) {
+	workItem := &models.WorkItem{Key: "EDM-2747", Summary: "Fix bug"}
+	aiPR := &executor.PRDescription{
+		Title: "EDM-2747: Differentiate manual stop from completion",
+		Body:  "Root cause analysis.",
+	}
+	title, _ := executor.BuildPRContent(workItem, "EDM-2747", "", aiPR)
+	want := "EDM-2747: Differentiate manual stop from completion"
+	if title != want {
+		t.Errorf("Title = %q, want %q (no duplicate key)", title, want)
 	}
 }
 

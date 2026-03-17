@@ -731,108 +731,6 @@ func TestGetBranchBaseCommit_BranchDoesNotExist(t *testing.T) {
 	}
 }
 
-// TestCreateBlobsForChangedFiles_GitStatusParsing tests that git status --porcelain output is correctly parsed
-// This specifically tests the fix for leading spaces in unstaged changes (e.g., " M filename")
-func TestCreateBlobsForChangedFiles_GitStatusParsing(t *testing.T) {
-	// Create temp directory for test
-	tempDir, err := os.MkdirTemp("", "git-status-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tempDir) }()
-
-	// Create test files that will appear in git status
-	testFiles := []string{
-		"api/v1beta1/types.gen.go",
-		"internal/agent/device/applications.go",
-		"pkg/utils/helper.go",
-	}
-
-	for _, file := range testFiles {
-		filePath := filepath.Join(tempDir, file)
-		if err := os.MkdirAll(filepath.Dir(filePath), 0750); err != nil {
-			t.Fatalf("Failed to create directory: %v", err)
-		}
-		if err := os.WriteFile(filePath, []byte("test content"), 0644); err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
-		}
-	}
-
-	// Mock git status output with leading spaces (unstaged changes)
-	// Format: " M filename" where position 0 is space, position 1 is M
-	gitStatusOutput := " M api/v1beta1/types.gen.go\n M internal/agent/device/applications.go\n M pkg/utils/helper.go\n"
-
-	// Mock HTTP client for blob creation
-	blobCounter := 0
-	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "/git/blobs") {
-			blobCounter++
-			return &http.Response{
-				StatusCode: http.StatusCreated,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"sha": "blob123"}`))),
-			}, nil
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
-		}, nil
-	})
-
-	// Mock command executor that returns our test git status output
-	mockExecutor := func(name string, args ...string) *exec.Cmd {
-		cmd := exec.Command("echo", "-n", gitStatusOutput)
-		return cmd
-	}
-
-	config := &models.Config{}
-	config.GitHub.AppID = 123456
-
-	service := &GitHubServiceImpl{
-		config:   config,
-		client:   mockClient,
-		executor: mockExecutor,
-		logger:   zap.NewNop(),
-	}
-
-	// Call createBlobsForChangedFiles
-	entries, err := service.createBlobsForChangedFiles("owner", "repo", tempDir, "fake-token")
-
-	if err != nil {
-		t.Fatalf("Expected no error but got: %v", err)
-	}
-
-	// Should have created blobs for all 3 files
-	if len(entries) != 3 {
-		t.Errorf("Expected 3 tree entries but got %d", len(entries))
-	}
-
-	// Verify filenames are correct (no missing first characters)
-	expectedFiles := map[string]bool{
-		"api/v1beta1/types.gen.go":              false,
-		"internal/agent/device/applications.go": false,
-		"pkg/utils/helper.go":                   false,
-	}
-
-	for _, entry := range entries {
-		if _, exists := expectedFiles[entry.Path]; !exists {
-			t.Errorf("Unexpected file path: %s", entry.Path)
-		}
-		expectedFiles[entry.Path] = true
-	}
-
-	// Verify all expected files were found
-	for file, found := range expectedFiles {
-		if !found {
-			t.Errorf("Expected to find file '%s' but it was not in entries", file)
-		}
-	}
-
-	// Verify blobs were created
-	if blobCounter != 3 {
-		t.Errorf("Expected 3 blob creation calls but got %d", blobCounter)
-	}
-}
-
 func TestGitHubService_HasChanges_NoChanges(t *testing.T) {
 	// Create a temporary directory for the test
 	tempDir, err := os.MkdirTemp("", "github-test-*")
@@ -1035,11 +933,26 @@ func TestGitHubService_HasChanges_NewBranch(t *testing.T) {
 		t.Fatalf("Failed to init bare repository: %v", err)
 	}
 
-	// Add the bare repo as a remote
+	// Add the bare repo as a remote and push so origin/<default> exists.
 	cmd = exec.Command("git", "remote", "add", "origin", bareDir)
 	cmd.Dir = tempDir
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("Failed to add remote: %v", err)
+	}
+
+	// Determine the default branch name before pushing.
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = tempDir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get default branch: %v", err)
+	}
+	defaultBranch := strings.TrimSpace(string(out))
+
+	cmd = exec.Command("/usr/bin/git", "push", "-u", "origin", defaultBranch)
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to push to origin: %v", err)
 	}
 
 	// Create a new branch (not pushed to remote yet)
@@ -1057,15 +970,17 @@ func TestGitHubService_HasChanges_NewBranch(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
 	config.GitHub.PrivateKeyPath = keyPath
+	config.GitHub.TargetBranch = defaultBranch
 	githubService := NewGitHubService(config, zap.NewNop())
 
-	// Test HasChanges - should return true (new branch, no remote counterpart)
+	// A new branch with no working tree changes and no local commits
+	// relative to origin/<targetBranch> has nothing to commit.
 	hasChanges, err := githubService.HasChanges(tempDir)
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}
 
-	if !hasChanges {
-		t.Error("Expected HasChanges to return true for new branch without remote, but got false")
+	if hasChanges {
+		t.Error("Expected HasChanges to return false for new branch with no divergent commits, but got true")
 	}
 }

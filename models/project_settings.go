@@ -59,4 +59,9 @@ type ProjectSettings struct {
 	// to new-ticket task files. Used as a fallback when the target
 	// repo does not have .ai-bot/new-ticket-workflow.md.
 	NewTicketWorkflow string
+
+	// GitHubUsername is the GitHub username of the ticket assignee,
+	// resolved from the assignee-to-GitHub-username config mapping.
+	// Empty when the assignee has no mapping or the ticket is unassigned.
+	GitHubUsername string
 }

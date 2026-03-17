@@ -58,8 +58,14 @@ func readPRDescription(dir string) *PRDescription {
 
 	// Split into title (first line) and body (rest).
 	title, body, _ := strings.Cut(content, "\n")
+	title = strings.TrimSpace(title)
+
+	// Strip markdown heading prefix (e.g., "# Title" → "Title").
+	// AI models frequently format the first line as a heading.
+	title = strings.TrimLeft(title, "# ")
+
 	return &PRDescription{
-		Title: strings.TrimSpace(title),
+		Title: title,
 		Body:  strings.TrimSpace(body),
 	}
 }

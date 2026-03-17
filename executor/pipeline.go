@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -294,14 +295,15 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	prTitle, prBody := buildPRContent(workItem, job.TicketKey, repoCfg.PR.TitlePrefix, aiPR)
 
 	pr, err := p.git.CreatePR(models.PRParams{
-		Owner:  settings.Owner,
-		Repo:   settings.Repo,
-		Title:  prTitle,
-		Body:   prBody,
-		Head:   branchName,
-		Base:   settings.BaseBranch,
-		Draft:  draft,
-		Labels: repoCfg.PR.Labels,
+		Owner:     settings.Owner,
+		Repo:      settings.Repo,
+		Title:     prTitle,
+		Body:      prBody,
+		Head:      branchName,
+		Base:      settings.BaseBranch,
+		Draft:     draft,
+		Labels:    repoCfg.PR.Labels,
+		Assignees: assigneesFromSettings(settings),
 	})
 	if err != nil {
 		return result, fmt.Errorf("create PR: %w", err)
@@ -593,6 +595,15 @@ func (p *Pipeline) prepareBranch(
 	return nil
 }
 
+// assigneesFromSettings returns the PR assignee list from resolved
+// project settings. Returns nil when no GitHub username is configured.
+func assigneesFromSettings(settings *models.ProjectSettings) []string {
+	if settings.GitHubUsername == "" {
+		return nil
+	}
+	return []string{settings.GitHubUsername}
+}
+
 // shouldCreateDraft determines whether the PR should be created as a
 // draft based on session output, exit code, and repo config.
 func shouldCreateDraft(session SessionOutput, exitCode int, repoDraft bool) bool {
@@ -618,7 +629,14 @@ func buildPRContent(workItem *models.WorkItem, ticketKey, titlePrefix string, ai
 		body = fmt.Sprintf("Security fix for %s.\n\nDetails redacted due to security level.", ticketKey)
 	} else if aiPR != nil && aiPR.Title != "" {
 		// AI-generated PR description takes precedence over Jira-derived.
-		title = fmt.Sprintf("%s: %s", ticketKey, aiPR.Title)
+		// Strip the ticket key prefix if the AI already included it.
+		aiTitle := aiPR.Title
+		if cut, ok := strings.CutPrefix(aiTitle, ticketKey+": "); ok {
+			aiTitle = cut
+		} else if cut, ok := strings.CutPrefix(aiTitle, ticketKey+" "); ok {
+			aiTitle = cut
+		}
+		title = fmt.Sprintf("%s: %s", ticketKey, aiTitle)
 		body = fmt.Sprintf("Resolves %s", ticketKey)
 		if aiPR.Body != "" {
 			body += "\n\n" + aiPR.Body

@@ -27,14 +27,15 @@ type PRComment struct {
 
 // PRParams contains the parameters for creating a new pull request.
 type PRParams struct {
-	Owner  string
-	Repo   string
-	Title  string
-	Body   string
-	Head   string // Source branch.
-	Base   string // Target branch.
-	Draft  bool
-	Labels []string
+	Owner     string
+	Repo      string
+	Title     string
+	Body      string
+	Head      string // Source branch.
+	Base      string // Target branch.
+	Draft     bool
+	Labels    []string
+	Assignees []string
 }
 
 // PRUpdateParams contains the parameters for updating an existing pull

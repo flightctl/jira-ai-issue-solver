@@ -242,13 +242,19 @@ func (r *StartupRunner) createPRFromCommits(
 ) {
 	title, body := buildRecoveryPRContent(item)
 
+	var assignees []string
+	if settings.GitHubUsername != "" {
+		assignees = []string{settings.GitHubUsername}
+	}
+
 	pr, err := r.git.CreatePR(models.PRParams{
-		Owner: settings.Owner,
-		Repo:  settings.Repo,
-		Title: title,
-		Body:  body,
-		Head:  branchName,
-		Base:  settings.BaseBranch,
+		Owner:     settings.Owner,
+		Repo:      settings.Repo,
+		Title:     title,
+		Body:      body,
+		Head:      branchName,
+		Base:      settings.BaseBranch,
+		Assignees: assignees,
 	})
 	if err != nil {
 		logger.Error("Failed to create PR from commits; leaving ticket in-progress for manual intervention",

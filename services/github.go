@@ -475,84 +475,6 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 	return nil
 }
 
-// commitChangesViaAPI creates a commit using the GitHub API
-// This creates verified commits when using GitHub App authentication
-// Returns the SHA of the created commit
-func (s *GitHubServiceImpl) commitChangesViaAPI(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return "", fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Get the current commit SHA for the branch (or target branch if new branch doesn't exist)
-	baseSHA, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to get base commit: %w", err)
-	}
-
-	s.logger.Debug("Got base commit SHA",
-		zap.String("sha", baseSHA),
-		zap.Bool("branchExists", branchExists),
-		zap.String("branch", branchName))
-
-	// Get the base tree SHA from the commit
-	baseTreeSHA, err := s.getTreeSHAFromCommit(owner, repo, baseSHA, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to get base tree: %w", err)
-	}
-
-	// Create blobs for all changed files and build tree entries
-	treeEntries, err := s.createBlobsForChangedFiles(owner, repo, directory, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to create blobs: %w", err)
-	}
-
-	if len(treeEntries) == 0 {
-		s.logger.Info("No changes made to repository; nothing to commit")
-		return "", ErrNoChanges
-	}
-
-	// Create a new tree
-	treeSHA, err := s.createTree(owner, repo, baseTreeSHA, treeEntries, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to create tree: %w", err)
-	}
-
-	// Build commit message with optional co-author
-	commitMessage := message
-	if coAuthorName != "" && coAuthorEmail != "" {
-		commitMessage = fmt.Sprintf("%s\n\nCo-authored-by: %s <%s>", message, coAuthorName, coAuthorEmail)
-	}
-
-	// Create the commit
-	commitSHA, err := s.createCommit(owner, repo, commitMessage, treeSHA, baseSHA, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
-	}
-
-	// Create or update the branch reference to point to the new commit
-	if branchExists {
-		// Branch exists, update the reference
-		if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
-			return "", fmt.Errorf("failed to update reference: %w", err)
-		}
-	} else {
-		// Branch doesn't exist, create new reference
-		if err := s.createReference(owner, repo, branchName, commitSHA, token); err != nil {
-			return "", fmt.Errorf("failed to create reference: %w", err)
-		}
-	}
-
-	s.logger.Info("Successfully created commit via API",
-		zap.String("owner", owner),
-		zap.String("repo", repo),
-		zap.String("branch", branchName),
-		zap.String("commit_sha", commitSHA),
-		zap.Bool("newBranch", !branchExists))
-
-	return commitSHA, nil
-}
-
 // CommitChanges creates a verified commit via the GitHub API from local
 // repository state. It handles both working tree changes and local commits
 // (including merge commits with multiple parents). Returns an empty string
@@ -568,6 +490,8 @@ func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir stri
 		coAuthorEmail = coAuthor.Email
 	}
 
+	fn := zap.String("function", "CommitChanges")
+
 	// Check what kind of changes we have
 	hasChanges, err := s.HasChanges(dir)
 	if err != nil {
@@ -579,20 +503,15 @@ func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir stri
 		return "", nil
 	}
 
-	// Check if there are unpushed local commits (created by AI)
-	hasLocalCommits, err := s.hasUnpushedCommits(dir, zap.String("function", "CommitChanges"))
-	if err != nil {
-		return "", fmt.Errorf("failed to check unpushed commits: %w", err)
+	// Normalize: ensure all changes are committed locally so that
+	// createVerifiedCommitFromLocalHEAD (which uses git diff-tree
+	// against HEAD) sees everything the AI produced — whether the
+	// AI committed, staged, or left changes in the working tree.
+	if err := s.stageAndCommitLocal(dir, fn); err != nil {
+		return "", fmt.Errorf("failed to normalize local changes: %w", err)
 	}
 
-	if hasLocalCommits {
-		// Local commits exist - create verified commit from local HEAD
-		// This preserves merge commit structure (two parents)
-		return s.createVerifiedCommitFromLocalHEAD(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail)
-	}
-
-	// Only working tree changes exist - use existing API commit logic
-	return s.commitChangesViaAPI(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail)
+	return s.createVerifiedCommitFromLocalHEAD(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail)
 }
 
 // createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit
@@ -812,94 +731,6 @@ func (s *GitHubServiceImpl) getTreeSHAFromCommit(owner, repo, commitSHA, token s
 	return commit.Tree.SHA, nil
 }
 
-// createBlobsForChangedFiles creates blobs for all changed files in the directory
-func (s *GitHubServiceImpl) createBlobsForChangedFiles(owner, repo, directory, token string) ([]models.GitHubTreeEntry, error) {
-	// Use git to get list of changed files
-	cmd := newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
-	if err := cmd.run(); err != nil {
-		return nil, fmt.Errorf("failed to get status: %w, stderr: %s", err, cmd.getStderr())
-	}
-
-	if !cmd.hasStdout() {
-		// No changes
-		return []models.GitHubTreeEntry{}, nil
-	}
-
-	var treeEntries []models.GitHubTreeEntry
-	// Don't trim the entire output as it would remove leading spaces from first line
-	// Git status --porcelain format requires the leading space to be preserved
-	lines := strings.Split(cmd.getStdout(), "\n")
-
-	for _, line := range lines {
-		// Skip empty lines (will occur at end due to trailing newline)
-		if len(line) < 3 {
-			continue
-		}
-
-		// Parse status line: "XY filename" where X and Y are status codes
-		// Git status --porcelain format: positions 0-1 are status, position 2 is space, 3+ is filename
-		// Example: " M api/file.go" where position 0=' ', 1='M', 2=' ', 3+='api/file.go'
-		status := line[0:2]
-		rawFilename := line[3:]
-
-		// Handle renamed files: "R  old -> new" - we want the new filename
-		filename := rawFilename
-		if strings.Contains(rawFilename, " -> ") {
-			parts := strings.Split(rawFilename, " -> ")
-			if len(parts) == 2 {
-				filename = parts[1]
-				s.logger.Debug("Detected renamed file",
-					zap.String("oldPath", parts[0]),
-					zap.String("newPath", parts[1]))
-			}
-		}
-
-		// Handle quoted filenames - git quotes filenames with special characters
-		// Format: "path/to/file"
-		if strings.HasPrefix(filename, "\"") && strings.HasSuffix(filename, "\"") {
-			// Remove surrounding quotes
-			filename = filename[1 : len(filename)-1]
-			// Unescape special characters
-			filename = strings.ReplaceAll(filename, "\\t", "\t")
-			filename = strings.ReplaceAll(filename, "\\n", "\n")
-			filename = strings.ReplaceAll(filename, "\\\\", "\\")
-			filename = strings.ReplaceAll(filename, "\\\"", "\"")
-		}
-
-		filename = strings.TrimSpace(filename)
-
-		// Skip deleted files (D status)
-		if strings.Contains(status, "D") {
-			s.logger.Debug("Skipping deleted file", zap.String("file", filename))
-			continue
-		}
-
-		// Log the file being processed for debugging
-		s.logger.Debug("Processing file for blob creation",
-			zap.String("status", status),
-			zap.String("filename", filename),
-			zap.String("rawLine", line))
-
-		// Use shared helper for blob creation (handles directory skipping).
-		filePath := filepath.Join(directory, filename)
-		entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
-		if errors.Is(err, errSkipEntry) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to create blob for %s: %w", filename, err)
-		}
-
-		treeEntries = append(treeEntries, entry)
-
-		s.logger.Debug("Created blob for file",
-			zap.String("file", filename),
-			zap.String("path", filePath))
-	}
-
-	return treeEntries, nil
-}
-
 // createBlobsForFilesChangedFromParent creates tree entries for all changes from a specific parent commit
 // Handles additions, modifications, deletions, and renames properly using git diff-tree
 func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string) ([]models.GitHubTreeEntry, error) {
@@ -948,6 +779,14 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "A" || status == "M":
 			// Added or Modified file - create blob and add to tree
 			filename := parts[1]
+			// Skip new files at the repo root — these are almost always
+			// AI scratch files (test scripts, notes) rather than real
+			// source changes. Modified root files are allowed.
+			if status == "A" && !strings.Contains(filename, "/") {
+				s.logger.Info("Skipping new root-level file",
+					zap.String("file", filename))
+				continue
+			}
 			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
 			if errors.Is(err, errSkipEntry) {
 				continue
@@ -1034,16 +873,22 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 // the path is a directory or a bot artifact).
 var errSkipEntry = errors.New("skip entry")
 
-// botArtifactPrefix is the directory where the bot writes transient
-// artifacts (task files, wrapper scripts, session output). These are
-// communication between the bot and the AI agent and must never be
-// included in commits pushed to the remote.
-const botArtifactPrefix = ".ai-bot/"
+// excludedPrefixes lists directories that contain transient workspace
+// artifacts and must never be included in commits pushed to the remote.
+// .ai-bot/      — bot ↔ AI communication (task files, session output)
+// .artifacts/   — AI workflow intermediate artifacts (diagnosis, test plans)
+var excludedPrefixes = []string{".ai-bot/", ".artifacts/"}
 
-// isBotArtifact reports whether filename is inside the bot artifact
-// directory.
+// isBotArtifact reports whether filename is inside an excluded
+// artifact directory.
 func isBotArtifact(filename string) bool {
-	return filename == ".ai-bot" || strings.HasPrefix(filename, botArtifactPrefix)
+	for _, prefix := range excludedPrefixes {
+		dir := strings.TrimSuffix(prefix, "/")
+		if filename == dir || strings.HasPrefix(filename, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob.
@@ -1249,56 +1094,6 @@ func (s *GitHubServiceImpl) createTree(owner, repo, baseTree string, entries []m
 	}
 
 	return treeResp.SHA, nil
-}
-
-// createCommit creates a commit on GitHub
-func (s *GitHubServiceImpl) createCommit(owner, repo, message, tree, parent, token string) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/commits", owner, repo)
-
-	commitReq := models.GitHubCommitRequest{
-		Message: message,
-		Tree:    tree,
-		Parents: []string{parent},
-		// Note: We intentionally do NOT set Author or Committer
-		// When these are omitted, GitHub automatically uses the authenticated GitHub App's identity
-		// and creates a VERIFIED commit signed with GitHub's key
-	}
-
-	jsonPayload, err := json.Marshal(commitReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal commit request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "createCommit"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to create commit: %s, status: %d", string(body), resp.StatusCode)
-	}
-
-	var commitResp models.GitHubCommitResponse
-	if err := json.NewDecoder(resp.Body).Decode(&commitResp); err != nil {
-		return "", fmt.Errorf("failed to decode commit response: %w", err)
-	}
-
-	return commitResp.SHA, nil
 }
 
 // updateReference updates a Git reference to point to a new commit
@@ -1525,6 +1320,20 @@ func (s *GitHubServiceImpl) CreatePR(params models.PRParams) (*models.PR, error)
 		}
 	}
 
+	// Assign users to the PR.
+	if len(params.Assignees) > 0 {
+		assignCtx, assignCancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		defer assignCancel()
+		_, _, err = ghClient.Issues.AddAssignees(assignCtx, params.Owner, params.Repo, pr.GetNumber(), params.Assignees)
+		if err != nil {
+			// Non-fatal: log but don't fail the PR creation.
+			s.logger.Warn("Failed to assign PR",
+				zap.Int("pr", pr.GetNumber()),
+				zap.Strings("assignees", params.Assignees),
+				zap.Error(err))
+		}
+	}
+
 	return &models.PR{
 		Number: pr.GetNumber(),
 		URL:    pr.GetHTMLURL(),
@@ -1597,6 +1406,39 @@ func (s *GitHubServiceImpl) hasWorkingTreeChanges(directory string, fn zapcore.F
 	return cmd.hasStdout(), nil
 }
 
+// stageAndCommitLocal ensures all working tree and staged changes are
+// committed locally. This normalizes the three possible states an AI
+// session can leave behind (committed, staged, or unstaged) into a
+// single committed state that git diff-tree can see.
+func (s *GitHubServiceImpl) stageAndCommitLocal(directory string, fn zapcore.Field) error {
+	// Check for uncommitted changes (staged or unstaged).
+	statusCmd := newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
+	if err := statusCmd.run(); err != nil {
+		return fmt.Errorf("git status: %w, stderr: %s", err, statusCmd.getStderr())
+	}
+	if !statusCmd.hasStdout() {
+		// Everything is already committed.
+		return nil
+	}
+
+	s.logger.Debug("Staging uncommitted changes", fn)
+
+	addCmd := newGitCommand(s.executor("git", "add", "-A"), directory, false, true)
+	if err := addCmd.run(); err != nil {
+		return fmt.Errorf("git add -A: %w, stderr: %s", err, addCmd.getStderr())
+	}
+
+	commitCmd := newGitCommand(
+		s.executor("git", "commit", "-m", "AI changes (local only)"),
+		directory, false, true)
+	if err := commitCmd.run(); err != nil {
+		return fmt.Errorf("git commit: %w, stderr: %s", err, commitCmd.getStderr())
+	}
+
+	s.logger.Debug("Committed local changes", fn)
+	return nil
+}
+
 // hasUnpushedCommits checks if there are local commits that haven't been pushed to origin
 func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Field) (bool, error) {
 	// First, check if origin remote exists
@@ -1621,24 +1463,29 @@ func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Fiel
 
 	s.logger.Debug("Current branch", fn, zap.String("branch", branchName))
 
-	// Check if the remote branch exists
-	// We don't need stdout here, just the exit code
-	remoteExistsCmd := newGitCommand(s.executor("git", "rev-parse", "--verify", fmt.Sprintf("origin/%s", branchName)), directory, false, false)
+	// Determine the remote ref to compare against: origin/<branch> if it
+	// exists, otherwise origin/<targetBranch> (the branch we forked from).
+	remoteRef := fmt.Sprintf("origin/%s", branchName)
+	remoteExistsCmd := newGitCommand(s.executor("git", "rev-parse", "--verify", remoteRef), directory, false, false)
 	if err := remoteExistsCmd.run(); err != nil {
-		// Remote branch doesn't exist yet - this means we have unpushed commits (the entire branch is new)
-		s.logger.Debug("Remote branch does not exist, treating as unpushed commits", fn, zap.String("branch", branchName))
-		return true, nil
+		// Remote branch doesn't exist. Compare against origin/<target>
+		// to check if HEAD has diverged (i.e., the AI made local commits).
+		remoteRef = fmt.Sprintf("origin/%s", s.config.GitHub.TargetBranch)
+		s.logger.Debug("Remote branch does not exist, comparing against target branch", fn,
+			zap.String("branch", branchName),
+			zap.String("targetRef", remoteRef))
 	}
 
-	// Check for commits that exist locally but not on the remote
-	// git log origin/branch..HEAD will show commits in HEAD that aren't in origin/branch
-	// Always capture stdout since we need to check if there's output
-	logCmd := newGitCommand(s.executor("git", "log", fmt.Sprintf("origin/%s..HEAD", branchName), "--oneline"), directory, true, true)
+	// Check for commits that exist locally but not on the remote ref.
+	logCmd := newGitCommand(s.executor("git", "log", fmt.Sprintf("%s..HEAD", remoteRef), "--oneline"), directory, true, true)
 	if err := logCmd.run(); err != nil {
 		return false, fmt.Errorf("failed to check unpushed commits: %w, stderr: %s", err, logCmd.getStderr())
 	}
 
-	s.logger.Debug("git log origin/branch..HEAD", fn, zap.String("branch", branchName), zap.String("stdout", logCmd.getStdout()), zap.String("stderr", logCmd.getStderr()))
+	s.logger.Debug("git log ref..HEAD", fn,
+		zap.String("ref", remoteRef),
+		zap.String("stdout", logCmd.getStdout()),
+		zap.String("stderr", logCmd.getStderr()))
 
 	// If there's any output, we have unpushed commits
 	return logCmd.hasStdout(), nil
@@ -1692,12 +1539,18 @@ func (s *GitHubServiceImpl) RestoreRemoteAuth(directory, owner, repo string) err
 }
 
 // SyncWithRemote reconciles the local workspace with the remote branch by
-// fetching and hard-resetting to the remote ref. Untracked files are
-// preserved because git reset --hard only affects the index and tracked
-// working tree files.
+// fetching and hard-resetting to the remote ref. Excluded artifact
+// directories are preserved across the reset because they are filtered
+// from API commits and therefore absent on the remote branch.
 func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "SyncWithRemote")
+
+	// Preserve excluded artifact directories across the hard reset.
+	// The normalization commit tracks these files locally, but they
+	// are filtered from the API commit and absent on the remote —
+	// so git reset --hard would delete them.
+	preserved := s.preserveExcludedDirs(directory, fn)
 
 	// Fetch the latest state from the remote.
 	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
@@ -1714,7 +1567,47 @@ func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string) error {
 	}
 	s.logger.Debug("git reset --hard", fn, zap.String("ref", ref), zap.String("stdout", resetCmd.getStdout()), zap.String("stderr", resetCmd.getStderr()))
 
+	// Restore preserved directories after the reset.
+	s.restoreExcludedDirs(directory, preserved, fn)
+
 	return nil
+}
+
+// preserveExcludedDirs moves excluded artifact directories to temporary
+// names so they survive a git reset --hard. Returns the list of
+// directory base names that were successfully preserved.
+func (s *GitHubServiceImpl) preserveExcludedDirs(directory string, fn zapcore.Field) []string {
+	var preserved []string
+	for _, prefix := range excludedPrefixes {
+		dir := strings.TrimSuffix(prefix, "/")
+		src := filepath.Join(directory, dir)
+		dst := filepath.Join(directory, dir+".preserve")
+
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		_ = os.RemoveAll(dst) // clean up any stale preserve dir
+		if err := os.Rename(src, dst); err != nil {
+			s.logger.Warn("Failed to preserve directory", fn,
+				zap.String("dir", dir), zap.Error(err))
+			continue
+		}
+		preserved = append(preserved, dir)
+	}
+	return preserved
+}
+
+// restoreExcludedDirs moves preserved artifact directories back to
+// their original names after a git reset --hard.
+func (s *GitHubServiceImpl) restoreExcludedDirs(directory string, preserved []string, fn zapcore.Field) {
+	for _, dir := range preserved {
+		src := filepath.Join(directory, dir+".preserve")
+		dst := filepath.Join(directory, dir)
+		if err := os.Rename(src, dst); err != nil {
+			s.logger.Warn("Failed to restore directory", fn,
+				zap.String("dir", dir), zap.Error(err))
+		}
+	}
 }
 
 // ReplyToComment replies to a specific PR review comment.

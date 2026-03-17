@@ -60,6 +60,12 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		imports = []models.ImportConfig{}
 	}
 
+	// Resolve the assignee's GitHub username from the config mapping.
+	var ghUsername string
+	if workItem.Assignee != nil {
+		ghUsername = r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
+	}
+
 	return &models.ProjectSettings{
 		Owner:                owner,
 		Repo:                 repo,
@@ -75,6 +81,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		Imports:              imports,
 		Instructions:         profile.Instructions,
 		NewTicketWorkflow:    profile.NewTicketWorkflow,
+		GitHubUsername:       ghUsername,
 	}, nil
 }
 
