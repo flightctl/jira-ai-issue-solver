@@ -175,7 +175,10 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		return result, err
 	}
 
-	// --- Step 8: Write task file ---
+	// --- Step 8: Write issue and task files ---
+	if err := p.taskWriter.WriteIssue(*workItem, wsPath); err != nil {
+		return result, fmt.Errorf("write issue file: %w", err)
+	}
 	if err := p.taskWriter.WriteNewTicketTask(*workItem, wsPath, settings.Instructions, settings.NewTicketWorkflow); err != nil {
 		return result, fmt.Errorf("write task file: %w", err)
 	}
@@ -266,10 +269,11 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	// --- Step 14: Commit via GitHub API ---
+	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: %s", job.TicketKey, workItem.Summary)
 	_, err = p.git.CommitChanges(
 		settings.Owner, settings.Repo, branchName,
-		commitMsg, wsPath, workItem.Assignee,
+		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
 		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
@@ -279,7 +283,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	// --- Step 15: Post-commit sync ---
-	if err := p.git.SyncWithRemote(wsPath, branchName); err != nil {
+	if err := p.git.SyncWithRemote(wsPath, branchName, importExcludes); err != nil {
 		return result, fmt.Errorf("sync with remote: %w", err)
 	}
 
@@ -454,10 +458,11 @@ func (p *Pipeline) runImportInstalls(
 
 // importEntry is the unified type used during import merging.
 type importEntry struct {
-	Repo    string
-	Path    string
-	Ref     string
-	Install string
+	Repo     string
+	Path     string
+	Ref      string
+	Install  string
+	Excludes []string
 }
 
 // mergeImports combines project-level and repo-level imports. When both
@@ -473,13 +478,13 @@ func mergeImports(
 	// Project-level imports go in first.
 	for _, imp := range settings.Imports {
 		p := filepath.Clean(imp.Path)
-		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install}
+		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install, Excludes: imp.Excludes}
 	}
 
 	// Repo-level imports override on path conflict.
 	for _, imp := range repoCfg.Imports {
 		p := filepath.Clean(imp.Path)
-		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install}
+		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install, Excludes: imp.Excludes}
 	}
 
 	// Deterministic order: sort by path.
@@ -492,6 +497,17 @@ func mergeImports(
 	})
 
 	return result
+}
+
+// collectExcludes gathers all exclude paths declared by imports into
+// a single list. These paths are directories that import tools may
+// create as output and should be excluded from commits.
+func collectExcludes(imports []importEntry) []string {
+	var excludes []string
+	for _, imp := range imports {
+		excludes = append(excludes, imp.Excludes...)
+	}
+	return excludes
 }
 
 func (p *Pipeline) resolveProvider(settings *models.ProjectSettings) string {

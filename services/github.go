@@ -482,7 +482,7 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 //
 // If coAuthor is non-nil, a Co-authored-by trailer is appended to the
 // commit message using the author's Name and Email.
-func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author) (string, error) {
+func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	// Extract co-author name/email (empty strings when nil).
 	var coAuthorName, coAuthorEmail string
 	if coAuthor != nil {
@@ -511,12 +511,13 @@ func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir stri
 		return "", fmt.Errorf("failed to normalize local changes: %w", err)
 	}
 
-	return s.createVerifiedCommitFromLocalHEAD(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail)
+	excludes := mergeExcludes(importExcludes)
+	return s.createVerifiedCommitFromLocalHEAD(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail, excludes)
 }
 
 // createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit
 // Preserves merge commit structure if HEAD is a merge commit
-func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
 	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
@@ -543,7 +544,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 
 	// Create blobs for files that changed from the first parent
 	// For merge commits, this includes files that differ from the first parent
-	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token)
+	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token, excludes)
 	if err != nil {
 		return "", fmt.Errorf("failed to create blobs: %w", err)
 	}
@@ -733,7 +734,7 @@ func (s *GitHubServiceImpl) getTreeSHAFromCommit(owner, repo, commitSHA, token s
 
 // createBlobsForFilesChangedFromParent creates tree entries for all changes from a specific parent commit
 // Handles additions, modifications, deletions, and renames properly using git diff-tree
-func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string) ([]models.GitHubTreeEntry, error) {
+func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string, excludes []string) ([]models.GitHubTreeEntry, error) {
 	// Use git diff-tree with -r (recursive), --name-status (show status), -M (detect renames)
 	// This shows the exact operation for each file: A (add), M (modify), D (delete), R (rename)
 	cmd := newGitCommand(s.executor("git", "diff-tree", "-r", "--name-status", "-M", parentSHA, "HEAD"), directory, true, true)
@@ -787,7 +788,7 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 					zap.String("file", filename))
 				continue
 			}
-			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token, excludes)
 			if errors.Is(err, errSkipEntry) {
 				continue
 			}
@@ -799,7 +800,7 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "D":
 			// Deleted file - add entry with nil SHA to remove from tree
 			filename := parts[1]
-			if isBotArtifact(filename) {
+			if isExcludedPath(filename, excludes) {
 				continue
 			}
 			s.logger.Debug("File deleted, adding deletion entry",
@@ -817,7 +818,7 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			}
 			oldPath := parts[1]
 			newPath := parts[2]
-			if isBotArtifact(oldPath) && isBotArtifact(newPath) {
+			if isExcludedPath(oldPath, excludes) && isExcludedPath(newPath, excludes) {
 				continue
 			}
 
@@ -826,7 +827,7 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 				zap.String("new_path", newPath))
 
 			// Delete old path
-			if !isBotArtifact(oldPath) {
+			if !isExcludedPath(oldPath, excludes) {
 				treeEntries = append(treeEntries, models.GitHubTreeEntry{
 					Path: oldPath,
 					SHA:  nil,
@@ -834,7 +835,7 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			}
 
 			// Add new path
-			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token, excludes)
 			if errors.Is(err, errSkipEntry) {
 				continue
 			}
@@ -850,7 +851,7 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 				continue
 			}
 			newPath := parts[2]
-			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token, excludes)
 			if errors.Is(err, errSkipEntry) {
 				continue
 			}
@@ -873,16 +874,28 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 // the path is a directory or a bot artifact).
 var errSkipEntry = errors.New("skip entry")
 
-// excludedPrefixes lists directories that contain transient workspace
-// artifacts and must never be included in commits pushed to the remote.
-// .ai-bot/      — bot ↔ AI communication (task files, session output)
-// .artifacts/   — AI workflow intermediate artifacts (diagnosis, test plans)
-var excludedPrefixes = []string{".ai-bot/", ".artifacts/"}
+// builtinExcludes lists directories that are always excluded from
+// commits. Import-declared excludes are merged at call time.
+var builtinExcludes = []string{".ai-bot/"}
 
-// isBotArtifact reports whether filename is inside an excluded
-// artifact directory.
-func isBotArtifact(filename string) bool {
-	for _, prefix := range excludedPrefixes {
+// mergeExcludes combines builtin excludes with import-declared excludes,
+// normalizing each entry to have a trailing slash for prefix matching.
+func mergeExcludes(importExcludes []string) []string {
+	all := make([]string, len(builtinExcludes), len(builtinExcludes)+len(importExcludes))
+	copy(all, builtinExcludes)
+	for _, e := range importExcludes {
+		if !strings.HasSuffix(e, "/") {
+			e += "/"
+		}
+		all = append(all, e)
+	}
+	return all
+}
+
+// isExcludedPath reports whether filename is inside any of the
+// excluded directories.
+func isExcludedPath(filename string, excludes []string) bool {
+	for _, prefix := range excludes {
 		dir := strings.TrimSuffix(prefix, "/")
 		if filename == dir || strings.HasPrefix(filename, prefix) {
 			return true
@@ -893,11 +906,10 @@ func isBotArtifact(filename string) bool {
 
 // createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob.
 // Returns errSkipEntry if the path is a directory.
-func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string) (models.GitHubTreeEntry, error) {
-	// Skip bot artifacts — these are transient communication
-	// between the bot and the AI agent, not source code.
-	if isBotArtifact(filename) {
-		s.logger.Debug("Skipping bot artifact",
+func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string, excludes []string) (models.GitHubTreeEntry, error) {
+	// Skip excluded paths — bot artifacts and import-declared output dirs.
+	if isExcludedPath(filename, excludes) {
+		s.logger.Debug("Skipping excluded path",
 			zap.String("path", filename))
 		return models.GitHubTreeEntry{}, errSkipEntry
 	}
@@ -1542,15 +1554,16 @@ func (s *GitHubServiceImpl) RestoreRemoteAuth(directory, owner, repo string) err
 // fetching and hard-resetting to the remote ref. Excluded artifact
 // directories are preserved across the reset because they are filtered
 // from API commits and therefore absent on the remote branch.
-func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string) error {
+func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExcludes []string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "SyncWithRemote")
 
-	// Preserve excluded artifact directories across the hard reset.
+	// Preserve excluded directories across the hard reset.
 	// The normalization commit tracks these files locally, but they
 	// are filtered from the API commit and absent on the remote —
 	// so git reset --hard would delete them.
-	preserved := s.preserveExcludedDirs(directory, fn)
+	excludes := mergeExcludes(importExcludes)
+	preserved := s.preserveExcludedDirs(directory, excludes, fn)
 
 	// Fetch the latest state from the remote.
 	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
@@ -1576,9 +1589,9 @@ func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string) error {
 // preserveExcludedDirs moves excluded artifact directories to temporary
 // names so they survive a git reset --hard. Returns the list of
 // directory base names that were successfully preserved.
-func (s *GitHubServiceImpl) preserveExcludedDirs(directory string, fn zapcore.Field) []string {
+func (s *GitHubServiceImpl) preserveExcludedDirs(directory string, excludes []string, fn zapcore.Field) []string {
 	var preserved []string
-	for _, prefix := range excludedPrefixes {
+	for _, prefix := range excludes {
 		dir := strings.TrimSuffix(prefix, "/")
 		src := filepath.Join(directory, dir)
 		dst := filepath.Join(directory, dir+".preserve")
@@ -1626,13 +1639,7 @@ func (s *GitHubServiceImpl) ReplyToComment(owner, repo string, prNumber int, com
 	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
 	defer cancel()
 
-	// Create a reply to a review comment
-	comment := &github.PullRequestComment{
-		Body:      &body,
-		InReplyTo: &commentID,
-	}
-
-	_, _, err = ghClient.PullRequests.CreateComment(ctx, owner, repo, prNumber, comment)
+	_, _, err = ghClient.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, prNumber, body, commentID)
 	if err != nil {
 		return fmt.Errorf("failed to reply to PR comment: %w", err)
 	}

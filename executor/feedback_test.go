@@ -20,7 +20,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 	d := newFeedbackDeps(t)
 
 	var commitBranch string
-	d.git.CommitChangesFunc = func(_, _, branch, _, _ string, _ *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, branch, _, _ string, _ *models.Author, _ []string) (string, error) {
 		commitBranch = branch
 		return "abc1234567890", nil
 	}
@@ -35,7 +35,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 	}
 
 	var syncCalls int
-	d.git.SyncWithRemoteFunc = func(dir, branch string) error {
+	d.git.SyncWithRemoteFunc = func(dir, branch string, _ []string) error {
 		syncCalls++
 		return nil
 	}
@@ -100,7 +100,7 @@ func TestExecuteFeedback_SyncCalledBeforeAI(t *testing.T) {
 	var syncBeforeExec bool
 	execCalled := false
 
-	d.git.SyncWithRemoteFunc = func(dir, branch string) error {
+	d.git.SyncWithRemoteFunc = func(dir, branch string, _ []string) error {
 		if !execCalled {
 			syncBeforeExec = true
 		}
@@ -231,7 +231,7 @@ func TestExecuteFeedback_NoNewComments(t *testing.T) {
 
 func TestExecuteFeedback_CommitFails(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -392,7 +392,7 @@ func TestExecuteFeedback_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -811,7 +811,7 @@ func TestExecuteFeedback_AuthRestoredOnExecFailure(t *testing.T) {
 
 func TestExecuteFeedback_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 

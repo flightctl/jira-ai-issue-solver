@@ -301,6 +301,13 @@ type ImportConfig struct {
 	// and has access to the container's toolchain. Empty means no
 	// install step. Example: ".ai-workflows/install.sh".
 	Install string `yaml:"install" mapstructure:"install"`
+
+	// Excludes lists directories (relative to workspace root) that
+	// this import's tools may create as output. These directories
+	// are excluded from commits and preserved across workspace syncs.
+	// Example: [".artifacts/"] for an AI workflow import that writes
+	// intermediate artifacts there.
+	Excludes []string `yaml:"excludes" mapstructure:"excludes"`
 }
 
 type JiraConfig struct {

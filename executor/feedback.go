@@ -73,7 +73,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	if err := p.git.SwitchBranch(wsPath, branchName); err != nil {
 		return result, fmt.Errorf("switch to branch: %w", err)
 	}
-	if err := p.git.SyncWithRemote(wsPath, branchName); err != nil {
+	if err := p.git.SyncWithRemote(wsPath, branchName, nil); err != nil {
 		return result, fmt.Errorf("sync with remote: %w", err)
 	}
 
@@ -106,7 +106,10 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, err
 	}
 
-	// --- Step 9: Write feedback task file ---
+	// --- Step 9: Write issue and feedback task files ---
+	if err := p.taskWriter.WriteIssue(*workItem, wsPath); err != nil {
+		return result, fmt.Errorf("write issue file: %w", err)
+	}
 	if err := p.taskWriter.WriteFeedbackTask(
 		*prDetails, newComments, addressedComments, wsPath, settings.Instructions); err != nil {
 		return result, fmt.Errorf("write task file: %w", err)
@@ -193,10 +196,11 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	// --- Step 15: Commit via GitHub API ---
+	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: address PR feedback", job.TicketKey)
 	sha, err := p.git.CommitChanges(
 		settings.Owner, settings.Repo, branchName,
-		commitMsg, wsPath, workItem.Assignee,
+		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
 		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
@@ -206,7 +210,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	// --- Step 16: Post-commit sync ---
-	if err := p.git.SyncWithRemote(wsPath, branchName); err != nil {
+	if err := p.git.SyncWithRemote(wsPath, branchName, importExcludes); err != nil {
 		return result, fmt.Errorf("sync with remote: %w", err)
 	}
 

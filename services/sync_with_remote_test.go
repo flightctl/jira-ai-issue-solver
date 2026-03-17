@@ -78,7 +78,7 @@ func TestSyncWithRemote_ExecutesCorrectCommands(t *testing.T) {
 
 	svc := newTestGitHubServiceForGit(t, mockExecutor)
 
-	err := svc.SyncWithRemote(workDir, "feature-branch")
+	err := svc.SyncWithRemote(workDir, "feature-branch", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSyncWithRemote_FetchFailure(t *testing.T) {
 
 	svc := newTestGitHubServiceForGit(t, mockExecutor)
 
-	err := svc.SyncWithRemote(workDir, "main")
+	err := svc.SyncWithRemote(workDir, "main", nil)
 	if err == nil {
 		t.Fatal("expected error from failed fetch, got nil")
 	}
@@ -135,7 +135,7 @@ func TestSyncWithRemote_ResetFailure(t *testing.T) {
 
 	svc := newTestGitHubServiceForGit(t, mockExecutor)
 
-	err := svc.SyncWithRemote(workDir, "main")
+	err := svc.SyncWithRemote(workDir, "main", nil)
 	if err == nil {
 		t.Fatal("expected error from failed reset, got nil")
 	}
@@ -182,7 +182,7 @@ func TestSyncWithRemote_PreservesUntrackedFiles(t *testing.T) {
 
 	// Call SyncWithRemote.
 	svc := newTestGitHubServiceForGit(t)
-	if err := svc.SyncWithRemote(workDir, "main"); err != nil {
+	if err := svc.SyncWithRemote(workDir, "main", nil); err != nil {
 		t.Fatalf("SyncWithRemote: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestSyncWithRemote_BranchDoesNotExist(t *testing.T) {
 	svc := newTestGitHubServiceForGit(t)
 
 	// Try to sync with a non-existent branch.
-	err := svc.SyncWithRemote(workDir, "nonexistent-branch")
+	err := svc.SyncWithRemote(workDir, "nonexistent-branch", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent branch, got nil")
 	}

@@ -39,10 +39,10 @@ type StubGitService struct {
 	SwitchBranchFunc       func(dir, name string) error
 	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
 	HasChangesFunc         func(dir string) (bool, error)
-	CommitChangesFunc      func(owner, repo, branch, message, dir string, coAuthor *models.Author) (string, error)
+	CommitChangesFunc      func(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error)
 	StripRemoteAuthFunc    func(dir string) error
 	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
-	SyncWithRemoteFunc     func(dir, branch string) error
+	SyncWithRemoteFunc     func(dir, branch string, importExcludes []string) error
 	CreatePRFunc           func(params models.PRParams) (*models.PR, error)
 	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
 	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
@@ -78,9 +78,9 @@ func (s *StubGitService) HasChanges(dir string) (bool, error) {
 	return false, nil
 }
 
-func (s *StubGitService) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author) (string, error) {
+func (s *StubGitService) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	if s.CommitChangesFunc != nil {
-		return s.CommitChangesFunc(owner, repo, branch, message, dir, coAuthor)
+		return s.CommitChangesFunc(owner, repo, branch, message, dir, coAuthor, importExcludes)
 	}
 	return "", nil
 }
@@ -99,9 +99,9 @@ func (s *StubGitService) RestoreRemoteAuth(dir, owner, repo string) error {
 	return nil
 }
 
-func (s *StubGitService) SyncWithRemote(dir, branch string) error {
+func (s *StubGitService) SyncWithRemote(dir, branch string, importExcludes []string) error {
 	if s.SyncWithRemoteFunc != nil {
-		return s.SyncWithRemoteFunc(dir, branch)
+		return s.SyncWithRemoteFunc(dir, branch, importExcludes)
 	}
 	return nil
 }

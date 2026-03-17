@@ -106,9 +106,11 @@ type GitService interface {
 	// CommitChanges creates a verified commit via the GitHub API
 	// from local workspace changes. Returns the commit SHA.
 	// Returns services.ErrNoChanges if all changes are bot
-	// artifacts and there is nothing to commit.
+	// artifacts and there is nothing to commit. importExcludes
+	// lists additional directories (from import config) to exclude
+	// from commits beyond the built-in .ai-bot/ exclusion.
 	CommitChanges(owner, repo, branch, message, dir string,
-		coAuthor *models.Author) (string, error)
+		coAuthor *models.Author, importExcludes []string) (string, error)
 
 	// StripRemoteAuth removes authentication credentials from the
 	// workspace's origin remote URL, preventing push operations.
@@ -122,8 +124,9 @@ type GitService interface {
 	RestoreRemoteAuth(dir, owner, repo string) error
 
 	// SyncWithRemote reconciles the local workspace with the remote
-	// branch after an API-created commit.
-	SyncWithRemote(dir, branch string) error
+	// branch after an API-created commit. importExcludes lists
+	// additional directories to preserve across the hard reset.
+	SyncWithRemote(dir, branch string, importExcludes []string) error
 
 	// CreatePR creates a pull request.
 	CreatePR(params models.PRParams) (*models.PR, error)

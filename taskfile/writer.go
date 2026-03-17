@@ -1,18 +1,15 @@
-// Package taskfile generates structured task files that communicate goals
-// from the bot to the AI agent.
+// Package taskfile generates structured files that communicate context
+// and goals from the bot to the AI agent.
 //
-// Task files are markdown documents written to a well-known path in the
-// workspace (.ai-bot/task.md). The AI agent reads these files to
-// understand what work needs to be done. The bot writes goals (what),
-// not instructions (how) -- the AI determines how to implement changes,
-// what to validate, and how to fix issues.
-//
-// Two task file formats are supported:
-//   - New ticket: includes the ticket summary, full description, and
-//     standard instructions for the AI.
-//   - PR feedback: includes the PR context, review comments grouped by
-//     file, and standard instructions. Comments are split into "action
-//     required" (new comments) and "context only" (previously addressed).
+// The bot writes three categories of file to the workspace:
+//   - issue.md: the stable Jira issue content (key, summary, description).
+//     Written once per ticket and referenced by task files in both new-ticket
+//     and feedback flows. Persists across sessions.
+//   - task.md: session-specific instructions. New-ticket tasks include the
+//     summary plus workflow/instructions. Feedback tasks include PR context
+//     and review comments. Overwritten each session.
+//   - Supporting files (instructions.md, new-ticket-workflow.md): optional
+//     project-level guidance appended to task.md.
 //
 // User-provided content (ticket descriptions, PR comments) is placed
 // inside blockquotes with explicit labels to demarcate boundaries
@@ -22,6 +19,14 @@ package taskfile
 import "jira-ai-issue-solver/models"
 
 const (
+	// IssueFilePath is the path, relative to the workspace root,
+	// where the Jira issue content is written. This file contains
+	// the stable problem definition (key, summary, description)
+	// and persists across sessions — new-ticket and feedback flows
+	// both write it so the AI always has access to the original
+	// ticket context.
+	IssueFilePath = ".ai-bot/issue.md"
+
 	// TaskFilePath is the path, relative to the workspace root, where
 	// the task file is written. The AI agent reads this file to
 	// discover its task.
@@ -54,6 +59,12 @@ const (
 // Writer generates task files that the AI agent reads to understand
 // what work needs to be done.
 type Writer interface {
+	// WriteIssue writes the Jira issue content to <dir>/.ai-bot/issue.md.
+	// This file contains the stable problem definition (key, summary,
+	// description) and is referenced by both new-ticket and feedback
+	// task files.
+	WriteIssue(workItem models.WorkItem, dir string) error
+
 	// WriteNewTicketTask generates a task file for implementing a new
 	// ticket. The file is written to <dir>/.ai-bot/task.md.
 	// fallbackInstructions is used when .ai-bot/instructions.md does

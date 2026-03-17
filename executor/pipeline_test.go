@@ -356,7 +356,7 @@ func TestExecuteNewTicket_ContainerStartFails(t *testing.T) {
 
 func TestExecuteNewTicket_CommitFails(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -577,7 +577,7 @@ func TestExecuteNewTicket_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -603,7 +603,7 @@ func TestExecuteNewTicket_NoAssignee_NilCoAuthor(t *testing.T) {
 	d := newTestDeps(t)
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -935,7 +935,7 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 
 func TestExecuteNewTicket_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -1880,7 +1880,7 @@ func newTestDeps(t *testing.T) *testDeps {
 			HasChangesFunc: func(dir string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _ string, _ *models.Author) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 				return "abc123", nil
 			},
 			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {

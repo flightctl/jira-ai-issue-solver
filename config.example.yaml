@@ -86,6 +86,8 @@ jira:
               path: .ai-workflows                # destination relative to workspace root
               ref: main                          # branch/tag/commit (optional)
               install: .ai-workflows/install.sh  # shell command to run inside container after cloning (optional)
+              excludes:                          # output directories to exclude from commits (optional)
+                - .artifacts/
 
           # Universal instructions for the AI agent. Appended to ALL
           # task types (new tickets AND feedback). Use for validation

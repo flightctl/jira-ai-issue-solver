@@ -68,6 +68,11 @@ type Import struct {
 	// cloning. Runs from the workspace root with access to the
 	// container's toolchain. Empty means no install step.
 	Install string `yaml:"install"`
+
+	// Excludes lists directories (relative to workspace root) that
+	// this import's tools may create as output. These directories
+	// are excluded from commits and preserved across workspace syncs.
+	Excludes []string `yaml:"excludes"`
 }
 
 // PRConfig contains settings for pull request creation.

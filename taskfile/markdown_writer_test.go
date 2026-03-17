@@ -10,6 +10,83 @@ import (
 	"jira-ai-issue-solver/taskfile"
 )
 
+// --- WriteIssue ---
+
+func TestWriteIssue_BasicTicket(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{
+		Key:         "PROJ-123",
+		Summary:     "Fix null pointer in UserService",
+		Description: "When photo is null, getProfile() throws NPE.",
+		Type:        "Bug",
+	}
+
+	if err := writer.WriteIssue(workItem, dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "# PROJ-123: Fix null pointer in UserService")
+	assertContains(t, content, "## Description")
+	assertContains(t, content, "> [Ticket description]")
+	assertContains(t, content, "> When photo is null, getProfile() throws NPE.")
+}
+
+func TestWriteIssue_EmptyDescription(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-456", Summary: "Quick fix"}
+
+	if err := writer.WriteIssue(workItem, dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "# PROJ-456: Quick fix")
+	assertNotContains(t, content, "## Description")
+}
+
+func TestWriteIssue_MultilineDescription(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{
+		Key:         "PROJ-200",
+		Summary:     "Complex change",
+		Description: "Line one.\n\nLine three after blank.\nLine four.",
+	}
+
+	if err := writer.WriteIssue(workItem, dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "> Line one.")
+	assertContains(t, content, ">\n> Line three after blank.")
+	assertContains(t, content, "> Line four.")
+}
+
+func TestWriteIssue_CreatesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-300", Summary: "Test dir creation"}
+
+	if err := writer.WriteIssue(workItem, dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, taskfile.IssueFilePath)); err != nil {
+		t.Fatalf("issue file should exist: %v", err)
+	}
+}
+
 // --- WriteNewTicketTask ---
 
 func TestWriteNewTicketTask_BasicTicket(t *testing.T) {
@@ -31,14 +108,13 @@ func TestWriteNewTicketTask_BasicTicket(t *testing.T) {
 
 	assertContains(t, content, "# Task: PROJ-123")
 	assertContains(t, content, "## Summary\nFix null pointer in UserService")
-	assertContains(t, content, "## Description")
-	assertContains(t, content, "> [Ticket description]")
-	assertContains(t, content, "> When photo is null, getProfile() throws NPE.")
+	assertContains(t, content, taskfile.IssueFilePath)
+	assertNotContains(t, content, "> [Ticket description]")
 	assertContains(t, content, "## Instructions")
 	assertContains(t, content, "Do not push to git")
 }
 
-func TestWriteNewTicketTask_EmptyDescription(t *testing.T) {
+func TestWriteNewTicketTask_ReferencesIssueFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -55,6 +131,7 @@ func TestWriteNewTicketTask_EmptyDescription(t *testing.T) {
 
 	assertContains(t, content, "# Task: PROJ-456")
 	assertContains(t, content, "## Summary\nQuick fix")
+	assertContains(t, content, taskfile.IssueFilePath)
 	assertNotContains(t, content, "## Description")
 	assertContains(t, content, "## Instructions")
 }
@@ -76,8 +153,8 @@ func TestWriteNewTicketTask_SecurityLevel(t *testing.T) {
 
 	content := readTaskFile(t, dir)
 
-	// Full description should be included (AI needs it).
-	assertContains(t, content, "> Critical vulnerability in auth handler.")
+	// Description should NOT be in task.md (it's in issue.md).
+	assertNotContains(t, content, "> Critical vulnerability in auth handler.")
 	// Security note should be present.
 	assertContains(t, content, "security level set")
 	assertContains(t, content, "Do not include specific")
@@ -100,28 +177,6 @@ func TestWriteNewTicketTask_NoSecurityNote_WhenNoSecurityLevel(t *testing.T) {
 
 	content := readTaskFile(t, dir)
 	assertNotContains(t, content, "security level")
-}
-
-func TestWriteNewTicketTask_MultilineDescription(t *testing.T) {
-	dir := t.TempDir()
-	writer := taskfile.NewMarkdownWriter()
-
-	workItem := models.WorkItem{
-		Key:         "PROJ-200",
-		Summary:     "Complex change",
-		Description: "Line one.\n\nLine three after blank.\nLine four.",
-	}
-
-	if err := writer.WriteNewTicketTask(workItem, dir, "", ""); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	content := readTaskFile(t, dir)
-
-	// Each line should be blockquoted; blank lines get bare ">".
-	assertContains(t, content, "> Line one.")
-	assertContains(t, content, ">\n> Line three after blank.")
-	assertContains(t, content, "> Line four.")
 }
 
 func TestWriteNewTicketTask_CreatesDirectory(t *testing.T) {
@@ -200,6 +255,7 @@ func TestWriteFeedbackTask_SingleNewComment(t *testing.T) {
 	content := readTaskFile(t, dir)
 
 	assertContains(t, content, "# Task: Address PR Review Feedback")
+	assertContains(t, content, taskfile.IssueFilePath)
 	assertContains(t, content, "PR #42: Fix NPE in UserService")
 	assertContains(t, content, "Branch: ai-bot/PROJ-123")
 	assertContains(t, content, "## Review Comments")
@@ -779,6 +835,15 @@ func writeInstructions(t *testing.T, dir, content string) {
 	if err := os.WriteFile(filepath.Join(instrDir, "instructions.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func readIssueFile(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, taskfile.IssueFilePath)) // #nosec G304 -- test reads from t.TempDir()
+	if err != nil {
+		t.Fatalf("failed to read issue file: %v", err)
+	}
+	return string(data)
 }
 
 func readTaskFile(t *testing.T, dir string) string {

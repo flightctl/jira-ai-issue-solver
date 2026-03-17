@@ -24,17 +24,25 @@ func NewMarkdownWriter() *MarkdownWriter {
 	return &MarkdownWriter{}
 }
 
+func (w *MarkdownWriter) WriteIssue(workItem models.WorkItem, dir string) error {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "# %s: %s\n", workItem.Key, workItem.Summary)
+
+	if workItem.Description != "" {
+		b.WriteString("\n## Description\n")
+		writeBlockquote(&b, "Ticket description", workItem.Description)
+	}
+
+	return writeFile(dir, IssueFilePath, b.String())
+}
+
 func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# Task: %s\n\n", workItem.Key)
 	fmt.Fprintf(&b, "## Summary\n%s\n\n", workItem.Summary)
-
-	if workItem.Description != "" {
-		b.WriteString("## Description\n")
-		writeBlockquote(&b, "Ticket description", workItem.Description)
-		b.WriteString("\n")
-	}
+	fmt.Fprintf(&b, "The full ticket description is in `%s`.\n\n", IssueFilePath)
 
 	writeNewTicketInstructions(&b, workItem.HasSecurityLevel())
 
@@ -57,6 +65,7 @@ func (w *MarkdownWriter) WriteFeedbackTask(
 	var b strings.Builder
 
 	b.WriteString("# Task: Address PR Review Feedback\n\n")
+	fmt.Fprintf(&b, "The original ticket is described in `%s`.\n\n", IssueFilePath)
 
 	fmt.Fprintf(&b, "## PR Context\n")
 	fmt.Fprintf(&b, "PR #%d: %s\n", prDetails.Number, prDetails.Title)
@@ -246,18 +255,23 @@ func sortedFilePaths(grouped map[string][]models.PRComment) []string {
 	return paths
 }
 
-// writeTaskFile writes content to <dir>/.ai-bot/task.md, creating the
-// .ai-bot directory if needed.
-func writeTaskFile(dir, content string) error {
-	path := filepath.Join(dir, TaskFilePath)
+// writeFile writes content to <dir>/<relPath>, creating parent
+// directories as needed.
+func writeFile(dir, relPath, content string) error {
+	path := filepath.Join(dir, relPath)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return fmt.Errorf("create task file directory: %w", err)
+		return fmt.Errorf("create directory for %s: %w", relPath, err)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write task file: %w", err)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil { // #nosec G306
+		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 
 	return nil
+}
+
+// writeTaskFile writes content to <dir>/.ai-bot/task.md.
+func writeTaskFile(dir, content string) error {
+	return writeFile(dir, TaskFilePath, content)
 }
