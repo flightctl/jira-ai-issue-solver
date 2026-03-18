@@ -68,7 +68,7 @@ func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, fallb
 func (w *MarkdownWriter) WriteFeedbackTask(
 	prDetails models.PRDetails,
 	newComments, addressedComments []models.PRComment,
-	dir, fallbackInstructions string,
+	dir, fallbackInstructions, fallbackWorkflow string,
 ) error {
 	var b strings.Builder
 
@@ -95,6 +95,10 @@ func (w *MarkdownWriter) WriteFeedbackTask(
 		return err
 	}
 
+	if err := appendFeedbackWorkflow(&b, dir, fallbackWorkflow); err != nil {
+		return err
+	}
+
 	return writeTaskFile(dir, b.String())
 }
 
@@ -117,6 +121,9 @@ func writeNewTicketInstructions(b *strings.Builder, hasSecurityLevel bool) {
 // for a feedback task file.
 func writeFeedbackInstructions(b *strings.Builder) {
 	b.WriteString("## Instructions\n")
+	fmt.Fprintf(b, "If `%s` exists, read it first — it contains context\n", SessionContextPath)
+	b.WriteString("from the session that created this PR (design decisions, rationale,\n")
+	b.WriteString("test strategy) that may be relevant when addressing feedback.\n\n")
 	b.WriteString("Address each review comment listed above. Validate your changes compile\n")
 	b.WriteString("and pass tests. Do not push to git -- the system handles that.\n")
 }
@@ -163,6 +170,36 @@ func appendWorkflow(b *strings.Builder, dir, fallback string) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read workflow file: %w", err)
+	}
+
+	content := strings.TrimSpace(string(data))
+
+	if content == "" {
+		content = strings.TrimSpace(fallback)
+	}
+
+	if content == "" {
+		return nil
+	}
+
+	b.WriteString("\n## Workflow\n")
+	b.WriteString(content)
+	b.WriteString("\n")
+
+	return nil
+}
+
+// appendFeedbackWorkflow reads .ai-bot/feedback-workflow.md from the
+// workspace and appends its content as a "Workflow" section. If the
+// file does not exist, the fallback string is used instead. If both
+// are empty, nothing is appended. This is only called for feedback
+// task files — new-ticket tasks use appendWorkflow instead.
+func appendFeedbackWorkflow(b *strings.Builder, dir, fallback string) error {
+	path := filepath.Join(dir, FeedbackWorkflowPath)
+
+	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read feedback workflow file: %w", err)
 	}
 
 	content := strings.TrimSpace(string(data))

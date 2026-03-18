@@ -102,6 +102,7 @@ type Profile struct {
 	Imports           []ImportConfig    `yaml:"imports" mapstructure:"imports"`
 	Instructions      string            `yaml:"instructions" mapstructure:"instructions"`
 	NewTicketWorkflow string            `yaml:"new_ticket_workflow" mapstructure:"new_ticket_workflow"`
+	FeedbackWorkflow  string            `yaml:"feedback_workflow" mapstructure:"feedback_workflow"`
 }
 
 // ComponentConfig maps a Jira component to its repository and profile.

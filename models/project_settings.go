@@ -60,6 +60,11 @@ type ProjectSettings struct {
 	// repo does not have .ai-bot/new-ticket-workflow.md.
 	NewTicketWorkflow string
 
+	// FeedbackWorkflow provides workflow instructions appended only
+	// to feedback task files. Used as a fallback when the target
+	// repo does not have .ai-bot/feedback-workflow.md.
+	FeedbackWorkflow string
+
 	// GitHubUsername is the GitHub username of the ticket assignee,
 	// resolved from the assignee-to-GitHub-username config mapping.
 	// Empty when the assignee has no mapping or the ticket is unassigned.

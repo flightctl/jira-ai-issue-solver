@@ -441,7 +441,7 @@ func TestExecuteFeedback_MultipleComments(t *testing.T) {
 	}
 
 	var taskNewComments []models.PRComment
-	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _ string) error {
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _, _ string) error {
 		taskNewComments = newC
 		return nil
 	}
@@ -722,7 +722,7 @@ func TestExecuteFeedback_FilterKeepsActionableComments(t *testing.T) {
 	}
 
 	var taskNewComments []models.PRComment
-	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _ string) error {
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _, _ string) error {
 		taskNewComments = newC
 		return nil
 	}

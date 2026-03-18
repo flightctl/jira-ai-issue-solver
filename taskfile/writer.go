@@ -61,6 +61,22 @@ const (
 	// Use this for multi-phase workflows (assess → diagnose → fix →
 	// test → review) that don't apply to PR feedback handling.
 	NewTicketWorkflowPath = ".ai-bot/new-ticket-workflow.md"
+
+	// SessionContextPath is the path, relative to the workspace root,
+	// where the AI workflow may write a session context manifest
+	// summarizing the artifacts and decisions from the initial session.
+	// Feedback task files reference this path so the AI addressing
+	// PR review comments can recover the reasoning behind the original
+	// implementation without re-deriving it from code.
+	SessionContextPath = ".ai-bot/session-context.md"
+
+	// FeedbackWorkflowPath is the path, relative to the workspace
+	// root, where optional workflow instructions for PR feedback
+	// live. Unlike InstructionsPath (which applies to all task
+	// types), this file is only appended to feedback task files.
+	// Use this for structured feedback processes that maintain
+	// session context across review rounds.
+	FeedbackWorkflowPath = ".ai-bot/feedback-workflow.md"
 )
 
 // Writer generates task files that the AI agent reads to understand
@@ -87,8 +103,9 @@ type Writer interface {
 	// addressedComments are previously handled comments included for
 	// context. The file is written to <dir>/.ai-bot/task.md.
 	// fallbackInstructions is used when .ai-bot/instructions.md does
-	// not exist in the workspace.
+	// not exist in the workspace. fallbackWorkflow is used when
+	// .ai-bot/feedback-workflow.md does not exist.
 	WriteFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
-		dir, fallbackInstructions string) error
+		dir, fallbackInstructions, fallbackWorkflow string) error
 }

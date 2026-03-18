@@ -15,7 +15,7 @@ var _ taskfile.Writer = (*Stub)(nil)
 type Stub struct {
 	WriteIssueFunc         func(workItem models.WorkItem, dir string, attachmentFiles []string) error
 	WriteNewTicketTaskFunc func(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
-	WriteFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions string) error
+	WriteFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error
 }
 
 func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error {
@@ -32,9 +32,9 @@ func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstruc
 	return nil
 }
 
-func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions string) error {
+func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error {
 	if s.WriteFeedbackTaskFunc != nil {
-		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, fallbackInstructions)
+		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, fallbackInstructions, fallbackWorkflow)
 	}
 	return nil
 }

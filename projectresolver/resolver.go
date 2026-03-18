@@ -81,6 +81,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		Imports:              imports,
 		Instructions:         profile.Instructions,
 		NewTicketWorkflow:    profile.NewTicketWorkflow,
+		FeedbackWorkflow:     profile.FeedbackWorkflow,
 		GitHubUsername:       ghUsername,
 	}, nil
 }
