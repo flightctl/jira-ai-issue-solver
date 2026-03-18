@@ -70,6 +70,49 @@ func readPRDescription(dir string) *PRDescription {
 	}
 }
 
+// CommentResponse maps a PR comment ID to the AI's summary of how it
+// was addressed. The AI writes an array of these to
+// .ai-bot/comment-responses.json after a feedback session.
+type CommentResponse struct {
+	CommentID int64  `json:"comment_id"`
+	Response  string `json:"response"`
+}
+
+// readCommentResponses reads the AI-generated per-comment response
+// summaries from the workspace. Returns nil if the file does not exist
+// or cannot be parsed. The bot uses these to post descriptive replies
+// instead of generic "Addressed in <commit>" messages.
+func readCommentResponses(dir string) map[int64]string {
+	path := filepath.Join(dir, taskfile.CommentResponsesPath)
+
+	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+	if err != nil {
+		return nil
+	}
+
+	var responses []CommentResponse
+	if err := json.Unmarshal(data, &responses); err != nil {
+		return nil
+	}
+
+	if len(responses) == 0 {
+		return nil
+	}
+
+	m := make(map[int64]string, len(responses))
+	for _, r := range responses {
+		if r.CommentID != 0 && r.Response != "" {
+			m[r.CommentID] = r.Response
+		}
+	}
+
+	if len(m) == 0 {
+		return nil
+	}
+
+	return m
+}
+
 // readSessionOutput reads and parses the session output file from the
 // workspace. Returns a zero-value SessionOutput if the file does not
 // exist or cannot be parsed. Missing files are expected when the

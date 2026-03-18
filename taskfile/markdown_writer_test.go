@@ -311,7 +311,7 @@ func TestWriteFeedbackTask_SingleNewComment(t *testing.T) {
 	assertContains(t, content, "Branch: ai-bot/PROJ-123")
 	assertContains(t, content, "## Review Comments")
 	assertContains(t, content, "### File: src/UserService.java")
-	assertContains(t, content, "> [@reviewer1, line 145]")
+	assertContains(t, content, "> [@reviewer1, line 145, comment_id 1]")
 	assertContains(t, content, "> Use Optional instead of null check.")
 	assertContains(t, content, "## Instructions")
 	assertNotContains(t, content, "Previously Addressed")
@@ -367,7 +367,7 @@ func TestWriteFeedbackTask_GeneralComments(t *testing.T) {
 
 	assertContains(t, content, "### File: main.go")
 	assertContains(t, content, "### General")
-	assertContains(t, content, "> [@r2]")
+	assertContains(t, content, "> [@r2, comment_id 0]")
 
 	// General should appear after file-specific comments.
 	idxFile := strings.Index(content, "### File: main.go")
@@ -443,8 +443,8 @@ func TestWriteFeedbackTask_CommentWithNoLine(t *testing.T) {
 
 	content := readTaskFile(t, dir)
 
-	// No "line" annotation when Line is zero.
-	assertContains(t, content, "> [@r1]")
+	// No "line" annotation when Line is zero, but comment_id is always present.
+	assertContains(t, content, "> [@r1, comment_id 0]")
 	assertNotContains(t, content, "line 0")
 }
 
@@ -513,6 +513,34 @@ func TestWriteFeedbackTask_ReferencesSessionContext(t *testing.T) {
 	idxAction := strings.Index(content, "Address each review comment")
 	if idxCtx < idxInstr || idxCtx > idxAction {
 		t.Error("session context reference should appear inside Instructions, before action items")
+	}
+}
+
+func TestWriteFeedbackTask_RequiredOutputSection(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
+	comments := []models.PRComment{
+		{ID: 99, Author: models.Author{Username: "r1"}, Body: "Fix this", FilePath: "main.go", Line: 10},
+	}
+
+	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, dir)
+
+	assertContains(t, content, "## Required Output")
+	assertContains(t, content, taskfile.CommentResponsesPath)
+	assertContains(t, content, "comment_id")
+	assertContains(t, content, "\"response\"")
+
+	// Required Output should appear after Instructions.
+	idxInstr := strings.Index(content, "## Instructions")
+	idxOutput := strings.Index(content, "## Required Output")
+	if idxOutput <= idxInstr {
+		t.Error("Required Output should appear after Instructions")
 	}
 }
 

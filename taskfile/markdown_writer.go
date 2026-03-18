@@ -126,6 +126,17 @@ func writeFeedbackInstructions(b *strings.Builder) {
 	b.WriteString("test strategy) that may be relevant when addressing feedback.\n\n")
 	b.WriteString("Address each review comment listed above. Validate your changes compile\n")
 	b.WriteString("and pass tests. Do not push to git -- the system handles that.\n")
+
+	b.WriteString("\n## Required Output\n")
+	fmt.Fprintf(b, "Write a JSON file to `%s` mapping each comment to a\n", CommentResponsesPath)
+	b.WriteString("brief summary of what you did (or chose not to do). Use the comment_id\n")
+	b.WriteString("from each review comment header. Format:\n\n")
+	b.WriteString("```json\n")
+	b.WriteString("[\n")
+	b.WriteString("  {\"comment_id\": 123, \"response\": \"Switched to Optional pattern as suggested.\"},\n")
+	b.WriteString("  {\"comment_id\": 456, \"response\": \"Kept the fallback path — needed for v1 compat.\"}\n")
+	b.WriteString("]\n")
+	b.WriteString("```\n")
 }
 
 // appendInstructions reads .ai-bot/instructions.md from the workspace
@@ -254,12 +265,12 @@ func writeGroupedComments(b *strings.Builder, comments []models.PRComment) {
 }
 
 // writeCommentBlockquote writes a single PR comment as a blockquote
-// with author attribution.
+// with author attribution and comment ID.
 func writeCommentBlockquote(b *strings.Builder, c models.PRComment) {
 	if c.Line > 0 {
-		fmt.Fprintf(b, "> [@%s, line %d]\n", c.Author.Username, c.Line)
+		fmt.Fprintf(b, "> [@%s, line %d, comment_id %d]\n", c.Author.Username, c.Line, c.ID)
 	} else {
-		fmt.Fprintf(b, "> [@%s]\n", c.Author.Username)
+		fmt.Fprintf(b, "> [@%s, comment_id %d]\n", c.Author.Username, c.ID)
 	}
 	for _, line := range strings.Split(strings.TrimRight(c.Body, "\n"), "\n") {
 		if line == "" {

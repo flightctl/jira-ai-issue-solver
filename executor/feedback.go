@@ -219,7 +219,8 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	// --- Step 17: Reply to addressed comments ---
-	p.replyToComments(logger, settings, prDetails, newComments, sha)
+	aiResponses := readCommentResponses(wsPath)
+	p.replyToComments(logger, settings, prDetails, newComments, sha, aiResponses)
 
 	result.PRURL = prDetails.URL
 	result.PRNumber = prDetails.Number
@@ -306,21 +307,30 @@ func (p *Pipeline) handleFeedbackFailure(
 	}
 }
 
-// replyToComments posts a short "Addressed in <sha>" reply to each
-// comment that was processed. Failures are logged but not fatal.
+// replyToComments posts a reply to each comment that was processed.
+// When the AI provides a per-comment response summary (via
+// comment-responses.json), the reply includes that summary alongside
+// the commit reference. Otherwise, a generic "Addressed in <sha>"
+// reply is used. Failures are logged but not fatal.
 func (p *Pipeline) replyToComments(
 	logger *zap.Logger,
 	settings *models.ProjectSettings,
 	prDetails *models.PRDetails,
 	comments []models.PRComment,
 	commitSHA string,
+	aiResponses map[int64]string,
 ) {
 	shortSHA := commitSHA
 	if len(shortSHA) > 7 {
 		shortSHA = shortSHA[:7]
 	}
 	for _, c := range comments {
-		replyBody := fmt.Sprintf("Addressed in %s.", shortSHA)
+		var replyBody string
+		if summary, ok := aiResponses[c.ID]; ok {
+			replyBody = fmt.Sprintf("%s\n\nAddressed in %s.", summary, shortSHA)
+		} else {
+			replyBody = fmt.Sprintf("Addressed in %s.", shortSHA)
+		}
 		if err := p.git.ReplyToComment(
 			settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
 			logger.Warn("Failed to reply to comment",

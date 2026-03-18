@@ -15,20 +15,63 @@ The bot checks for the following repo-level files:
 |------|---------|------------|
 | `.ai-bot/instructions.md` | Universal AI guidance: validation commands, coding standards | All task types |
 | `.ai-bot/new-ticket-workflow.md` | Multi-phase workflow for new tickets (assess → fix → test → review) | New tickets only |
+| `.ai-bot/feedback-workflow.md` | Workflow for PR feedback (context recovery, artifact updates) | PR feedback only |
 | `.ai-bot/config.yaml` | Bot settings: PR preferences, validation commands, AI provider config, repo imports | Bot behavior |
 | `.ai-bot/container.json` | Container settings: image, env, resource limits | Container setup |
 | `.devcontainer/devcontainer.json` | Standard devcontainer config (practical subset supported) | Container setup |
 
-The AI agent may also write files to `.ai-bot/` at runtime:
+### Runtime Files (Bot ↔ AI Contract)
 
-| File | Purpose |
-|------|---------|
-| `.ai-bot/pr.md` | AI-generated PR title (first line) and description (remaining lines); used instead of Jira-derived content |
-| `.ai-bot/task.md` | Task file written by the bot (read by the AI) |
-| `.ai-bot/diagnosis.md` | AI-generated root cause analysis (intermediate artifact, referenced when writing PR description) |
-| `.ai-bot/session-output.json` | Session metadata written by the wrapper script |
+The bot writes input files for the AI and reads output files after the
+session. All `.ai-bot/` runtime files are automatically excluded from
+commits at the GitHub API level.
 
-These runtime files are automatically excluded from commits at the GitHub API level — the bot's commit logic filters out all `.ai-bot/` transient files before creating tree entries.
+**Bot → AI (inputs):**
+
+| File | Written by | Purpose |
+|------|-----------|---------|
+| `.ai-bot/task.md` | Bot | Session-specific instructions (what to do) |
+| `.ai-bot/issue.md` | Bot | Original ticket context (key, summary, description) |
+| `.ai-bot/attachments/` | Bot | Downloaded Jira attachments |
+
+**AI → Bot (outputs):**
+
+| File | Written by | Purpose | Session type |
+|------|-----------|---------|--------------|
+| `.ai-bot/pr.md` | AI | PR title (first line) and description (remaining lines) | Both |
+| `.ai-bot/comment-responses.json` | AI | Per-comment response summaries (see format below) | Feedback only |
+| `.ai-bot/session-output.json` | Wrapper script | Session metadata (cost, exit code, validation status) | Both |
+
+**AI → AI (cross-session context):**
+
+| File | Written by | Purpose |
+|------|-----------|---------|
+| `.ai-bot/session-context.md` | AI workflow | Decision log — initial session context plus feedback round summaries |
+| `.ai-bot/diagnosis.md` | AI workflow | Root cause analysis |
+| `.ai-bot/implementation-notes.md` | AI workflow | File changes, design rationale, test strategy |
+| `.ai-bot/test-verification.md` | AI workflow | Test results summary |
+| `.ai-bot/review.md` | AI workflow | Self-review findings |
+
+Cross-session files are written by the AI workflow (not the bot) and
+persist across sessions. The feedback workflow reads these to recover
+context from the initial implementation session.
+
+#### `comment-responses.json` Format
+
+The bot reads this file after feedback sessions to post descriptive
+replies to PR review comments. If the file is missing or unparseable,
+the bot falls back to generic "Addressed in \<commit\>" replies.
+
+```json
+[
+  {"comment_id": 123, "response": "Switched to Optional pattern as suggested."},
+  {"comment_id": 456, "response": "Kept the fallback path — needed for v1 backward compat."}
+]
+```
+
+The `comment_id` values correspond to the IDs included in the task file's
+review comment headers (e.g., `> [@reviewer, line 42, comment_id 123]`).
+Keep responses concise (1-2 sentences).
 
 These files live in the **target repository** (the repo the bot clones and
 works on), not in the bot's own repository.
@@ -175,6 +218,7 @@ This is why the bot provides two separate instruction channels:
 |---------|------|-----------------|------------|
 | **Universal instructions** | `.ai-bot/instructions.md` | `## Project Instructions` | All task types |
 | **New-ticket workflow** | `.ai-bot/new-ticket-workflow.md` | `## Workflow` | New tickets only |
+| **Feedback workflow** | `.ai-bot/feedback-workflow.md` | `## Workflow` | PR feedback only |
 
 Both are provider-agnostic (unlike `CLAUDE.md` or `GEMINI.md`) — they
 reach every AI provider through the task prompt.
@@ -186,11 +230,17 @@ do regardless of whether it's implementing a new ticket or addressing
 review feedback. Validation commands, coding standards, project-specific
 rules.
 
-**Workflow** (`new-ticket-workflow.md`): Multi-phase orchestration for
-new tickets. References to skill files, phase ordering, iteration caps.
-This content would confuse the AI during feedback handling ("why am I
-being told to assess and diagnose a bug when I just need to change a
-variable name?"), which is why it's separate.
+**New-ticket workflow** (`new-ticket-workflow.md`): Multi-phase
+orchestration for new tickets. References to skill files, phase ordering,
+iteration caps. This content would confuse the AI during feedback
+handling ("why am I being told to assess and diagnose a bug when I just
+need to change a variable name?"), which is why it's separate.
+
+**Feedback workflow** (`feedback-workflow.md`): Structured process for
+addressing PR review comments. Typically lighter than the new-ticket
+workflow — read prior context, address comments, verify, update session
+artifacts. Feedback tasks never see the new-ticket workflow, and vice
+versa.
 
 ## Universal Instructions (`.ai-bot/instructions.md`)
 
@@ -377,6 +427,7 @@ config, etc.).
 | You want the AI to follow a multi-phase workflow for new tickets | `.ai-bot/new-ticket-workflow.md` + `imports` in `.ai-bot/config.yaml` |
 | You want shared AI skills/guidelines from another repo | `imports` in `.ai-bot/config.yaml` |
 | You want provider-agnostic coding standards | `.ai-bot/instructions.md` |
+| You want structured feedback handling with session continuity | `.ai-bot/feedback-workflow.md` + `imports` in `.ai-bot/config.yaml` |
 | You want the AI to generate PR titles/descriptions | Reference `.ai-bot/pr.md` in `new-ticket-workflow.md` |
 
 ## Complete Example
@@ -389,6 +440,7 @@ your-repo/
 │   ├── config.yaml               # Bot + AI settings + imports
 │   ├── instructions.md           # Universal AI guidance (all task types)
 │   ├── new-ticket-workflow.md    # Multi-phase workflow (new tickets only)
+│   ├── feedback-workflow.md      # Feedback workflow (PR feedback only)
 │   └── container.json            # Container settings (takes priority over devcontainer)
 ├── .devcontainer/
 │   └── devcontainer.json         # Standard devcontainer (used if no .ai-bot/container.json)
@@ -467,14 +519,17 @@ For a **new ticket**, the task file contains:
 For **PR feedback**, the task file contains:
 
 1. **PR context** — PR number, title, branch
-2. **Review comments** — grouped by file, with author attribution and line numbers
-3. **Standard instructions** — "Address each review comment, validate your changes, don't push to git"
-4. **Project Instructions** — from `instructions.md` (validation commands, coding standards)
+2. **Review comments** — grouped by file, with author attribution, line numbers, and comment IDs
+3. **Standard instructions** — read prior session context, address each review comment, validate changes
+4. **Required output** — write `comment-responses.json` with per-comment summaries
+5. **Project Instructions** — from `instructions.md` (validation commands, coding standards)
+6. **Workflow** — from `feedback-workflow.md` (session context recovery, artifact updates)
 
-Notice: feedback tasks get the universal instructions (validation, coding
-standards) but **not** the workflow. The AI reads the review comments, makes
-targeted changes, runs the validation commands, and is done. No assess,
-diagnose, or multi-phase orchestration needed.
+Feedback tasks get the universal instructions and the feedback workflow,
+but **not** the new-ticket workflow. The AI reads the review comments,
+recovers prior session context, makes targeted changes, writes
+per-comment response summaries, and updates the session context for
+continuity across review rounds.
 
 ### Starting simple
 

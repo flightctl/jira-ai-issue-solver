@@ -3,6 +3,8 @@ package executor_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/services"
+	"jira-ai-issue-solver/taskfile"
 )
 
 // --- Happy path ---
@@ -64,6 +67,77 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 	// Sync called twice: once before AI, once after commit.
 	if syncCalls != 2 {
 		t.Errorf("sync calls = %d, want 2", syncCalls)
+	}
+}
+
+// --- AI-generated comment responses ---
+
+func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc1234567890", nil
+	}
+
+	// Write comment-responses.json before the reply step runs.
+	// In the real flow the AI writes this during its session; here we
+	// simulate it by writing the file to the workspace directory that
+	// the pipeline will read from.
+	writeCommentResponses(t, d.wsDir, `[
+		{"comment_id": 1, "response": "Switched to Optional pattern as suggested."}
+	]`)
+
+	var replyBodies []string
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, _ int64, body string) error {
+		replyBodies = append(replyBodies, body)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(replyBodies) != 1 {
+		t.Fatalf("reply count = %d, want 1", len(replyBodies))
+	}
+	if !strings.Contains(replyBodies[0], "Switched to Optional pattern") {
+		t.Errorf("reply should contain AI summary, got %q", replyBodies[0])
+	}
+	if !strings.Contains(replyBodies[0], "abc1234") {
+		t.Errorf("reply should still contain commit SHA, got %q", replyBodies[0])
+	}
+}
+
+func TestExecuteFeedback_FallbackWhenNoResponsesFile(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "def5678901234", nil
+	}
+
+	var replyBodies []string
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, _ int64, body string) error {
+		replyBodies = append(replyBodies, body)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(replyBodies) != 1 {
+		t.Fatalf("reply count = %d, want 1", len(replyBodies))
+	}
+	// Without AI responses, should fall back to generic message.
+	if !strings.Contains(replyBodies[0], "Addressed in def5678") {
+		t.Errorf("reply should be generic fallback, got %q", replyBodies[0])
+	}
+	if strings.Contains(replyBodies[0], "\n") {
+		t.Errorf("generic reply should be single line, got %q", replyBodies[0])
 	}
 }
 
@@ -851,6 +925,17 @@ func newFeedbackDeps(t *testing.T) *testDeps {
 	}
 
 	return d
+}
+
+func writeCommentResponses(t *testing.T, dir, content string) {
+	t.Helper()
+	path := filepath.Join(dir, taskfile.CommentResponsesPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newFeedbackJob(ticketKey string) *jobmanager.Job {

@@ -109,6 +109,18 @@ jira:
           #   Execute the following bugfix workflow phases in order.
           #   ...
 
+          # Workflow for PR feedback only. Appended ONLY to feedback
+          # task files — new-ticket tasks do not receive this. Use for
+          # structured feedback handling with session context recovery
+          # and artifact updates across review rounds.
+          # Repo-level .ai-bot/feedback-workflow.md takes precedence
+          # when the profile field is empty.
+          # feedback_workflow: |
+          #   Read and execute .ai-workflows/bugfix/skills/feedback.md
+          #   with these overrides:
+          #     - Artifact paths: use .ai-bot/ instead of .artifacts/{number}/bugfix/
+          #     - Comment responses: write to .ai-bot/comment-responses.json
+
         # Profile for a different language/toolchain
         # rust-dev:
         #   container:

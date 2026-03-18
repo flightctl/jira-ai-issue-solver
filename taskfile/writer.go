@@ -77,6 +77,16 @@ const (
 	// Use this for structured feedback processes that maintain
 	// session context across review rounds.
 	FeedbackWorkflowPath = ".ai-bot/feedback-workflow.md"
+
+	// CommentResponsesPath is the path, relative to the workspace
+	// root, where the AI writes per-comment response summaries
+	// after addressing PR review feedback. The bot reads this file
+	// to post descriptive replies (e.g., "Switched to Optional
+	// pattern as suggested") instead of generic "Addressed in
+	// <commit>" messages. Expected output for feedback sessions;
+	// the bot falls back to generic replies if the file is missing
+	// or unparseable.
+	CommentResponsesPath = ".ai-bot/comment-responses.json"
 )
 
 // Writer generates task files that the AI agent reads to understand
