@@ -117,9 +117,10 @@ jira:
           # when the profile field is empty.
           # feedback_workflow: |
           #   Read and execute .ai-workflows/bugfix/skills/feedback.md
-          #   with these overrides:
-          #     - Artifact paths: use .ai-bot/ instead of .artifacts/{number}/bugfix/
-          #     - Comment responses: write to .ai-bot/comment-responses.json
+          #   with these settings:
+          #     ARTIFACT_DIR: .ai-bot/
+          #   Review comments are already provided in the task above
+          #   (use source 1: task file).
 
         # Profile for a different language/toolchain
         # rust-dev:
