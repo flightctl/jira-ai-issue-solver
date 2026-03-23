@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,79 +24,9 @@ import (
 	"jira-ai-issue-solver/models"
 )
 
-// GitHubService defines the interface for interacting with GitHub
-type GitHubService interface {
-	// CloneRepository clones a repository to a local directory
-	CloneRepository(repoURL, directory string) error
-
-	// CreateBranch creates a new branch in a local repository
-	CreateBranch(directory, branchName string) error
-
-	// CommitChanges commits changes to a local repository
-	CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error
-
-	// PushChanges pushes changes to a remote repository
-	// For PAT auth: forkOwner and repo are not used
-	// For GitHub App auth: forkOwner and repo are required to get the installation token
-	PushChanges(directory, branchName string, forkOwner, repo string) error
-
-	// CreatePullRequest creates a pull request
-	CreatePullRequest(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error)
-
-	// ForkRepository forks a repository and returns the clone URL of the fork
-	ForkRepository(owner, repo string) (string, error)
-
-	// CheckForkExists checks if a fork already exists for the given repository
-	CheckForkExists(owner, repo string) (exists bool, cloneURL string, err error)
-
-	// ResetFork resets a fork to match the original repository
-	ResetFork(forkCloneURL, directory string) error
-
-	// SyncForkWithUpstream syncs a fork with its upstream repository
-	SyncForkWithUpstream(owner, repo string) error
-
-	// SwitchToTargetBranch switches to the configured target branch after cloning
-	SwitchToTargetBranch(directory string) error
-
-	// SwitchToBranch switches to a specific branch
-	SwitchToBranch(directory, branchName string) error
-
-	// HasChanges checks if there are any uncommitted changes in the repository
-	HasChanges(directory string) (bool, error)
-
-	// PullChanges pulls the latest changes from the remote branch
-	PullChanges(directory, branchName string) error
-
-	AddPRComment(owner, repo string, prNumber int, body string) error
-	ListPRComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error)
-
-	// ReplyToPRComment replies to a specific PR comment (for line-based review comments)
-	ReplyToPRComment(owner, repo string, prNumber int, commentID int64, body string) error
-
-	// GetPRDetails gets detailed PR information including reviews, comments, and files
-	GetPRDetails(owner, repo string, prNumber int) (*models.GitHubPRDetails, error)
-
-	// ListPRReviews lists all reviews on a PR
-	ListPRReviews(owner, repo string, prNumber int) ([]models.GitHubReview, error)
-
-	// GetInstallationIDForRepo discovers the installation ID for a specific repository (GitHub App only)
-	GetInstallationIDForRepo(owner, repo string) (int64, error)
-
-	// CheckForkExistsForUser checks if a fork exists for a specific fork owner
-	CheckForkExistsForUser(owner, repo, forkOwner string) (bool, error)
-
-	// GetForkCloneURLForUser returns the clone URL for a specific user's fork
-	GetForkCloneURLForUser(owner, repo, forkOwner string) (string, error)
-
-	// CommitChangesViaAPI creates a commit using the GitHub API (for verified GitHub App commits)
-	// Returns the commit SHA
-	CommitChangesViaAPI(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
-
-	// CreateVerifiedCommitFromLocal creates a verified commit via GitHub API from local repository state
-	// Handles both working tree changes and local commits (including merge commits with multiple parents)
-	// Returns empty string if no changes, otherwise returns the commit SHA
-	CreateVerifiedCommitFromLocal(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error)
-}
+// ErrNoChanges is returned by CommitChanges when all workspace changes
+// are bot artifacts and there is nothing to commit.
+var ErrNoChanges = errors.New("no committable changes")
 
 // fileExists returns true if the file exists, false if it does not exist,
 // and an error if the existence check failed for reasons other than the file not existing.
@@ -126,7 +57,10 @@ const (
 	maxMergeCommitFiles = 1000
 )
 
-// GitHubServiceImpl implements the GitHubService interface
+// GitHubServiceImpl is the concrete implementation for GitHub operations.
+// There is no shared interface in this package — each consumer package
+// declares a narrow interface for only the methods it needs, and
+// GitHubServiceImpl satisfies them all implicitly.
 type GitHubServiceImpl struct {
 	config               *models.Config
 	client               *http.Client
@@ -211,8 +145,8 @@ func (g *gitCommand) run() error {
 	return g.cmd.Run()
 }
 
-// NewGitHubService creates a new GitHubService
-func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) GitHubService {
+// NewGitHubService creates a new GitHubServiceImpl.
+func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...models.CommandExecutor) *GitHubServiceImpl {
 	commandExecutor := exec.Command
 	if len(executor) > 0 {
 		commandExecutor = executor[0]
@@ -421,7 +355,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 	s.logger.Debug("git config credential.helper", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Extract owner and repo from the URL first (needed for getting auth token)
-	owner, repo, err := ExtractRepoInfo(repoURL)
+	owner, repo, err := extractRepoInfo(repoURL)
 	if err != nil {
 		return fmt.Errorf("failed to extract repo info: %w", err)
 	}
@@ -450,7 +384,7 @@ func (s *GitHubServiceImpl) getAuthTokenForRepo(owner, repo string) (string, err
 		return "", fmt.Errorf("GitHub App authentication not configured")
 	}
 
-	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get installation ID: %w", err)
 	}
@@ -541,187 +475,25 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 	return nil
 }
 
-// CommitChanges commits changes to a local repository
-func (s *GitHubServiceImpl) CommitChanges(directory, message string, coAuthorName, coAuthorEmail string) error {
-	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+// CommitChanges creates a verified commit via the GitHub API from local
+// repository state. It handles both working tree changes and local commits
+// (including merge commits with multiple parents). Returns an empty string
+// if there are no changes; otherwise returns the commit SHA.
+//
+// If coAuthor is non-nil, a Co-authored-by trailer is appended to the
+// commit message using the author's Name and Email.
+func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+	// Extract co-author name/email (empty strings when nil).
+	var coAuthorName, coAuthorEmail string
+	if coAuthor != nil {
+		coAuthorName = coAuthor.Name
+		coAuthorEmail = coAuthor.Email
+	}
+
 	fn := zap.String("function", "CommitChanges")
 
-	// Add all changes
-	cmd := newGitCommand(s.executor("git", "add", "."), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to add changes: %w, stderr: %s", err, cmd.getStderr())
-	}
-
-	s.logger.Debug("git add .", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-	// Check if there are changes to commit (stdout always enabled to read status)
-	cmd = newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to check status: %w, stderr: %s", err, cmd.getStderr())
-	}
-
-	s.logger.Debug("git status --porcelain", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-	if !cmd.hasStdout() {
-		s.logger.Info("No changes made to repository; nothing to commit to git.")
-		return nil
-	}
-
-	// Build commit message with optional co-author
-	commitMessage := message
-	if coAuthorName != "" && coAuthorEmail != "" {
-		commitMessage = fmt.Sprintf("%s\n\nCo-authored-by: %s <%s>", message, coAuthorName, coAuthorEmail)
-	}
-
-	// Commit changes (SSH signing is handled by git config)
-	cmd = newGitCommand(s.executor("git", "commit", "-m", commitMessage), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to commit changes: %w, stderr: %s", err, cmd.getStderr())
-	}
-
-	s.logger.Debug("git commit", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-	return nil
-}
-
-// PushChanges pushes changes to a remote repository
-func (s *GitHubServiceImpl) PushChanges(directory, branchName string, forkOwner, repo string) error {
-	// Get authentication token (supports both PAT and GitHub App)
-	token, err := s.getAuthTokenForRepo(forkOwner, repo)
-	if err != nil {
-		return fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Construct authenticated push URL
-	pushURL := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, forkOwner, repo)
-
-	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
-	fn := zap.String("function", "PushChanges")
-
-	// Before pushing, fetch the latest remote state to avoid "stale info" errors
-	// This updates our local tracking branches to match the current remote state
-	// Then --force-with-lease will protect against overwriting human changes
-	// We fetch all branches (not just the target branch) to update tracking refs properly
-	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
-	if err := fetchCmd.run(); err != nil {
-		// Fetch might fail, but we can still try to push
-		// Log the warning but continue - the push will handle it
-		s.logger.Debug("Failed to fetch before push",
-			fn,
-			zap.String("stderr", fetchCmd.getStderr()),
-			zap.Error(err))
-	} else {
-		s.logger.Debug("git fetch origin",
-			fn,
-			zap.String("stdout", fetchCmd.getStdout()),
-			zap.String("stderr", fetchCmd.getStderr()))
-	}
-
-	// Push the changes to the authenticated URL
-	// Use --force-with-lease to safely overwrite if branch exists from previous attempt
-	// Capture stderr to diagnose push failures, but we'll sanitize it before logging
-	cmd := newGitCommand(s.executor("git", "push", "--force-with-lease", pushURL, branchName), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		// Sanitize stderr to remove token before logging
-		sanitizedStderr := strings.ReplaceAll(cmd.getStderr(), token, "***TOKEN***")
-		return fmt.Errorf("failed to push changes: %w, stderr: %s", err, sanitizedStderr)
-	}
-
-	s.logger.Info("Successfully pushed branch",
-		zap.String("branch", branchName),
-		zap.String("fork", fmt.Sprintf("%s/%s", forkOwner, repo)))
-
-	return nil
-}
-
-// CommitChangesViaAPI creates a commit using the GitHub API
-// This creates verified commits when using GitHub App authentication
-// Returns the SHA of the created commit
-func (s *GitHubServiceImpl) CommitChangesViaAPI(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return "", fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Get the current commit SHA for the branch (or target branch if new branch doesn't exist)
-	baseSHA, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to get base commit: %w", err)
-	}
-
-	s.logger.Debug("Got base commit SHA",
-		zap.String("sha", baseSHA),
-		zap.Bool("branchExists", branchExists),
-		zap.String("branch", branchName))
-
-	// Get the base tree SHA from the commit
-	baseTreeSHA, err := s.getTreeSHAFromCommit(owner, repo, baseSHA, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to get base tree: %w", err)
-	}
-
-	// Create blobs for all changed files and build tree entries
-	treeEntries, err := s.createBlobsForChangedFiles(owner, repo, directory, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to create blobs: %w", err)
-	}
-
-	if len(treeEntries) == 0 {
-		s.logger.Info("No changes made to repository; nothing to commit")
-		return baseSHA, nil
-	}
-
-	// Create a new tree
-	treeSHA, err := s.createTree(owner, repo, baseTreeSHA, treeEntries, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to create tree: %w", err)
-	}
-
-	// Build commit message with optional co-author
-	commitMessage := message
-	if coAuthorName != "" && coAuthorEmail != "" {
-		commitMessage = fmt.Sprintf("%s\n\nCo-authored-by: %s <%s>", message, coAuthorName, coAuthorEmail)
-	}
-
-	// Create the commit
-	commitSHA, err := s.createCommit(owner, repo, commitMessage, treeSHA, baseSHA, token)
-	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
-	}
-
-	// Create or update the branch reference to point to the new commit
-	if branchExists {
-		// Branch exists, update the reference
-		if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
-			return "", fmt.Errorf("failed to update reference: %w", err)
-		}
-	} else {
-		// Branch doesn't exist, create new reference
-		if err := s.createReference(owner, repo, branchName, commitSHA, token); err != nil {
-			return "", fmt.Errorf("failed to create reference: %w", err)
-		}
-	}
-
-	s.logger.Info("Successfully created commit via API",
-		zap.String("owner", owner),
-		zap.String("repo", repo),
-		zap.String("branch", branchName),
-		zap.String("commit_sha", commitSHA),
-		zap.Bool("newBranch", !branchExists))
-
-	return commitSHA, nil
-}
-
-// CreateVerifiedCommitFromLocal creates a verified commit via GitHub API from local repository state
-// Handles both working tree changes and local commits (including merge commits with multiple parents)
-// Returns empty string if no changes, otherwise returns the commit SHA
-func (s *GitHubServiceImpl) CreateVerifiedCommitFromLocal(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
 	// Check what kind of changes we have
-	hasChanges, err := s.HasChanges(directory)
+	hasChanges, err := s.HasChanges(dir)
 	if err != nil {
 		return "", fmt.Errorf("failed to check for changes: %w", err)
 	}
@@ -731,25 +503,21 @@ func (s *GitHubServiceImpl) CreateVerifiedCommitFromLocal(owner, repo, branchNam
 		return "", nil
 	}
 
-	// Check if there are unpushed local commits (created by AI)
-	hasLocalCommits, err := s.hasUnpushedCommits(directory, zap.String("function", "CreateVerifiedCommitFromLocal"))
-	if err != nil {
-		return "", fmt.Errorf("failed to check unpushed commits: %w", err)
+	// Normalize: ensure all changes are committed locally so that
+	// createVerifiedCommitFromLocalHEAD (which uses git diff-tree
+	// against HEAD) sees everything the AI produced — whether the
+	// AI committed, staged, or left changes in the working tree.
+	if err := s.stageAndCommitLocal(dir, fn); err != nil {
+		return "", fmt.Errorf("failed to normalize local changes: %w", err)
 	}
 
-	if hasLocalCommits {
-		// Local commits exist - create verified commit from local HEAD
-		// This preserves merge commit structure (two parents)
-		return s.createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
-	}
-
-	// Only working tree changes exist - use existing API commit logic
-	return s.CommitChangesViaAPI(owner, repo, branchName, message, directory, coAuthorName, coAuthorEmail)
+	excludes := mergeExcludes(importExcludes)
+	return s.createVerifiedCommitFromLocalHEAD(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail, excludes)
 }
 
 // createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit
 // Preserves merge commit structure if HEAD is a merge commit
-func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string) (string, error) {
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
 	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
@@ -776,7 +544,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 
 	// Create blobs for files that changed from the first parent
 	// For merge commits, this includes files that differ from the first parent
-	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token)
+	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token, excludes)
 	if err != nil {
 		return "", fmt.Errorf("failed to create blobs: %w", err)
 	}
@@ -809,10 +577,22 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 		return "", fmt.Errorf("failed to create commit: %w", err)
 	}
 
-	// Update the branch reference to point to the new commit
-	// Branch must exist since we have local commits on it
-	if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
-		return "", fmt.Errorf("failed to update reference: %w", err)
+	// Create or update the branch reference to point to the new commit.
+	// The branch exists locally but may not have been pushed to the
+	// remote yet, so we must check before choosing the operation.
+	_, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to check branch existence: %w", err)
+	}
+
+	if branchExists {
+		if err := s.updateReference(owner, repo, branchName, commitSHA, token); err != nil {
+			return "", fmt.Errorf("failed to update reference: %w", err)
+		}
+	} else {
+		if err := s.createReference(owner, repo, branchName, commitSHA, token); err != nil {
+			return "", fmt.Errorf("failed to create reference: %w", err)
+		}
 	}
 
 	s.logger.Info("Successfully created verified commit from local HEAD",
@@ -952,121 +732,9 @@ func (s *GitHubServiceImpl) getTreeSHAFromCommit(owner, repo, commitSHA, token s
 	return commit.Tree.SHA, nil
 }
 
-// createBlobsForChangedFiles creates blobs for all changed files in the directory
-func (s *GitHubServiceImpl) createBlobsForChangedFiles(owner, repo, directory, token string) ([]models.GitHubTreeEntry, error) {
-	// Use git to get list of changed files
-	cmd := newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
-	if err := cmd.run(); err != nil {
-		return nil, fmt.Errorf("failed to get status: %w, stderr: %s", err, cmd.getStderr())
-	}
-
-	if !cmd.hasStdout() {
-		// No changes
-		return []models.GitHubTreeEntry{}, nil
-	}
-
-	var treeEntries []models.GitHubTreeEntry
-	// Don't trim the entire output as it would remove leading spaces from first line
-	// Git status --porcelain format requires the leading space to be preserved
-	lines := strings.Split(cmd.getStdout(), "\n")
-
-	for _, line := range lines {
-		// Skip empty lines (will occur at end due to trailing newline)
-		if len(line) < 3 {
-			continue
-		}
-
-		// Parse status line: "XY filename" where X and Y are status codes
-		// Git status --porcelain format: positions 0-1 are status, position 2 is space, 3+ is filename
-		// Example: " M api/file.go" where position 0=' ', 1='M', 2=' ', 3+='api/file.go'
-		status := line[0:2]
-		rawFilename := line[3:]
-
-		// Handle renamed files: "R  old -> new" - we want the new filename
-		filename := rawFilename
-		if strings.Contains(rawFilename, " -> ") {
-			parts := strings.Split(rawFilename, " -> ")
-			if len(parts) == 2 {
-				filename = parts[1]
-				s.logger.Debug("Detected renamed file",
-					zap.String("oldPath", parts[0]),
-					zap.String("newPath", parts[1]))
-			}
-		}
-
-		// Handle quoted filenames - git quotes filenames with special characters
-		// Format: "path/to/file"
-		if strings.HasPrefix(filename, "\"") && strings.HasSuffix(filename, "\"") {
-			// Remove surrounding quotes
-			filename = filename[1 : len(filename)-1]
-			// Unescape special characters
-			filename = strings.ReplaceAll(filename, "\\t", "\t")
-			filename = strings.ReplaceAll(filename, "\\n", "\n")
-			filename = strings.ReplaceAll(filename, "\\\\", "\\")
-			filename = strings.ReplaceAll(filename, "\\\"", "\"")
-		}
-
-		filename = strings.TrimSpace(filename)
-
-		// Skip deleted files (D status)
-		if strings.Contains(status, "D") {
-			s.logger.Debug("Skipping deleted file", zap.String("file", filename))
-			continue
-		}
-
-		// Log the file being processed for debugging
-		s.logger.Debug("Processing file for blob creation",
-			zap.String("status", status),
-			zap.String("filename", filename),
-			zap.String("rawLine", line))
-
-		// Read file content
-		filePath := filepath.Join(directory, filename)
-		// #nosec G304 - filename comes from git status output in controlled repo directory
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file %s: %w", filename, err)
-		}
-
-		// Create blob
-		blobSHA, err := s.createBlob(owner, repo, string(content), token)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create blob for %s: %w", filename, err)
-		}
-
-		// Determine file mode (check if executable)
-		fileInfo, err := os.Stat(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat file %s: %w", filename, err)
-		}
-
-		mode := "100644" // Regular file
-		if fileInfo.Mode()&0111 != 0 {
-			mode = "100755" // Executable
-		}
-
-		treeEntries = append(treeEntries, models.GitHubTreeEntry{
-			Path: filename,
-			Mode: mode,
-			Type: "blob",
-			SHA:  &blobSHA,
-		})
-
-		s.logger.Debug("Created blob for file",
-			zap.String("file", filename),
-			zap.String("sha", blobSHA))
-
-		// Add a small delay between blob creations to avoid rate limiting
-		// GitHub's secondary rate limit is triggered by rapid API calls
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	return treeEntries, nil
-}
-
 // createBlobsForFilesChangedFromParent creates tree entries for all changes from a specific parent commit
 // Handles additions, modifications, deletions, and renames properly using git diff-tree
-func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string) ([]models.GitHubTreeEntry, error) {
+func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string, excludes []string) ([]models.GitHubTreeEntry, error) {
 	// Use git diff-tree with -r (recursive), --name-status (show status), -M (detect renames)
 	// This shows the exact operation for each file: A (add), M (modify), D (delete), R (rename)
 	cmd := newGitCommand(s.executor("git", "diff-tree", "-r", "--name-status", "-M", parentSHA, "HEAD"), directory, true, true)
@@ -1112,7 +780,18 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "A" || status == "M":
 			// Added or Modified file - create blob and add to tree
 			filename := parts[1]
-			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token)
+			// Skip new files at the repo root — these are almost always
+			// AI scratch files (test scripts, notes) rather than real
+			// source changes. Modified root files are allowed.
+			if status == "A" && !strings.Contains(filename, "/") {
+				s.logger.Info("Skipping new root-level file",
+					zap.String("file", filename))
+				continue
+			}
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, filename, token, excludes)
+			if errors.Is(err, errSkipEntry) {
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to create tree entry for %s: %w", filename, err)
 			}
@@ -1121,6 +800,9 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "D":
 			// Deleted file - add entry with nil SHA to remove from tree
 			filename := parts[1]
+			if isExcludedPath(filename, excludes) {
+				continue
+			}
 			s.logger.Debug("File deleted, adding deletion entry",
 				zap.String("file", filename))
 			treeEntries = append(treeEntries, models.GitHubTreeEntry{
@@ -1136,19 +818,27 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			}
 			oldPath := parts[1]
 			newPath := parts[2]
+			if isExcludedPath(oldPath, excludes) && isExcludedPath(newPath, excludes) {
+				continue
+			}
 
 			s.logger.Debug("File renamed",
 				zap.String("old_path", oldPath),
 				zap.String("new_path", newPath))
 
 			// Delete old path
-			treeEntries = append(treeEntries, models.GitHubTreeEntry{
-				Path: oldPath,
-				SHA:  nil,
-			})
+			if !isExcludedPath(oldPath, excludes) {
+				treeEntries = append(treeEntries, models.GitHubTreeEntry{
+					Path: oldPath,
+					SHA:  nil,
+				})
+			}
 
 			// Add new path
-			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token, excludes)
+			if errors.Is(err, errSkipEntry) {
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to create tree entry for renamed file %s: %w", newPath, err)
 			}
@@ -1161,7 +851,10 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 				continue
 			}
 			newPath := parts[2]
-			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token)
+			entry, err := s.createTreeEntryForFile(owner, repo, directory, newPath, token, excludes)
+			if errors.Is(err, errSkipEntry) {
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to create tree entry for copied file %s: %w", newPath, err)
 			}
@@ -1177,9 +870,62 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 	return treeEntries, nil
 }
 
-// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob
-func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string) (models.GitHubTreeEntry, error) {
+// errSkipEntry signals that a tree entry should be skipped (e.g.,
+// the path is a directory or a bot artifact).
+var errSkipEntry = errors.New("skip entry")
+
+// builtinExcludes lists directories that are always excluded from
+// commits. Import-declared excludes are merged at call time.
+var builtinExcludes = []string{".ai-bot/"}
+
+// mergeExcludes combines builtin excludes with import-declared excludes,
+// normalizing each entry to have a trailing slash for prefix matching.
+func mergeExcludes(importExcludes []string) []string {
+	all := make([]string, len(builtinExcludes), len(builtinExcludes)+len(importExcludes))
+	copy(all, builtinExcludes)
+	for _, e := range importExcludes {
+		if !strings.HasSuffix(e, "/") {
+			e += "/"
+		}
+		all = append(all, e)
+	}
+	return all
+}
+
+// isExcludedPath reports whether filename is inside any of the
+// excluded directories.
+func isExcludedPath(filename string, excludes []string) bool {
+	for _, prefix := range excludes {
+		dir := strings.TrimSuffix(prefix, "/")
+		if filename == dir || strings.HasPrefix(filename, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob.
+// Returns errSkipEntry if the path is a directory.
+func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string, excludes []string) (models.GitHubTreeEntry, error) {
+	// Skip excluded paths — bot artifacts and import-declared output dirs.
+	if isExcludedPath(filename, excludes) {
+		s.logger.Debug("Skipping excluded path",
+			zap.String("path", filename))
+		return models.GitHubTreeEntry{}, errSkipEntry
+	}
+
 	filePath := filepath.Join(directory, filename)
+
+	// Check if path is a directory.
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
+	}
+	if fileInfo.IsDir() {
+		s.logger.Debug("Skipping directory entry",
+			zap.String("path", filename))
+		return models.GitHubTreeEntry{}, errSkipEntry
+	}
 
 	// Read file content
 	// #nosec G304 - filename comes from git diff-tree output in controlled repo directory
@@ -1192,12 +938,6 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 	blobSHA, err := s.createBlob(owner, repo, string(content), token)
 	if err != nil {
 		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob: %w", err)
-	}
-
-	// Determine file mode (check if executable)
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
 	}
 
 	mode := "100644" // Regular file
@@ -1368,56 +1108,6 @@ func (s *GitHubServiceImpl) createTree(owner, repo, baseTree string, entries []m
 	return treeResp.SHA, nil
 }
 
-// createCommit creates a commit on GitHub
-func (s *GitHubServiceImpl) createCommit(owner, repo, message, tree, parent, token string) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/commits", owner, repo)
-
-	commitReq := models.GitHubCommitRequest{
-		Message: message,
-		Tree:    tree,
-		Parents: []string{parent},
-		// Note: We intentionally do NOT set Author or Committer
-		// When these are omitted, GitHub automatically uses the authenticated GitHub App's identity
-		// and creates a VERIFIED commit signed with GitHub's key
-	}
-
-	jsonPayload, err := json.Marshal(commitReq)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal commit request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "createCommit"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to create commit: %s, status: %d", string(body), resp.StatusCode)
-	}
-
-	var commitResp models.GitHubCommitResponse
-	if err := json.NewDecoder(resp.Body).Decode(&commitResp); err != nil {
-		return "", fmt.Errorf("failed to decode commit response: %w", err)
-	}
-
-	return commitResp.SHA, nil
-}
-
 // updateReference updates a Git reference to point to a new commit
 func (s *GitHubServiceImpl) updateReference(owner, repo, branchName, commitSHA, token string) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, branchName)
@@ -1577,13 +1267,16 @@ func (s *GitHubServiceImpl) createReference(owner, repo, branchName, commitSHA, 
 	return nil
 }
 
-// CreatePullRequest creates a pull request
-func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, base string) (*models.GitHubCreatePRResponse, error) {
+// CreatePR creates a pull request from the given parameters and returns
+// the created PR metadata. If params.Labels is non-empty those labels are
+// applied; otherwise the configured PRLabel (if any) is used as a
+// backwards-compatible default.
+func (s *GitHubServiceImpl) CreatePR(params models.PRParams) (*models.PR, error) {
 	// Use installation-specific client
 	// PRs are created on the base repository, so use the base repo's installation
-	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+	installationID, err := s.getInstallationIDForRepo(params.Owner, params.Repo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get installation ID for %s/%s: %w", owner, repo, err)
+		return nil, fmt.Errorf("failed to get installation ID for %s/%s: %w", params.Owner, params.Repo, err)
 	}
 	ghClient, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
@@ -1591,8 +1284,8 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 	}
 
 	s.logger.Info("Creating PR using base repository's installation",
-		zap.String("owner", owner),
-		zap.String("repo", repo),
+		zap.String("owner", params.Owner),
+		zap.String("repo", params.Repo),
 		zap.Int64("installationID", installationID))
 
 	// Set maintainer_can_modify to false explicitly
@@ -1600,31 +1293,20 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 	// See: https://github.com/orgs/community/discussions/39178
 	falseValue := false
 	newPR := &github.NewPullRequest{
-		Title:               &title,
-		Body:                &body,
-		Head:                &head,
-		Base:                &base,
+		Title:               &params.Title,
+		Body:                &params.Body,
+		Head:                &params.Head,
+		Base:                &params.Base,
 		MaintainerCanModify: &falseValue,
+		Draft:               &params.Draft,
 	}
 
 	// Create PR with its own timeout
 	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
-	pr, _, err := ghClient.PullRequests.Create(ctx, owner, repo, newPR)
+	pr, _, err := ghClient.PullRequests.Create(ctx, params.Owner, params.Repo, newPR)
 	cancel() // Release resources immediately after PR creation
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pull request: %w", err)
-	}
-
-	// Add label with a fresh timeout to prevent cascading timeout if PR creation was slow
-	// Label is critical for workflow tracking - fail if it can't be added
-	if s.config.GitHub.PRLabel != "" {
-		labelCtx, labelCancel := context.WithTimeout(context.Background(), githubAPITimeout)
-		defer labelCancel()
-		_, _, err = ghClient.Issues.AddLabelsToIssue(labelCtx, owner, repo, pr.GetNumber(), []string{s.config.GitHub.PRLabel})
-		if err != nil {
-			return nil, fmt.Errorf("failed to add label %q to PR #%d: %w (PR created but not labeled)",
-				s.config.GitHub.PRLabel, pr.GetNumber(), err)
-		}
 	}
 
 	// Defensive nil check - should never occur if go-github contract is honored,
@@ -1633,312 +1315,48 @@ func (s *GitHubServiceImpl) CreatePullRequest(owner, repo, title, body, head, ba
 		return nil, fmt.Errorf("GitHub API returned nil pull request (unexpected API contract violation)")
 	}
 
-	// Convert go-github PR to our model
-	return &models.GitHubCreatePRResponse{
-		ID:      pr.GetID(),
-		Number:  pr.GetNumber(),
-		State:   pr.GetState(),
-		Title:   pr.GetTitle(),
-		Body:    pr.GetBody(),
-		HTMLURL: pr.GetHTMLURL(),
+	// Determine labels to apply: prefer explicit params, fall back to config.
+	labels := params.Labels
+	if len(labels) == 0 && s.config.GitHub.PRLabel != "" {
+		labels = []string{s.config.GitHub.PRLabel}
+	}
+
+	// Add labels with a fresh timeout to prevent cascading timeout if PR creation was slow
+	if len(labels) > 0 {
+		labelCtx, labelCancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		defer labelCancel()
+		_, _, err = ghClient.Issues.AddLabelsToIssue(labelCtx, params.Owner, params.Repo, pr.GetNumber(), labels)
+		if err != nil {
+			return nil, fmt.Errorf("failed to add labels to PR #%d: %w (PR created but not labeled)",
+				pr.GetNumber(), err)
+		}
+	}
+
+	// Assign users to the PR.
+	if len(params.Assignees) > 0 {
+		assignCtx, assignCancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		defer assignCancel()
+		_, _, err = ghClient.Issues.AddAssignees(assignCtx, params.Owner, params.Repo, pr.GetNumber(), params.Assignees)
+		if err != nil {
+			// Non-fatal: log but don't fail the PR creation.
+			s.logger.Warn("Failed to assign PR",
+				zap.Int("pr", pr.GetNumber()),
+				zap.Strings("assignees", params.Assignees),
+				zap.Error(err))
+		}
+	}
+
+	return &models.PR{
+		Number: pr.GetNumber(),
+		URL:    pr.GetHTMLURL(),
+		State:  pr.GetState(),
 	}, nil
 }
 
-// CheckForkExists checks if a fork already exists for the given repository
-func (s *GitHubServiceImpl) CheckForkExists(owner, repo string) (exists bool, cloneURL string, err error) {
-	// Get authentication token
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return false, "", fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Check if the fork already exists by listing the bot's repositories
-	url := fmt.Sprintf("https://api.github.com/users/%s/repos", s.config.GitHub.BotUsername)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return false, "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Use the authentication token
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return false, "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "CheckForkExists"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return false, "", fmt.Errorf("failed to list repositories: %s, status code: %d", string(body), resp.StatusCode)
-	}
-
-	var repos []struct {
-		Name     string `json:"name"`
-		CloneURL string `json:"clone_url"`
-		Fork     bool   `json:"fork"`
-		Source   struct {
-			FullName string `json:"full_name"`
-		} `json:"source"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
-		return false, "", fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	s.logger.Info("repos", zap.Any("repos", repos))
-
-	// Check if any of the repositories is a fork of the target repository
-	targetFullName := fmt.Sprintf("%s/%s", owner, repo)
-	s.logger.Info("Looking for fork of", zap.String("targetFullName", targetFullName))
-
-	for _, r := range repos {
-		s.logger.Info("Checking repo", zap.String("repoName", r.Name), zap.Bool("isFork", r.Fork), zap.Any("source", r.Source))
-		if r.Fork && r.Source.FullName == targetFullName {
-			s.logger.Info("Found fork", zap.String("cloneURL", r.CloneURL))
-			return true, r.CloneURL, nil
-		}
-		// Fallback: check if the repo name matches the target repo name
-		if r.Fork && r.Name == repo {
-			s.logger.Info("Found fork by name match", zap.String("cloneURL", r.CloneURL))
-			return true, r.CloneURL, nil
-		}
-	}
-
-	s.logger.Info("No fork found for", zap.String("targetFullName", targetFullName))
-	return false, "", nil
-}
-
-// ResetFork resets a fork to match the original repository and sets up upstream
-func (s *GitHubServiceImpl) ResetFork(forkCloneURL, directory string) error {
-	// Ensure the directory exists
-	if err := os.MkdirAll(directory, 0750); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Check if the directory is already a git repository
-	if _, err := os.Stat(filepath.Join(directory, ".git")); err == nil {
-		debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
-		fn := zap.String("function", "ResetFork")
-
-		// Directory is already a git repository, fetch and reset
-		// Fetch the upstream repository
-		cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
-
-		if err := cmd.run(); err != nil {
-			return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, cmd.getStderr())
-		}
-		s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-		// Reset to origin/main or origin/master
-		cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/main"), directory, debugEnabled, true)
-
-		if err := cmd.run(); err != nil {
-			// Try with master branch
-			cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/master"), directory, debugEnabled, true)
-
-			if err := cmd.run(); err != nil {
-				return fmt.Errorf("failed to reset to origin/main or origin/master: %w, stderr: %s", err, cmd.getStderr())
-			}
-
-			s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/master"), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-		} else {
-			s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/main"), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-		}
-
-		// Clean the repository
-		cmd = newGitCommand(s.executor("git", "clean", "-fdx"), directory, debugEnabled, true)
-
-		if err := cmd.run(); err != nil {
-			return fmt.Errorf("failed to clean repository: %w, stderr: %s", err, cmd.getStderr())
-		}
-
-		s.logger.Debug("git clean -fdx", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-		return nil
-	}
-
-	s.logger.Debug("Directory is not a git repository, cloning repository", zap.String("forkCloneURL", forkCloneURL), zap.String("directory", directory))
-
-	// Clone the repository
-	return s.CloneRepository(forkCloneURL, directory)
-}
-
-// ForkRepository forks a repository and returns the clone URL of the fork
-func (s *GitHubServiceImpl) ForkRepository(owner, repo string) (string, error) {
-	// Get authentication token
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return "", fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Create a new fork
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/forks", owner, repo)
-
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Use the authentication token
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "ForkRepository"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to fork repository %s/%s: %s, status code: %d", owner, repo, string(body), resp.StatusCode)
-	}
-
-	var forkResponse struct {
-		HTMLURL  string `json:"html_url"`
-		CloneURL string `json:"clone_url"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&forkResponse); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return forkResponse.CloneURL, nil
-}
-
-// SyncForkWithUpstream syncs a fork with its upstream repository
-func (s *GitHubServiceImpl) SyncForkWithUpstream(owner, repo string) error {
-	// Get authentication token
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	// Get the fork details to sync with upstream
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", s.config.GitHub.BotUsername, repo)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "SyncForkWithUpstream-GetForkDetails"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to get fork details: %s, status code: %d", string(body), resp.StatusCode)
-	}
-
-	var forkDetails struct {
-		Source struct {
-			Owner struct {
-				Login string `json:"login"`
-			} `json:"owner"`
-			Name string `json:"name"`
-		} `json:"source"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&forkDetails); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	// Sync the fork with upstream
-	syncURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/merge-upstream", s.config.GitHub.BotUsername, repo)
-	syncBody := map[string]string{
-		"branch": "main",
-	}
-
-	jsonBody, err := json.Marshal(syncBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal sync request: %w", err)
-	}
-
-	req, err = http.NewRequest("POST", syncURL, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return fmt.Errorf("failed to create sync request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err = s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send sync request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "SyncForkWithUpstream-MergeUpstream"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to sync fork: %s, status code: %d", string(body), resp.StatusCode)
-	}
-
-	return nil
-}
-
-// SwitchToTargetBranch switches to the configured target branch after cloning
-func (s *GitHubServiceImpl) SwitchToTargetBranch(directory string) error {
+// SwitchBranch switches to a specific branch.
+func (s *GitHubServiceImpl) SwitchBranch(directory, branchName string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
-	fn := zap.String("function", "SwitchToTargetBranch")
-
-	// Fetch the latest changes from origin
-	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to fetch origin: %w, stderr: %s", err, cmd.getStderr())
-	}
-
-	s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-	// Checkout the target branch
-	cmd = newGitCommand(s.executor("git", "checkout", s.config.GitHub.TargetBranch), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
-	}
-
-	// Reset to the latest commit on the target branch to ensure we're up to date
-	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch), directory, debugEnabled, true)
-
-	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
-	}
-
-	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
-
-	return nil
-}
-
-// SwitchToBranch switches to a specific branch
-func (s *GitHubServiceImpl) SwitchToBranch(directory, branchName string) error {
-	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
-	fn := zap.String("function", "SwitchToBranch")
+	fn := zap.String("function", "SwitchBranch")
 
 	// Fetch the latest changes from origin
 	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
@@ -2000,6 +1418,39 @@ func (s *GitHubServiceImpl) hasWorkingTreeChanges(directory string, fn zapcore.F
 	return cmd.hasStdout(), nil
 }
 
+// stageAndCommitLocal ensures all working tree and staged changes are
+// committed locally. This normalizes the three possible states an AI
+// session can leave behind (committed, staged, or unstaged) into a
+// single committed state that git diff-tree can see.
+func (s *GitHubServiceImpl) stageAndCommitLocal(directory string, fn zapcore.Field) error {
+	// Check for uncommitted changes (staged or unstaged).
+	statusCmd := newGitCommand(s.executor("git", "status", "--porcelain"), directory, true, true)
+	if err := statusCmd.run(); err != nil {
+		return fmt.Errorf("git status: %w, stderr: %s", err, statusCmd.getStderr())
+	}
+	if !statusCmd.hasStdout() {
+		// Everything is already committed.
+		return nil
+	}
+
+	s.logger.Debug("Staging uncommitted changes", fn)
+
+	addCmd := newGitCommand(s.executor("git", "add", "-A"), directory, false, true)
+	if err := addCmd.run(); err != nil {
+		return fmt.Errorf("git add -A: %w, stderr: %s", err, addCmd.getStderr())
+	}
+
+	commitCmd := newGitCommand(
+		s.executor("git", "commit", "-m", "AI changes (local only)"),
+		directory, false, true)
+	if err := commitCmd.run(); err != nil {
+		return fmt.Errorf("git commit: %w, stderr: %s", err, commitCmd.getStderr())
+	}
+
+	s.logger.Debug("Committed local changes", fn)
+	return nil
+}
+
 // hasUnpushedCommits checks if there are local commits that haven't been pushed to origin
 func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Field) (bool, error) {
 	// First, check if origin remote exists
@@ -2024,49 +1475,158 @@ func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Fiel
 
 	s.logger.Debug("Current branch", fn, zap.String("branch", branchName))
 
-	// Check if the remote branch exists
-	// We don't need stdout here, just the exit code
-	remoteExistsCmd := newGitCommand(s.executor("git", "rev-parse", "--verify", fmt.Sprintf("origin/%s", branchName)), directory, false, false)
+	// Determine the remote ref to compare against: origin/<branch> if it
+	// exists, otherwise origin/<targetBranch> (the branch we forked from).
+	remoteRef := fmt.Sprintf("origin/%s", branchName)
+	remoteExistsCmd := newGitCommand(s.executor("git", "rev-parse", "--verify", remoteRef), directory, false, false)
 	if err := remoteExistsCmd.run(); err != nil {
-		// Remote branch doesn't exist yet - this means we have unpushed commits (the entire branch is new)
-		s.logger.Debug("Remote branch does not exist, treating as unpushed commits", fn, zap.String("branch", branchName))
-		return true, nil
+		// Remote branch doesn't exist. Compare against origin/<target>
+		// to check if HEAD has diverged (i.e., the AI made local commits).
+		remoteRef = fmt.Sprintf("origin/%s", s.config.GitHub.TargetBranch)
+		s.logger.Debug("Remote branch does not exist, comparing against target branch", fn,
+			zap.String("branch", branchName),
+			zap.String("targetRef", remoteRef))
 	}
 
-	// Check for commits that exist locally but not on the remote
-	// git log origin/branch..HEAD will show commits in HEAD that aren't in origin/branch
-	// Always capture stdout since we need to check if there's output
-	logCmd := newGitCommand(s.executor("git", "log", fmt.Sprintf("origin/%s..HEAD", branchName), "--oneline"), directory, true, true)
+	// Check for commits that exist locally but not on the remote ref.
+	logCmd := newGitCommand(s.executor("git", "log", fmt.Sprintf("%s..HEAD", remoteRef), "--oneline"), directory, true, true)
 	if err := logCmd.run(); err != nil {
 		return false, fmt.Errorf("failed to check unpushed commits: %w, stderr: %s", err, logCmd.getStderr())
 	}
 
-	s.logger.Debug("git log origin/branch..HEAD", fn, zap.String("branch", branchName), zap.String("stdout", logCmd.getStdout()), zap.String("stderr", logCmd.getStderr()))
+	s.logger.Debug("git log ref..HEAD", fn,
+		zap.String("ref", remoteRef),
+		zap.String("stdout", logCmd.getStdout()),
+		zap.String("stderr", logCmd.getStderr()))
 
 	// If there's any output, we have unpushed commits
 	return logCmd.hasStdout(), nil
 }
 
-// PullChanges pulls the latest changes from the remote branch
-func (s *GitHubServiceImpl) PullChanges(directory, branchName string) error {
-	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
-	fn := zap.String("function", "PullChanges")
-
-	// Pull the latest changes from the remote branch
-	cmd := newGitCommand(s.executor("git", "pull", "origin", branchName), directory, debugEnabled, true)
-
+// StripRemoteAuth removes authentication credentials from the
+// workspace's origin remote URL. After this call, push operations
+// will be rejected by the remote.
+func (s *GitHubServiceImpl) StripRemoteAuth(directory string) error {
+	cmd := newGitCommand(s.executor("git", "remote", "get-url", "origin"), directory, false, true)
 	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to pull changes from origin/%s: %w, stderr: %s", branchName, err, cmd.getStderr())
+		return fmt.Errorf("get remote URL: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git pull", fn, zap.String("remote", "origin"), zap.String("branch", branchName), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	rawURL := strings.TrimSpace(cmd.getStdout())
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse remote URL: %w", err)
+	}
+	parsed.User = nil
+
+	setCmd := newGitCommand(
+		s.executor("git", "remote", "set-url", "origin", parsed.String()),
+		directory, false, false)
+	if err := setCmd.run(); err != nil {
+		return fmt.Errorf("strip remote auth: %w, stderr: %s", err, setCmd.getStderr())
+	}
+
+	s.logger.Debug("Stripped remote auth", zap.String("directory", directory))
+	return nil
+}
+
+// RestoreRemoteAuth restores authentication credentials on the
+// workspace's origin remote URL using a fresh installation token.
+func (s *GitHubServiceImpl) RestoreRemoteAuth(directory, owner, repo string) error {
+	token, err := s.getAuthTokenForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get auth token: %w", err)
+	}
+
+	authURL := fmt.Sprintf("https://%s@github.com/%s/%s.git", token, owner, repo)
+	cmd := newGitCommand(
+		s.executor("git", "remote", "set-url", "origin", authURL),
+		directory, false, false)
+	if err := cmd.run(); err != nil {
+		return fmt.Errorf("restore remote auth: %w, stderr: %s", err, cmd.getStderr())
+	}
+
+	s.logger.Debug("Restored remote auth", zap.String("directory", directory))
+	return nil
+}
+
+// SyncWithRemote reconciles the local workspace with the remote branch by
+// fetching and hard-resetting to the remote ref. Excluded artifact
+// directories are preserved across the reset because they are filtered
+// from API commits and therefore absent on the remote branch.
+func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExcludes []string) error {
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "SyncWithRemote")
+
+	// Preserve excluded directories across the hard reset.
+	// The normalization commit tracks these files locally, but they
+	// are filtered from the API commit and absent on the remote —
+	// so git reset --hard would delete them.
+	excludes := mergeExcludes(importExcludes)
+	preserved := s.preserveExcludedDirs(directory, excludes, fn)
+
+	// Fetch the latest state from the remote.
+	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
+	if err := fetchCmd.run(); err != nil {
+		return fmt.Errorf("failed to fetch from origin: %w, stderr: %s", err, fetchCmd.getStderr())
+	}
+	s.logger.Debug("git fetch origin", fn, zap.String("stdout", fetchCmd.getStdout()), zap.String("stderr", fetchCmd.getStderr()))
+
+	// Reset the working tree and index to match the remote branch.
+	ref := "origin/" + branch
+	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", ref), directory, debugEnabled, true)
+	if err := resetCmd.run(); err != nil {
+		return fmt.Errorf("failed to reset to %s: %w, stderr: %s", ref, err, resetCmd.getStderr())
+	}
+	s.logger.Debug("git reset --hard", fn, zap.String("ref", ref), zap.String("stdout", resetCmd.getStdout()), zap.String("stderr", resetCmd.getStderr()))
+
+	// Restore preserved directories after the reset.
+	s.restoreExcludedDirs(directory, preserved, fn)
 
 	return nil
 }
 
-// AddPRComment posts a comment to a PR (issue) on GitHub
-func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body string) error {
-	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+// preserveExcludedDirs moves excluded artifact directories to temporary
+// names so they survive a git reset --hard. Returns the list of
+// directory base names that were successfully preserved.
+func (s *GitHubServiceImpl) preserveExcludedDirs(directory string, excludes []string, fn zapcore.Field) []string {
+	var preserved []string
+	for _, prefix := range excludes {
+		dir := strings.TrimSuffix(prefix, "/")
+		src := filepath.Join(directory, dir)
+		dst := filepath.Join(directory, dir+".preserve")
+
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		_ = os.RemoveAll(dst) // clean up any stale preserve dir
+		if err := os.Rename(src, dst); err != nil {
+			s.logger.Warn("Failed to preserve directory", fn,
+				zap.String("dir", dir), zap.Error(err))
+			continue
+		}
+		preserved = append(preserved, dir)
+	}
+	return preserved
+}
+
+// restoreExcludedDirs moves preserved artifact directories back to
+// their original names after a git reset --hard.
+func (s *GitHubServiceImpl) restoreExcludedDirs(directory string, preserved []string, fn zapcore.Field) {
+	for _, dir := range preserved {
+		src := filepath.Join(directory, dir+".preserve")
+		dst := filepath.Join(directory, dir)
+		if err := os.Rename(src, dst); err != nil {
+			s.logger.Warn("Failed to restore directory", fn,
+				zap.String("dir", dir), zap.Error(err))
+		}
+	}
+}
+
+// ReplyToComment replies to a specific PR review comment.
+// For line-based review comments, this creates a threaded reply.
+func (s *GitHubServiceImpl) ReplyToComment(owner, repo string, prNumber int, commentID int64, body string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
 		return fmt.Errorf("failed to get installation ID: %w", err)
 	}
@@ -2079,46 +1639,12 @@ func (s *GitHubServiceImpl) AddPRComment(owner, repo string, prNumber int, body 
 	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
 	defer cancel()
 
-	comment := &github.IssueComment{
-		Body: &body,
-	}
-
-	_, _, err = ghClient.Issues.CreateComment(ctx, owner, repo, prNumber, comment)
-	if err != nil {
-		return fmt.Errorf("failed to add PR comment: %w", err)
-	}
-
-	return nil
-}
-
-// ReplyToPRComment replies to a specific PR review comment
-// For line-based review comments, this creates a threaded reply
-func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, commentID int64, body string) error {
-	installationID, err := s.GetInstallationIDForRepo(owner, repo)
-	if err != nil {
-		return fmt.Errorf("failed to get installation ID: %w", err)
-	}
-
-	ghClient, err := s.getInstallationGitHubClient(installationID)
-	if err != nil {
-		return fmt.Errorf("failed to get installation client: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
-	defer cancel()
-
-	// Create a reply to a review comment
-	comment := &github.PullRequestComment{
-		Body:      &body,
-		InReplyTo: &commentID,
-	}
-
-	_, _, err = ghClient.PullRequests.CreateComment(ctx, owner, repo, prNumber, comment)
+	_, _, err = ghClient.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, prNumber, body, commentID)
 	if err != nil {
 		return fmt.Errorf("failed to reply to PR comment: %w", err)
 	}
 
-	s.logger.Debug("Replied to PR comment",
+	s.logger.Debug("Replied to comment",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", prNumber),
@@ -2127,9 +1653,35 @@ func (s *GitHubServiceImpl) ReplyToPRComment(owner, repo string, prNumber int, c
 	return nil
 }
 
+// CloneImport clones an auxiliary repository into destDir. If ref is
+// non-empty, the specified branch/tag/commit is checked out. This is a
+// shallow clone (depth 1) since import repos are read-only references.
+func (s *GitHubServiceImpl) CloneImport(url, destDir, ref string) error {
+	args := []string{"clone", "--depth", "1"}
+	if ref != "" {
+		args = append(args, "--branch", ref)
+	}
+	args = append(args, url, destDir)
+
+	cmd := s.executor("git", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone %s into %s: %w, stderr: %s", url, destDir, err, stderr.String())
+	}
+
+	s.logger.Debug("Cloned import repo",
+		zap.String("url", url),
+		zap.String("dest", destDir),
+		zap.String("ref", ref))
+
+	return nil
+}
+
 // fetchPRReviewCommentsPage fetches a single page of PR review comments
 func (s *GitHubServiceImpl) fetchPRReviewCommentsPage(owner, repo string, prNumber, page, perPage int) ([]models.GitHubPRComment, error) {
-	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get installation ID: %w", err)
 	}
@@ -2221,7 +1773,7 @@ func (s *GitHubServiceImpl) listPRReviewComments(owner, repo string, prNumber in
 
 // fetchPRConversationCommentsPage fetches a single page of PR conversation comments
 func (s *GitHubServiceImpl) fetchPRConversationCommentsPage(owner, repo string, prNumber, page, perPage int) ([]models.GitHubPRComment, error) {
-	installationID, err := s.GetInstallationIDForRepo(owner, repo)
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get installation ID: %w", err)
 	}
@@ -2307,38 +1859,59 @@ func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNum
 	return allComments, nil
 }
 
-// ListPRComments lists all PR comments (both line-based review comments and general conversation comments)
-// Note: The /pulls/{pr}/comments and /issues/{pr}/comments endpoints return disjoint sets per GitHub API spec.
-// Line-based review comments only appear in pulls endpoint; general conversation comments only in issues endpoint.
-func (s *GitHubServiceImpl) ListPRComments(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+// GetPRComments returns all PR comments (both line-based review comments
+// and general conversation comments), converted to models.PRComment.
+// If since is non-zero, only comments created after that timestamp are
+// returned.
+func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
 	// Get line-based review comments from pulls endpoint
-	reviewComments, err := s.listPRReviewComments(owner, repo, prNumber)
+	reviewComments, err := s.listPRReviewComments(owner, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get review comments: %w", err)
 	}
 
 	// Get general conversation comments from issues endpoint
-	conversationComments, err := s.listPRConversationComments(owner, repo, prNumber)
+	conversationComments, err := s.listPRConversationComments(owner, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get conversation comments: %w", err)
 	}
 
 	// Merge both types of comments
-	allComments := append(reviewComments, conversationComments...)
+	allGH := append(reviewComments, conversationComments...)
 
 	s.logger.Debug("Retrieved PR comments",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
-		zap.Int("pr_number", prNumber),
+		zap.Int("pr_number", number),
 		zap.Int("review_comments", len(reviewComments)),
 		zap.Int("conversation_comments", len(conversationComments)),
-		zap.Int("total_comments", len(allComments)))
+		zap.Int("total_comments", len(allGH)))
 
-	return allComments, nil
+	// Convert to models.PRComment and apply the since filter.
+	result := make([]models.PRComment, 0, len(allGH))
+	for _, c := range allGH {
+		if !since.IsZero() && !c.CreatedAt.After(since) {
+			continue
+		}
+		result = append(result, models.PRComment{
+			ID: c.ID,
+			Author: models.Author{
+				Name:     c.User.Login,
+				Username: c.User.Login,
+			},
+			Body:      c.Body,
+			FilePath:  c.Path,
+			Line:      c.Line,
+			Timestamp: c.CreatedAt,
+			InReplyTo: c.InReplyToID,
+		})
+	}
+
+	return result, nil
 }
 
-// ExtractRepoInfo extracts owner and repo from a repository URL
-func ExtractRepoInfo(repoURL string) (owner, repo string, err error) {
+// extractRepoInfo extracts owner and repo from a repository URL.
+func extractRepoInfo(repoURL string) (owner, repo string, err error) {
 	// Handle SSH URLs: git@github.com:owner/repo.git
 	if strings.HasPrefix(repoURL, "git@github.com:") {
 		parts := strings.Split(strings.TrimPrefix(repoURL, "git@github.com:"), "/")
@@ -2364,99 +1937,7 @@ func ExtractRepoInfo(repoURL string) (owner, repo string, err error) {
 	return "", "", fmt.Errorf("unsupported repository URL format: %s", repoURL)
 }
 
-// GetPRDetails gets detailed PR information including reviews, comments, and files
-func (s *GitHubServiceImpl) GetPRDetails(owner, repo string, prNumber int) (*models.GitHubPRDetails, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", owner, repo, prNumber)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "GetPRDetails"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get PR details: %s, status: %d", string(body), resp.StatusCode)
-	}
-
-	var prDetails models.GitHubPRDetails
-	if err := json.NewDecoder(resp.Body).Decode(&prDetails); err != nil {
-		return nil, fmt.Errorf("failed to decode PR details: %w", err)
-	}
-
-	// Get reviews
-	reviews, err := s.ListPRReviews(owner, repo, prNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get PR reviews: %w", err)
-	}
-	prDetails.Reviews = reviews
-
-	// Get comments
-	comments, err := s.ListPRComments(owner, repo, prNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get PR comments: %w", err)
-	}
-	prDetails.Comments = comments
-
-	return &prDetails, nil
-}
-
-// ListPRReviews lists all reviews on a PR
-func (s *GitHubServiceImpl) ListPRReviews(owner, repo string, prNumber int) ([]models.GitHubReview, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	token, err := s.getAuthTokenForRepo(owner, repo)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get auth token: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "ListPRReviews"))
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get PR reviews: %s, status: %d", string(body), resp.StatusCode)
-	}
-
-	var reviews []models.GitHubReview
-	if err := json.NewDecoder(resp.Body).Decode(&reviews); err != nil {
-		return nil, fmt.Errorf("failed to decode reviews: %w", err)
-	}
-
-	return reviews, nil
-}
-
-// GetInstallationIDForRepo discovers the GitHub App installation ID for a specific repository.
+// getInstallationIDForRepo discovers the GitHub App installation ID for a specific repository.
 // This is used in GitHub App authentication mode to obtain installation-specific tokens.
 //
 // Parameters:
@@ -2469,11 +1950,11 @@ func (s *GitHubServiceImpl) ListPRReviews(owner, repo string, prNumber int) ([]m
 //
 // Example usage:
 //
-//	installationID, err := githubService.GetInstallationIDForRepo("myorg", "myrepo")
+//	installationID, err := githubService.getInstallationIDForRepo("myorg", "myrepo")
 //	if err != nil {
 //	    // Handle error - app may not be installed on this repo
 //	}
-func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64, error) {
+func (s *GitHubServiceImpl) getInstallationIDForRepo(owner, repo string) (int64, error) {
 	if s.appTransport == nil {
 		return 0, fmt.Errorf("GitHub App not configured")
 	}
@@ -2509,7 +1990,7 @@ func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64,
 	}
 	defer func() {
 		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "GetInstallationIDForRepo"))
+			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "getInstallationIDForRepo"))
 		}
 	}()
 
@@ -2542,109 +2023,86 @@ func (s *GitHubServiceImpl) GetInstallationIDForRepo(owner, repo string) (int64,
 	return installation.ID, nil
 }
 
-// CheckForkExistsForUser checks if a specific user has forked a repository.
-// This is used in GitHub App mode to verify that the assignee has created their own fork
-// before attempting to clone and push changes.
-//
-// Parameters:
-//   - owner: The original repository owner
-//   - repo: The original repository name
-//   - forkOwner: The username to check for a fork (e.g., the assignee's GitHub username)
-//
-// Returns:
-//   - true if forkOwner has a valid fork of owner/repo
-//   - false if no fork exists or if the repository exists but is not a fork of the expected parent
-//   - An error if the API request fails or if the repository exists but is not a fork
-//
-// Example usage:
-//
-//	exists, err := githubService.CheckForkExistsForUser("upstream-org", "myrepo", "developer123")
-//	if err != nil {
-//	    return fmt.Errorf("failed to check fork: %w", err)
-//	}
-//	if !exists {
-//	    return fmt.Errorf("developer must fork the repository first")
-//	}
-func (s *GitHubServiceImpl) CheckForkExistsForUser(owner, repo, forkOwner string) (bool, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", forkOwner, repo)
-
-	req, err := http.NewRequest("GET", url, nil)
+// GetPRForBranch finds the open pull request whose head branch matches
+// the given name. Returns an error if no matching PR is found.
+func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("get installation ID: %w", err)
 	}
 
-	// For discovery, use unauthenticated requests (works for public repos)
-	// GitHub App JWT tokens can't access repository data, only app-level operations
-	// If the repo is private, this will return 404, which is fine - it means fork doesn't exist
-	client := &http.Client{}
-
-	resp, err := client.Do(req)
+	client, err := s.getInstallationGitHubClient(installationID)
 	if err != nil {
-		return false, fmt.Errorf("failed to check fork: %w", err)
+		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "CheckForkExistsForUser"))
+
+	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+		State: "open",
+		Head:  head,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list PRs for branch %s: %w", head, err)
+	}
+
+	// The Head filter may include the owner prefix (owner:branch).
+	// Filter results to match the exact branch name.
+	for _, pr := range prs {
+		if pr.GetHead().GetRef() == head {
+			return &models.PRDetails{
+				Number:     pr.GetNumber(),
+				Title:      pr.GetTitle(),
+				Branch:     pr.GetHead().GetRef(),
+				BaseBranch: pr.GetBase().GetRef(),
+				URL:        pr.GetHTMLURL(),
+			}, nil
 		}
-	}()
+	}
 
-	if resp.StatusCode == 404 {
+	return nil, fmt.Errorf("no open PR found for branch %s", head)
+}
+
+// BranchHasCommits reports whether the branch has commits beyond the
+// base branch. Used by crash recovery to detect completed AI work.
+func (s *GitHubServiceImpl) BranchHasCommits(owner, repo, branch, base string) (bool, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return false, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return false, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	comparison, _, err := client.Repositories.CompareCommits(
+		context.Background(), owner, repo, base, branch, nil)
+	if err != nil {
+		return false, fmt.Errorf("compare %s...%s: %w", base, branch, err)
+	}
+
+	return comparison.GetAheadBy() > 0, nil
+}
+
+// RemoteBranchExists reports whether the named branch exists on the
+// remote repository. Used by the executor to detect when a user has
+// deleted a branch (e.g., after closing a PR) so the pipeline can
+// start fresh instead of reusing stale local state.
+func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return false, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return false, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	_, _, err = client.Git.GetRef(context.Background(), owner, repo, "refs/heads/"+branch)
+	if err != nil {
+		// go-github returns an error for 404 responses.
 		return false, nil
 	}
 
-	if resp.StatusCode == 200 {
-		// Verify it's actually a fork of the expected repo
-		var repoInfo struct {
-			Fork   bool `json:"fork"`
-			Parent struct {
-				FullName string `json:"full_name"`
-			} `json:"parent"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
-			return false, fmt.Errorf("failed to decode repository info: %w", err)
-		}
-
-		expectedParent := fmt.Sprintf("%s/%s", owner, repo)
-		if !repoInfo.Fork || repoInfo.Parent.FullName != expectedParent {
-			return false, fmt.Errorf("%s/%s exists but is not a fork of %s", forkOwner, repo, expectedParent)
-		}
-
-		return true, nil
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	return false, fmt.Errorf("unexpected response (status %d): %s", resp.StatusCode, string(body))
-}
-
-// GetForkCloneURLForUser returns the HTTPS clone URL for a specific user's fork.
-// This verifies the fork exists and returns the URL that can be used to clone it.
-//
-// Parameters:
-//   - owner: The original repository owner
-//   - repo: The original repository name
-//   - forkOwner: The username whose fork URL to retrieve
-//
-// Returns:
-//   - The HTTPS clone URL (e.g., "https://github.com/forkOwner/repo.git")
-//   - An error if the fork doesn't exist or verification fails
-//
-// Example usage:
-//
-//	cloneURL, err := githubService.GetForkCloneURLForUser("upstream-org", "myrepo", "developer123")
-//	if err != nil {
-//	    return fmt.Errorf("fork not available: %w", err)
-//	}
-//	// Use cloneURL to clone the fork
-func (s *GitHubServiceImpl) GetForkCloneURLForUser(owner, repo, forkOwner string) (string, error) {
-	exists, err := s.CheckForkExistsForUser(owner, repo, forkOwner)
-	if err != nil {
-		return "", err
-	}
-
-	if !exists {
-		return "", fmt.Errorf("fork %s/%s does not exist (developer must fork the repository first)", forkOwner, repo)
-	}
-
-	return fmt.Sprintf("https://github.com/%s/%s.git", forkOwner, repo), nil
+	return true, nil
 }

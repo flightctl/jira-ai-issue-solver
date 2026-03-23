@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -14,18 +15,287 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"jira-ai-issue-solver/container"
+	"jira-ai-issue-solver/costtracker"
+	"jira-ai-issue-solver/executor"
+	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
+	"jira-ai-issue-solver/projectresolver"
+	"jira-ai-issue-solver/recovery"
+	"jira-ai-issue-solver/scanner"
 	"jira-ai-issue-solver/services"
+	"jira-ai-issue-solver/taskfile"
+	"jira-ai-issue-solver/tracker/jira"
+	"jira-ai-issue-solver/workspace"
 )
 
-var Logger *zap.Logger
+func main() {
+	configPath := flag.String("config", "", "Path to configuration file (optional, uses environment variables by default)")
+	flag.Parse()
 
-// InitLogger initializes the global logger with appropriate configuration
-func InitLogger(config *models.Config) {
-	// Get log level from config
+	config, err := models.LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+
+	logger := initLogger(config)
+	defer func() { _ = logger.Sync() }()
+
+	// --- Infrastructure ---
+
+	jiraService := services.NewJiraService(config, logger)
+	gitService := services.NewGitHubService(config, logger)
+
+	issueTracker, err := jira.NewAdapter(jiraService, logger)
+	if err != nil {
+		logger.Fatal("Failed to create issue tracker", zap.Error(err))
+	}
+
+	resolver, err := projectresolver.NewConfigResolver(config)
+	if err != nil {
+		logger.Fatal("Failed to create project resolver", zap.Error(err))
+	}
+
+	wsMgr, err := workspace.NewFSManager(config.Workspaces.BaseDir, gitService, logger)
+	if err != nil {
+		logger.Fatal("Failed to create workspace manager", zap.Error(err))
+	}
+
+	// Container runtime detection and manager.
+	detected, err := container.DetectRuntime(
+		container.Runtime(config.Container.Runtime), nil)
+	if err != nil {
+		logger.Fatal("Failed to detect container runtime", zap.Error(err))
+	}
+	logger.Info("Container runtime detected",
+		zap.String("runtime", string(detected.Runtime)),
+		zap.String("path", detected.Path))
+
+	containerRunner := container.NewCLIRunner(detected)
+
+	containerResolver, err := container.NewResolver(
+		container.ResolverDefaults{
+			DisableSELinux: config.Container.DisableSELinux,
+			UserNS:         config.Container.UserNS,
+		},
+		logger)
+	if err != nil {
+		logger.Fatal("Failed to create container resolver", zap.Error(err))
+	}
+
+	containerMgr, err := container.NewRuntimeManager(
+		containerRunner,
+		containerResolver,
+		container.RuntimeManagerConfig{
+			NamePrefix: "ai-bot",
+		},
+		logger)
+	if err != nil {
+		logger.Fatal("Failed to create container manager", zap.Error(err))
+	}
+
+	// --- Cost tracking ---
+
+	if err := os.MkdirAll(config.Workspaces.BaseDir, 0o750); err != nil {
+		logger.Fatal("Failed to create workspace base directory", zap.Error(err))
+	}
+
+	costFile := filepath.Join(config.Workspaces.BaseDir, "daily-cost.json")
+	costs, err := costtracker.NewFileTracker(
+		costFile,
+		config.Guardrails.MaxDailyCostUSD,
+		logger)
+	if err != nil {
+		logger.Fatal("Failed to create cost tracker", zap.Error(err))
+	}
+
+	// --- Executor pipeline ---
+
+	aiAPIKeys := make(map[string]string)
+	if config.Claude.APIKey != "" {
+		aiAPIKeys["claude"] = config.Claude.APIKey
+	}
+	if config.Gemini.APIKey != "" {
+		aiAPIKeys["gemini"] = config.Gemini.APIKey
+	}
+
+	pipeline, err := executor.NewPipeline(
+		executor.Config{
+			BotUsername:        config.GitHub.BotUsername,
+			DefaultProvider:    config.AIProvider,
+			AIAPIKeys:          aiAPIKeys,
+			SessionTimeout:     time.Duration(config.Guardrails.MaxContainerRuntimeMinutes) * time.Minute,
+			IgnoredUsernames:   config.GitHub.IgnoredUsernames,
+			KnownBotUsernames:  config.GitHub.KnownBotUsernames,
+			MaxThreadDepth:     config.GitHub.MaxThreadDepth,
+			DefaultGeminiModel: config.Gemini.Model,
+		},
+		issueTracker,
+		gitService,
+		containerMgr,
+		wsMgr,
+		taskfile.NewMarkdownWriter(),
+		resolver,
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create executor pipeline", zap.Error(err))
+	}
+
+	// --- Job manager ---
+
+	coordinator, err := jobmanager.NewCoordinator(
+		jobmanager.Config{
+			MaxConcurrent:           config.Guardrails.MaxConcurrentJobs,
+			MaxRetries:              config.Guardrails.MaxRetries,
+			CircuitBreakerThreshold: config.Guardrails.CircuitBreakerThreshold,
+			CircuitBreakerWindow:    time.Duration(config.Guardrails.CircuitBreakerWindowMinutes) * time.Minute,
+			CircuitBreakerCooldown:  time.Duration(config.Guardrails.CircuitBreakerCooldownMinutes) * time.Minute,
+			CostRecorder:            costs,
+		},
+		pipeline.Execute,
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create job coordinator", zap.Error(err))
+	}
+
+	// --- Crash recovery ---
+
+	todoCriteria, inReviewCriteria, activeStatuses := buildScanCriteria(config)
+
+	startupRunner, err := recovery.NewStartupRunner(
+		recovery.Config{
+			ContainerPrefix:    "ai-bot",
+			WorkspaceTTL:       time.Duration(config.Workspaces.TTLDays) * 24 * time.Hour,
+			BotUsername:        config.GitHub.BotUsername,
+			InProgressCriteria: buildInProgressCriteria(config),
+			ActiveStatuses:     activeStatuses,
+		},
+		issueTracker,
+		gitService,
+		wsMgr,
+		containerMgr,
+		coordinator,
+		resolver,
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create startup runner", zap.Error(err))
+	}
+
+	// Run crash recovery before starting scanners.
+	if err := startupRunner.Run(context.Background()); err != nil {
+		logger.Warn("Crash recovery returned error", zap.Error(err))
+	}
+
+	// --- Scanners ---
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ticketScanner, err := scanner.NewWorkItemScanner(
+		issueTracker,
+		coordinator,
+		scanner.WorkItemScannerConfig{
+			Criteria:     todoCriteria,
+			PollInterval: time.Duration(config.Jira.IntervalSeconds) * time.Second,
+		},
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create work item scanner", zap.Error(err))
+	}
+
+	feedbackScanner, err := scanner.NewFeedbackScanner(
+		issueTracker,
+		coordinator,
+		gitService,
+		resolver,
+		scanner.FeedbackScannerConfig{
+			Criteria:          inReviewCriteria,
+			PollInterval:      time.Duration(config.Jira.IntervalSeconds) * time.Second,
+			BotUsername:       config.GitHub.BotUsername,
+			IgnoredUsernames:  config.GitHub.IgnoredUsernames,
+			KnownBotUsernames: config.GitHub.KnownBotUsernames,
+			MaxThreadDepth:    config.GitHub.MaxThreadDepth,
+		},
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create feedback scanner", zap.Error(err))
+	}
+
+	if err := ticketScanner.Start(ctx); err != nil {
+		logger.Fatal("Failed to start work item scanner", zap.Error(err))
+	}
+	if err := feedbackScanner.Start(ctx); err != nil {
+		logger.Fatal("Failed to start feedback scanner", zap.Error(err))
+	}
+
+	logger.Info("Scanners started")
+
+	// --- HTTP server ---
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "OK")
+	})
+
+	port := config.Server.Port
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil {
+			port = p
+		}
+	}
+
+	server := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		logger.Info("Starting server", zap.Int("port", port))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Server error", zap.Error(err))
+			stop <- syscall.SIGTERM
+		}
+	}()
+
+	// --- Graceful shutdown ---
+
+	<-stop
+
+	logger.Info("Shutdown signal received")
+
+	// Stop accepting new work.
+	cancel()
+	ticketScanner.Stop()
+	feedbackScanner.Stop()
+
+	// Drain running jobs.
+	coordinator.Shutdown()
+
+	// Shut down HTTP server.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Server shutdown error", zap.Error(err))
+	}
+
+	logger.Info("Shutdown complete")
+}
+
+// initLogger creates a structured logger from the application config.
+func initLogger(config *models.Config) *zap.Logger {
 	level := getLogLevel(config.Logging.Level)
 
-	// Create encoder config based on format
 	var encoderConfig zapcore.EncoderConfig
 	if config.Logging.Format == models.LogFormatJSON {
 		encoderConfig = zap.NewProductionEncoderConfig()
@@ -33,34 +303,22 @@ func InitLogger(config *models.Config) {
 		encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 		encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 	} else {
-		// Console format (default)
 		encoderConfig = zap.NewDevelopmentEncoderConfig()
 		encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 		encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	}
 
-	// Create core based on format
-	var core zapcore.Core
+	var encoder zapcore.Encoder
 	if config.Logging.Format == models.LogFormatJSON {
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(encoderConfig),
-			zapcore.AddSync(os.Stdout),
-			level,
-		)
+		encoder = zapcore.NewJSONEncoder(encoderConfig)
 	} else {
-		// Console format (default)
-		core = zapcore.NewCore(
-			zapcore.NewConsoleEncoder(encoderConfig),
-			zapcore.AddSync(os.Stdout),
-			level,
-		)
+		encoder = zapcore.NewConsoleEncoder(encoderConfig)
 	}
 
-	// Create logger
-	Logger = zap.New(core)
+	core := zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), level)
+	return zap.New(core)
 }
 
-// getLogLevel returns the log level based on config
 func getLogLevel(level models.LogLevel) zapcore.Level {
 	switch level {
 	case models.LogLevelDebug:
@@ -76,148 +334,71 @@ func getLogLevel(level models.LogLevel) zapcore.Level {
 	}
 }
 
-func main() {
-	// Parse command line flags
-	configPath := flag.String("config", "", "Path to configuration file (optional, uses environment variables by default)")
-	flag.Parse()
+// buildScanCriteria constructs the search criteria for both scanners
+// and the set of active statuses for workspace cleanup, derived from
+// the multi-project configuration.
+func buildScanCriteria(config *models.Config) (todo, inReview models.SearchCriteria, activeStatuses map[string]bool) {
+	todoByType := make(map[string][]string)
+	inReviewByType := make(map[string][]string)
+	activeStatuses = make(map[string]bool)
+	var projectKeys []string
 
-	// Load configuration
-	config, err := models.LoadConfig(*configPath)
-	if err != nil {
-		// Use fmt for this error since logger isn't initialized yet
-		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Initialize logger
-	InitLogger(config)
-	defer func() { _ = Logger.Sync() }()
-
-	// Validate required configuration
-	hasComponentToRepo := false
 	for _, project := range config.Jira.Projects {
-		if len(project.ComponentToRepo) > 0 {
-			hasComponentToRepo = true
-			break
-		}
-	}
-	if !hasComponentToRepo {
-		Logger.Fatal("At least one component_to_repo mapping is required in project configuration")
-	}
+		projectKeys = append(projectKeys, project.ProjectKeys...)
 
-	// Create services (only if configuration is provided)
-	var jiraService services.JiraService
-	var githubService services.GitHubService
+		for ticketType, transitions := range project.StatusTransitions {
+			todoByType[ticketType] = appendUnique(todoByType[ticketType], transitions.Todo)
+			inReviewByType[ticketType] = appendUnique(inReviewByType[ticketType], transitions.InReview)
 
-	// Check if Jira configuration is provided
-	if config.Jira.BaseURL != "" && config.Jira.Username != "" && config.Jira.APIToken != "" {
-		jiraService = services.NewJiraService(config, Logger)
-		Logger.Info("Jira service initialized")
-	} else {
-		Logger.Warn("Jira configuration not provided - Jira services will be disabled")
-	}
-
-	// Check if GitHub App configuration is provided
-	hasGitHubApp := config.GitHub.AppID != 0 && config.GitHub.PrivateKeyPath != ""
-	hasCommonFields := config.GitHub.BotUsername != ""
-
-	if hasGitHubApp && hasCommonFields {
-		githubService = services.NewGitHubService(config, Logger)
-		Logger.Info("GitHub service initialized")
-	} else {
-		Logger.Warn("GitHub configuration not provided - GitHub services will be disabled")
-	}
-
-	// Create AI service based on provider selection
-	var aiService services.AIService
-	switch config.AIProvider {
-	case "claude":
-		aiService = services.NewClaudeService(config, Logger)
-		Logger.Info("Using Claude AI service")
-	case "gemini":
-		aiService = services.NewGeminiService(config, Logger)
-		Logger.Info("Using Gemini AI service")
-	default:
-		Logger.Fatal("Unsupported AI provider", zap.String("provider", config.AIProvider))
-	}
-
-	// Only create scanner services if both Jira and GitHub are configured
-	var jiraIssueScannerService services.JiraIssueScannerService
-	var prFeedbackScannerService services.PRFeedbackScannerService
-
-	if jiraService != nil && githubService != nil {
-		ticketProcessor := services.NewTicketProcessor(jiraService, githubService, aiService, config, Logger)
-		jiraIssueScannerService = services.NewJiraIssueScannerService(jiraService, ticketProcessor, config, Logger)
-		prFeedbackScannerService = services.NewPRFeedbackScannerService(jiraService, githubService, aiService, config, Logger)
-
-		// Start the Jira issue scanner service for periodic ticket scanning
-		Logger.Info("Starting Jira issue scanner service...")
-		jiraIssueScannerService.Start()
-
-		// Start the PR feedback scanner service for processing PR review feedback
-		Logger.Info("Starting PR feedback scanner service...")
-		prFeedbackScannerService.Start()
-	} else {
-		Logger.Info("Scanner services disabled - Jira or GitHub configuration not provided")
-	}
-
-	// Create HTTP server (simplified for health checks only)
-	mux := http.NewServeMux()
-
-	// Add a health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, err := fmt.Fprintf(w, "OK")
-		if err != nil {
-			return
-		}
-	})
-
-	// Get port from environment variable (for Cloud Run compatibility) or config
-	port := config.Server.Port
-	if envPort := os.Getenv("PORT"); envPort != "" {
-		if envPortInt, err := strconv.Atoi(envPort); err == nil {
-			port = envPortInt
+			activeStatuses[transitions.Todo] = true
+			activeStatuses[transitions.InProgress] = true
+			activeStatuses[transitions.InReview] = true
 		}
 	}
 
-	// Create server
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	todo = models.SearchCriteria{
+		ProjectKeys:              projectKeys,
+		StatusByType:             todoByType,
+		ContributorIsCurrentUser: true,
 	}
 
-	// Start the server in a goroutine
-	go func() {
-		Logger.Info("Starting server", zap.Int("port", port))
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			Logger.Fatal("Server error", zap.Error(err))
+	inReview = models.SearchCriteria{
+		ProjectKeys:              projectKeys,
+		StatusByType:             inReviewByType,
+		ContributorIsCurrentUser: true,
+	}
+
+	return todo, inReview, activeStatuses
+}
+
+// buildInProgressCriteria constructs the search criteria for finding
+// tickets stuck in "in progress" during crash recovery.
+func buildInProgressCriteria(config *models.Config) models.SearchCriteria {
+	inProgressByType := make(map[string][]string)
+	var projectKeys []string
+
+	for _, project := range config.Jira.Projects {
+		projectKeys = append(projectKeys, project.ProjectKeys...)
+
+		for ticketType, transitions := range project.StatusTransitions {
+			inProgressByType[ticketType] = appendUnique(
+				inProgressByType[ticketType], transitions.InProgress)
 		}
-	}()
-
-	// Wait for interrupt signal
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
-
-	// Gracefully shutdown the scanner services
-	Logger.Info("Shutting down scanner services...")
-	if jiraIssueScannerService != nil {
-		jiraIssueScannerService.Stop()
-	}
-	if prFeedbackScannerService != nil {
-		prFeedbackScannerService.Stop()
 	}
 
-	// Gracefully shutdown the server
-	Logger.Info("Shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		Logger.Fatal("Server shutdown failed", zap.Error(err))
+	return models.SearchCriteria{
+		ProjectKeys:              projectKeys,
+		StatusByType:             inProgressByType,
+		ContributorIsCurrentUser: true,
 	}
+}
 
-	Logger.Info("Server stopped")
+// appendUnique appends value to slice only if not already present.
+func appendUnique(slice []string, value string) []string {
+	for _, v := range slice {
+		if v == value {
+			return slice
+		}
+	}
+	return append(slice, value)
 }

@@ -93,25 +93,59 @@ func (f *LogFormat) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// ComponentToRepoMap is a custom type for parsing component_to_repo from environment variables and YAML
-type ComponentToRepoMap map[string]string
+// Profile bundles container, imports, instructions, and workflow
+// settings for a group of components. Multiple components can reference
+// the same profile to avoid config duplication. Operator-defined
+// profiles take precedence over repo-level config on conflicts.
+type Profile struct {
+	Container         ContainerSettings `yaml:"container" mapstructure:"container"`
+	Imports           []ImportConfig    `yaml:"imports" mapstructure:"imports"`
+	Instructions      string            `yaml:"instructions" mapstructure:"instructions"`
+	NewTicketWorkflow string            `yaml:"new_ticket_workflow" mapstructure:"new_ticket_workflow"`
+	FeedbackWorkflow  string            `yaml:"feedback_workflow" mapstructure:"feedback_workflow"`
+}
 
-// UnmarshalText implements encoding.TextUnmarshaler for parsing from environment variables
-func (c *ComponentToRepoMap) UnmarshalText(text []byte) error {
-	if len(text) == 0 {
-		*c = make(map[string]string)
-		return nil
+// ComponentConfig maps a Jira component to its repository and profile.
+type ComponentConfig struct {
+	Repo    string `yaml:"repo" mapstructure:"repo"`
+	Profile string `yaml:"profile" mapstructure:"profile"`
+}
+
+// ComponentMap preserves the case of component names when parsing YAML.
+// Viper lowercases map keys by default; this custom unmarshaler bypasses
+// that to keep the original casing (component names are matched
+// case-insensitively at lookup time).
+type ComponentMap map[string]ComponentConfig
+
+// UnmarshalYAML implements custom unmarshaling to preserve component name case.
+func (c *ComponentMap) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("expected mapping node for ComponentMap, got %v", value.Kind)
 	}
 
-	str := string(text)
-	pairs := strings.Split(str, ",")
-	result := make(map[string]string)
-
-	for _, pair := range pairs {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			result[parts[0]] = parts[1]
+	result := make(map[string]ComponentConfig)
+	for i := 0; i < len(value.Content); i += 2 {
+		if i+1 >= len(value.Content) {
+			break
 		}
+		keyNode := value.Content[i]
+		valueNode := value.Content[i+1]
+
+		if keyNode.Kind != yaml.ScalarNode {
+			continue
+		}
+
+		var key string
+		if err := keyNode.Decode(&key); err != nil {
+			continue
+		}
+
+		var val ComponentConfig
+		if err := valueNode.Decode(&val); err != nil {
+			return fmt.Errorf("decode component %q: %w", key, err)
+		}
+
+		result[key] = val
 	}
 
 	*c = result
@@ -140,40 +174,6 @@ func (p *ProjectKeys) UnmarshalText(text []byte) error {
 	}
 
 	*p = result
-	return nil
-}
-
-// UnmarshalYAML implements custom unmarshaling for YAML to preserve case sensitivity
-func (c *ComponentToRepoMap) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind != yaml.MappingNode {
-		return fmt.Errorf("expected mapping node for ComponentToRepoMap, got %v", value.Kind)
-	}
-
-	result := make(map[string]string)
-	for i := 0; i < len(value.Content); i += 2 {
-		if i+1 >= len(value.Content) {
-			break
-		}
-		keyNode := value.Content[i]
-		valueNode := value.Content[i+1]
-
-		if keyNode.Kind != yaml.ScalarNode {
-			continue
-		}
-
-		var key, val string
-		if err := keyNode.Decode(&key); err != nil {
-			continue
-		}
-		if err := valueNode.Decode(&val); err != nil {
-			continue
-		}
-
-		// Preserve the exact case of the key as it appears in YAML
-		result[key] = val
-	}
-
-	*c = result
 	return nil
 }
 
@@ -265,13 +265,50 @@ func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) er
 	return fmt.Errorf("unsupported data type for TicketTypeStatusTransitions: %T", data)
 }
 
-// ProjectConfig represents configuration for a specific project or group of projects
+// ProjectConfig represents configuration for a specific project or group of projects.
 type ProjectConfig struct {
 	ProjectKeys             ProjectKeys                 `yaml:"project_keys" mapstructure:"project_keys"`
 	StatusTransitions       TicketTypeStatusTransitions `yaml:"status_transitions" mapstructure:"status_transitions"`
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
-	ComponentToRepo         ComponentToRepoMap          `yaml:"component_to_repo" mapstructure:"component_to_repo"`
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
+
+	// Profiles maps profile names to their settings. Each profile
+	// bundles container settings, imports, instructions, and
+	// workflow for a group of components. Multiple components can
+	// reference the same profile to avoid duplication.
+	Profiles map[string]Profile `yaml:"profiles" mapstructure:"profiles"`
+
+	// Components maps Jira component names to their repository URL
+	// and profile. Component names are matched case-insensitively
+	// at lookup time.
+	Components ComponentMap `yaml:"components" mapstructure:"components"`
+}
+
+// ImportConfig declares an auxiliary repository to clone into the workspace.
+type ImportConfig struct {
+	// Repo is the clone URL (e.g., "https://github.com/org/repo").
+	Repo string `yaml:"repo" mapstructure:"repo"`
+
+	// Path is the destination directory relative to the workspace
+	// root (e.g., ".ai-workflows"). Required.
+	Path string `yaml:"path" mapstructure:"path"`
+
+	// Ref is the branch, tag, or commit to check out. Empty means
+	// the remote's default branch.
+	Ref string `yaml:"ref" mapstructure:"ref"`
+
+	// Install is a shell command to run inside the container after
+	// cloning. The command runs from the workspace root (/workspace)
+	// and has access to the container's toolchain. Empty means no
+	// install step. Example: ".ai-workflows/install.sh".
+	Install string `yaml:"install" mapstructure:"install"`
+
+	// Excludes lists directories (relative to workspace root) that
+	// this import's tools may create as output. These directories
+	// are excluded from commits and preserved across workspace syncs.
+	// Example: [".artifacts/"] for an AI workflow import that writes
+	// intermediate artifacts there.
+	Excludes []string `yaml:"excludes" mapstructure:"excludes"`
 }
 
 type JiraConfig struct {
@@ -313,40 +350,147 @@ type Config struct {
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
+		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`           // List of usernames whose PR comments are completely ignored
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
 	AIProvider string `yaml:"ai_provider" mapstructure:"ai_provider" default:"claude"` // "claude" or "gemini"
 
-	// Claude CLI configuration
+	// Claude configuration — only the API key is needed at the bot level;
+	// CLI path, timeout, and tool settings are configured per-repo via
+	// .ai-bot/config.yaml or container environment.
 	Claude struct {
-		CLIPath                    string `yaml:"cli_path" mapstructure:"cli_path" default:"claude-cli"`
-		Timeout                    int    `yaml:"timeout" mapstructure:"timeout" default:"300"`
-		DangerouslySkipPermissions bool   `yaml:"dangerously_skip_permissions" mapstructure:"dangerously_skip_permissions" default:"false"`
-		AllowedTools               string `yaml:"allowed_tools" mapstructure:"allowed_tools" default:"Bash Edit"`
-		DisallowedTools            string `yaml:"disallowed_tools" mapstructure:"disallowed_tools" default:"Python"`
-		APIKey                     string `yaml:"api_key" mapstructure:"api_key"` // Anthropic API key for headless/container environments
+		APIKey string `yaml:"api_key" mapstructure:"api_key"`
 	} `yaml:"claude" mapstructure:"claude"`
 
-	// Gemini CLI configuration
+	// Gemini configuration.
 	Gemini struct {
-		CLIPath  string `yaml:"cli_path" mapstructure:"cli_path" default:"gemini"`
-		Timeout  int    `yaml:"timeout" mapstructure:"timeout" default:"300"`
-		Model    string `yaml:"model" mapstructure:"model" default:"gemini-2.5-pro"`
-		AllFiles bool   `yaml:"all_files" mapstructure:"all_files" default:"false"`
-		Sandbox  bool   `yaml:"sandbox" mapstructure:"sandbox" default:"false"`
-		APIKey   string `yaml:"api_key" mapstructure:"api_key"`
+		APIKey string `yaml:"api_key" mapstructure:"api_key"`
+		Model  string `yaml:"model" mapstructure:"model"`
 	} `yaml:"gemini" mapstructure:"gemini"`
 
-	// AI configuration
-	AI struct {
-		GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-		MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`                 // Maximum number of times to retry AI code generation if no changes are detected. Total retry time is constrained by max_retries * retry_delay_seconds <= 1800 seconds (30 minutes).
-		RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"` // Delay in seconds between AI retries
-	} `yaml:"ai" mapstructure:"ai"`
+	// Workspaces configuration for ticket-scoped workspace lifecycle
+	Workspaces WorkspacesConfig `yaml:"workspaces" mapstructure:"workspaces"`
 
-	// Temporary directory for cloning repositories
-	TempDir string `yaml:"temp_dir" mapstructure:"temp_dir" default:"/tmp/jira-ai-issue-solver"`
+	// Container configuration for dev container management
+	Container ContainerCfg `yaml:"container" mapstructure:"container"`
+
+	// Guardrails configuration for safety and resource limits
+	Guardrails GuardrailsConfig `yaml:"guardrails" mapstructure:"guardrails"`
+}
+
+// ContainerCfg holds bot-level container configuration: host-level
+// runtime policy applied to all spawned containers.
+type ContainerCfg struct {
+	// Runtime specifies the container runtime preference. Valid values
+	// are "auto" (detect, preferring podman), "podman", or "docker".
+	Runtime string `yaml:"runtime" mapstructure:"runtime" default:"auto"`
+
+	// DisableSELinux disables SELinux confinement for all spawned
+	// containers (--security-opt=label=disable). This is host-level
+	// policy and applies regardless of profile container config.
+	DisableSELinux bool `yaml:"disable_selinux" mapstructure:"disable_selinux"`
+
+	// UserNS sets the user namespace mode for all spawned containers
+	// (e.g., "keep-id", "keep-id:uid=1000,gid=1000"). This is
+	// host-level policy. Empty means the container runtime's default.
+	UserNS string `yaml:"userns" mapstructure:"userns"`
+}
+
+// ContainerSettings holds per-environment container settings. This
+// type is shared between the global fallback (container.fallback) and
+// per-project overrides (jira.projects[].container). Both sit below
+// repo-level config (.ai-bot/container.json) in the resolution chain.
+type ContainerSettings struct {
+	// Image is the container image reference (e.g., "my-org/dev:latest").
+	Image string `yaml:"image" mapstructure:"image"`
+
+	// ResourceLimits constrain the container's resource usage.
+	ResourceLimits ContainerResourceLimits `yaml:"resource_limits" mapstructure:"resource_limits"`
+
+	// Env holds static environment variables injected into the
+	// container. These are merged additively through the resolution
+	// chain: higher-priority sources override keys from lower-priority
+	// sources, but keys not present in the higher source are preserved.
+	// These are separate from runtime env vars (API keys, etc.) passed
+	// by the executor at start time.
+	Env map[string]string `yaml:"env" mapstructure:"env"`
+
+	// Tmpfs specifies tmpfs mounts. Each entry uses the standard
+	// runtime format (e.g., "/tmp:size=4g").
+	Tmpfs []string `yaml:"tmpfs" mapstructure:"tmpfs"`
+
+	// ExtraMounts specifies additional volume mounts beyond the
+	// workspace mount. Useful for persistent caches (Go module
+	// cache, build cache) that survive across container restarts.
+	ExtraMounts []ExtraMountCfg `yaml:"extra_mounts" mapstructure:"extra_mounts"`
+}
+
+// ExtraMountCfg represents an additional volume mount for containers.
+type ExtraMountCfg struct {
+	Source  string `yaml:"source" mapstructure:"source"`
+	Target  string `yaml:"target" mapstructure:"target"`
+	Options string `yaml:"options" mapstructure:"options"`
+}
+
+// ContainerResourceLimits holds default resource limits for containers.
+type ContainerResourceLimits struct {
+	// Memory limit in container runtime format (e.g., "8g", "512m").
+	Memory string `yaml:"memory" mapstructure:"memory"`
+
+	// CPUs limit in container runtime format (e.g., "4", "0.5").
+	CPUs string `yaml:"cpus" mapstructure:"cpus"`
+}
+
+// WorkspacesConfig holds configuration for ticket-scoped workspace management.
+type WorkspacesConfig struct {
+	// BaseDir is the root directory under which per-ticket workspaces are created.
+	// Each workspace is a subdirectory named after the ticket key (e.g., PROJ-123/).
+	BaseDir string `yaml:"base_dir" mapstructure:"base_dir"`
+
+	// TTLDays is the maximum age (in days) before a workspace is eligible
+	// for cleanup, regardless of ticket status. Must be positive.
+	//
+	// If a workspace is cleaned up while its ticket still has an active PR,
+	// the feedback pipeline will self-heal by re-cloning the repository.
+	// However, AI-generated artifacts from prior sessions will be lost.
+	// Set this high enough to cover typical PR review turnaround times.
+	TTLDays int `yaml:"ttl_days" mapstructure:"ttl_days" default:"7"`
+}
+
+// GuardrailsConfig holds safety and resource limit settings.
+type GuardrailsConfig struct {
+	// MaxConcurrentJobs is the maximum number of jobs that can run
+	// simultaneously. Must be positive.
+	MaxConcurrentJobs int `yaml:"max_concurrent_jobs" mapstructure:"max_concurrent_jobs" default:"10"`
+
+	// MaxRetries is the maximum number of times a ticket can fail
+	// before further submissions are rejected. Zero means no retries
+	// (one attempt total). Negative disables the retry limit.
+	MaxRetries int `yaml:"max_retries" mapstructure:"max_retries" default:"3"`
+
+	// MaxDailyCostUSD is the maximum daily AI session cost in USD.
+	// Job creation is paused when this budget is exceeded. Zero or
+	// negative disables cost-based limiting.
+	MaxDailyCostUSD float64 `yaml:"max_daily_cost_usd" mapstructure:"max_daily_cost_usd"`
+
+	// MaxContainerRuntimeMinutes is the maximum duration (in minutes)
+	// for an AI session inside a container. Zero means no timeout.
+	MaxContainerRuntimeMinutes int `yaml:"max_container_runtime_minutes" mapstructure:"max_container_runtime_minutes" default:"60"`
+
+	// CircuitBreakerThreshold is the number of consecutive failures
+	// within CircuitBreakerWindow that trips the breaker. Zero
+	// disables the circuit breaker.
+	CircuitBreakerThreshold int `yaml:"circuit_breaker_threshold" mapstructure:"circuit_breaker_threshold" default:"5"`
+
+	// CircuitBreakerWindowMinutes is the time window (in minutes) for
+	// counting consecutive failures. Failures outside this window are
+	// pruned.
+	CircuitBreakerWindowMinutes int `yaml:"circuit_breaker_window_minutes" mapstructure:"circuit_breaker_window_minutes" default:"10"`
+
+	// CircuitBreakerCooldownMinutes is how long (in minutes) the circuit
+	// breaker stays open before automatically resetting.
+	CircuitBreakerCooldownMinutes int `yaml:"circuit_breaker_cooldown_minutes" mapstructure:"circuit_breaker_cooldown_minutes" default:"5"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -446,29 +590,15 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.ssh_key_path")
 	bindEnv("github.max_thread_depth")
 	bindEnv("github.known_bot_usernames")
+	bindEnv("github.ignored_usernames")
 
 	// AI configuration
 	bindEnv("ai_provider")
 
-	// Claude configuration
-	bindEnv("claude.cli_path")
-	bindEnv("claude.timeout")
-	bindEnv("claude.dangerously_skip_permissions")
-	bindEnv("claude.allowed_tools")
-	bindEnv("claude.disallowed_tools")
-
-	// Gemini configuration
-	bindEnv("gemini.cli_path")
-	bindEnv("gemini.timeout")
-	bindEnv("gemini.model")
-	bindEnv("gemini.all_files")
-	bindEnv("gemini.sandbox")
+	// AI API key configuration
+	bindEnv("claude.api_key")
 	bindEnv("gemini.api_key")
-
-	// AI configuration
-	bindEnv("ai.generate_documentation")
-	bindEnv("ai.max_retries")
-	bindEnv("ai.retry_delay_seconds")
+	bindEnv("gemini.model")
 
 	// Server configuration
 	bindEnv("server.port")
@@ -478,8 +608,24 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("logging.level")
 	bindEnv("logging.format")
 
-	// Other configuration
-	bindEnv("temp_dir")
+	// Workspaces configuration
+	bindEnv("workspaces.base_dir")
+	bindEnv("workspaces.ttl_days")
+
+	// Container configuration
+	bindEnv("container.runtime")
+	bindEnv("container.disable_selinux")
+	bindEnv("container.userns")
+
+	// Guardrails configuration
+	bindEnv("guardrails.max_concurrent_jobs")
+	bindEnv("guardrails.max_retries")
+	bindEnv("guardrails.max_daily_cost_usd")
+	bindEnv("guardrails.max_container_runtime_minutes")
+	bindEnv("guardrails.circuit_breaker_threshold")
+	bindEnv("guardrails.circuit_breaker_window_minutes")
+	bindEnv("guardrails.circuit_breaker_cooldown_minutes")
+
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
 	// Load main config file if provided
@@ -511,7 +657,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Unmarshal into struct
 	var config Config
 	if err := v.Unmarshal(&config, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
-		func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+		func(f reflect.Type, t reflect.Type, data any) (any, error) {
 			if t == reflect.TypeOf(TicketTypeStatusTransitions{}) {
 				var result TicketTypeStatusTransitions
 				if err := result.UnmarshalMapstructure(data); err != nil {
@@ -530,20 +676,29 @@ func LoadConfig(configPath string) (*Config, error) {
 		// Create a default project from environment variables
 		defaultProject := ProjectConfig{}
 
-		// Handle component_to_repo from environment
+		// Handle component_to_repo from environment. Creates a
+		// "default" profile with no container/imports/instructions
+		// and maps each component to that profile. Operators who need
+		// profiles must use a YAML config file.
 		componentToRepoStr := v.GetString("component_to_repo")
 		if componentToRepoStr != "" {
 			pairs := strings.Split(componentToRepoStr, ",")
-			result := make(map[string]string)
+			components := make(ComponentMap)
 
 			for _, pair := range pairs {
 				parts := strings.SplitN(pair, "=", 2)
 				if len(parts) == 2 {
-					result[parts[0]] = parts[1]
+					components[parts[0]] = ComponentConfig{
+						Repo:    parts[1],
+						Profile: "default",
+					}
 				}
 			}
 
-			defaultProject.ComponentToRepo = ComponentToRepoMap(result)
+			defaultProject.Components = components
+			defaultProject.Profiles = map[string]Profile{
+				"default": {},
+			}
 		}
 
 		// Handle status transitions from environment
@@ -572,7 +727,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		defaultProject.DisableErrorComments = v.GetBool("jira.disable_error_comments")
 
 		// Only add the default project if it has some configuration
-		if len(defaultProject.ComponentToRepo) > 0 || len(defaultProject.StatusTransitions) > 0 || len(defaultProject.ProjectKeys) > 0 {
+		if len(defaultProject.Components) > 0 || len(defaultProject.StatusTransitions) > 0 || len(defaultProject.ProjectKeys) > 0 {
 			config.Jira.Projects = []ProjectConfig{defaultProject}
 		}
 	}
@@ -670,27 +825,19 @@ func setDefaults(v *viper.Viper) {
 	// AI Provider defaults
 	v.SetDefault("ai_provider", "claude")
 
-	// Claude defaults
-	v.SetDefault("claude.cli_path", "claude")
-	v.SetDefault("claude.timeout", 300)
-	v.SetDefault("claude.dangerously_skip_permissions", false)
-	v.SetDefault("claude.allowed_tools", "Bash Edit")
-	v.SetDefault("claude.disallowed_tools", "Python")
+	// Workspace defaults
+	v.SetDefault("workspaces.ttl_days", 7)
 
-	// Gemini defaults
-	v.SetDefault("gemini.cli_path", "gemini")
-	v.SetDefault("gemini.timeout", 300)
-	v.SetDefault("gemini.model", "gemini-2.5-pro")
-	v.SetDefault("gemini.all_files", false)
-	v.SetDefault("gemini.sandbox", false)
+	// Container defaults
+	v.SetDefault("container.runtime", "auto")
 
-	// AI defaults
-	v.SetDefault("ai.generate_documentation", true)
-	v.SetDefault("ai.max_retries", 5)
-	v.SetDefault("ai.retry_delay_seconds", 2)
-
-	// Temp directory defaults
-	v.SetDefault("temp_dir", "/tmp/jira-ai-issue-solver")
+	// Guardrails defaults
+	v.SetDefault("guardrails.max_concurrent_jobs", 10)
+	v.SetDefault("guardrails.max_retries", 3)
+	v.SetDefault("guardrails.max_container_runtime_minutes", 60)
+	v.SetDefault("guardrails.circuit_breaker_threshold", 5)
+	v.SetDefault("guardrails.circuit_breaker_window_minutes", 10)
+	v.SetDefault("guardrails.circuit_breaker_cooldown_minutes", 5)
 }
 
 // validate validates the entire configuration
@@ -726,34 +873,8 @@ func (c *Config) validate() error {
 
 	// Validate each project configuration
 	for i, project := range c.Jira.Projects {
-		projectPrefix := fmt.Sprintf("jira.projects[%d]", i)
-
-		// Validate project keys - at least one project key must be configured per project
-		if len(project.ProjectKeys) == 0 {
-			return fmt.Errorf("%s.project_keys: at least one project key must be configured", projectPrefix)
-		}
-
-		// Validate status transitions - every configured ticket type must have all required status transitions
-		for ticketType, transitions := range project.StatusTransitions {
-			if transitions.Todo == "" {
-				return fmt.Errorf("%s.status_transitions.%s.todo cannot be empty", projectPrefix, ticketType)
-			}
-			if transitions.InProgress == "" {
-				return fmt.Errorf("%s.status_transitions.%s.in_progress cannot be empty", projectPrefix, ticketType)
-			}
-			if transitions.InReview == "" {
-				return fmt.Errorf("%s.status_transitions.%s.in_review cannot be empty", projectPrefix, ticketType)
-			}
-		}
-
-		// Ensure at least one ticket type is configured per project
-		if len(project.StatusTransitions) == 0 {
-			return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", projectPrefix)
-		}
-
-		// Validate component to repo mapping (required for functionality)
-		if len(project.ComponentToRepo) == 0 {
-			return fmt.Errorf("%s.component_to_repo: at least one component_to_repo mapping is required", projectPrefix)
+		if err := project.validate(i); err != nil {
+			return err
 		}
 	}
 
@@ -799,23 +920,113 @@ func (c *Config) validate() error {
 		}
 	}
 
-	// Validate AI configuration
-	if c.AI.MaxRetries < 1 {
-		return errors.New("ai.max_retries must be at least 1")
+	// Validate workspaces configuration
+	if c.Workspaces.BaseDir == "" {
+		return errors.New("workspaces.base_dir is required")
 	}
-	if c.AI.RetryDelaySeconds < 0 {
-		return errors.New("ai.retry_delay_seconds must be non-negative")
-	}
-	if c.AI.RetryDelaySeconds > 300 {
-		return errors.New("ai.retry_delay_seconds must not exceed 300 seconds (5 minutes)")
+	if c.Workspaces.TTLDays <= 0 {
+		return errors.New("workspaces.ttl_days must be positive")
 	}
 
-	// Validate total retry time is reasonable (max 30 minutes total)
-	maxTotalRetryTime := c.AI.MaxRetries * c.AI.RetryDelaySeconds
-	if maxTotalRetryTime > 1800 {
-		return fmt.Errorf("ai config would cause excessive retry time: max_retries(%d) * retry_delay_seconds(%d) = %d seconds (max allowed: 1800 seconds / 30 minutes)",
-			c.AI.MaxRetries, c.AI.RetryDelaySeconds, maxTotalRetryTime)
+	if err := c.Container.validate(); err != nil {
+		return err
 	}
 
+	if err := c.Guardrails.validate(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validate checks a single project configuration for required fields.
+func (p *ProjectConfig) validate(index int) error {
+	prefix := fmt.Sprintf("jira.projects[%d]", index)
+
+	if len(p.ProjectKeys) == 0 {
+		return fmt.Errorf("%s.project_keys: at least one project key must be configured", prefix)
+	}
+
+	for ticketType, transitions := range p.StatusTransitions {
+		if transitions.Todo == "" {
+			return fmt.Errorf("%s.status_transitions.%s.todo cannot be empty", prefix, ticketType)
+		}
+		if transitions.InProgress == "" {
+			return fmt.Errorf("%s.status_transitions.%s.in_progress cannot be empty", prefix, ticketType)
+		}
+		if transitions.InReview == "" {
+			return fmt.Errorf("%s.status_transitions.%s.in_review cannot be empty", prefix, ticketType)
+		}
+	}
+
+	if len(p.StatusTransitions) == 0 {
+		return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", prefix)
+	}
+
+	if len(p.Components) == 0 {
+		return fmt.Errorf("%s.components: at least one component mapping is required", prefix)
+	}
+
+	if len(p.Profiles) == 0 {
+		return fmt.Errorf("%s.profiles: at least one profile must be configured", prefix)
+	}
+
+	// Verify every component references a valid profile.
+	for name, comp := range p.Components {
+		if comp.Repo == "" {
+			return fmt.Errorf("%s.components.%s.repo is required", prefix, name)
+		}
+		if comp.Profile == "" {
+			return fmt.Errorf("%s.components.%s.profile is required", prefix, name)
+		}
+		if _, ok := p.Profiles[comp.Profile]; !ok {
+			// Case-insensitive fallback.
+			found := false
+			lower := strings.ToLower(comp.Profile)
+			for key := range p.Profiles {
+				if strings.ToLower(key) == lower {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("%s.components.%s.profile: profile %q does not exist", prefix, name, comp.Profile)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validate checks guardrails configuration values.
+func (g *GuardrailsConfig) validate() error {
+	if g.MaxConcurrentJobs <= 0 {
+		return errors.New("guardrails.max_concurrent_jobs must be positive")
+	}
+	if g.MaxContainerRuntimeMinutes < 0 {
+		return errors.New("guardrails.max_container_runtime_minutes must be non-negative")
+	}
+	if g.CircuitBreakerThreshold < 0 {
+		return errors.New("guardrails.circuit_breaker_threshold must be non-negative")
+	}
+	if g.CircuitBreakerWindowMinutes < 0 {
+		return errors.New("guardrails.circuit_breaker_window_minutes must be non-negative")
+	}
+	if g.CircuitBreakerCooldownMinutes < 0 {
+		return errors.New("guardrails.circuit_breaker_cooldown_minutes must be non-negative")
+	}
+	return nil
+}
+
+// validate checks container configuration values.
+func (cc *ContainerCfg) validate() error {
+	// Empty runtime is treated as "auto" (the default).
+	// Valid values must match container.RuntimeAuto/RuntimePodman/RuntimeDocker constants.
+	if cc.Runtime != "" {
+		validRuntimes := map[string]bool{"auto": true, "podman": true, "docker": true}
+		if !validRuntimes[cc.Runtime] {
+			return fmt.Errorf("container.runtime must be \"auto\", \"podman\", or \"docker\", got %q", cc.Runtime)
+		}
+	}
 	return nil
 }

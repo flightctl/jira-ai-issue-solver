@@ -2,8 +2,10 @@ package services
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +40,7 @@ func newTestJiraConfig() *models.Config {
 	return &models.Config{
 		Jira: models.JiraConfig{
 			BaseURL:  "https://jira.example.com",
+			Username: "user@example.com",
 			APIToken: "test-token",
 		},
 	}
@@ -154,115 +157,6 @@ func TestGetTicket(t *testing.T) {
 					}
 					// Add more assertions for other fields as needed
 				}
-			}
-		})
-	}
-}
-
-// TestUpdateTicketLabels tests the UpdateTicketLabels method
-func TestUpdateTicketLabels(t *testing.T) {
-	// Test cases
-	testCases := []struct {
-		name          string
-		key           string
-		addLabels     []string
-		removeLabels  []string
-		mockResponses []*http.Response
-		mockErrors    []error
-		expectedError bool
-	}{
-		{
-			name:         "successful update",
-			key:          "TEST-123",
-			addLabels:    []string{"ai-in-progress"},
-			removeLabels: []string{"good-for-ai"},
-			mockResponses: []*http.Response{
-				{
-					StatusCode: http.StatusOK,
-					Body: io.NopCloser(bytes.NewReader([]byte(`{
-						"id": "12345",
-						"key": "TEST-123",
-						"self": "https://jira.example.com/rest/api/2/issue/12345",
-						"fields": {
-							"labels": ["good-for-ai"]
-						}
-					}`))),
-				},
-				{
-					StatusCode: http.StatusNoContent,
-					Body:       io.NopCloser(bytes.NewReader([]byte(``))),
-				},
-			},
-			mockErrors:    []error{nil, nil},
-			expectedError: false,
-		},
-		{
-			name:         "error getting ticket",
-			key:          "TEST-456",
-			addLabels:    []string{"ai-in-progress"},
-			removeLabels: []string{"good-for-ai"},
-			mockResponses: []*http.Response{
-				{
-					StatusCode: http.StatusNotFound,
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Issue does not exist or you do not have permission to see it."],"errors":{}}`))),
-				},
-			},
-			mockErrors:    []error{nil},
-			expectedError: true,
-		},
-		{
-			name:         "error updating ticket",
-			key:          "TEST-789",
-			addLabels:    []string{"ai-in-progress"},
-			removeLabels: []string{"good-for-ai"},
-			mockResponses: []*http.Response{
-				{
-					StatusCode: http.StatusOK,
-					Body: io.NopCloser(bytes.NewReader([]byte(`{
-						"id": "12345",
-						"key": "TEST-789",
-						"self": "https://jira.example.com/rest/api/2/issue/12345",
-						"fields": {
-							"labels": ["good-for-ai"]
-						}
-					}`))),
-				},
-				{
-					StatusCode: http.StatusBadRequest,
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Error updating labels"],"errors":{}}`))),
-				},
-			},
-			mockErrors:    []error{nil, nil},
-			expectedError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create a mock HTTP client with a counter for multiple requests
-			callCount := 0
-			mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-				if callCount >= len(tc.mockResponses) {
-					t.Fatalf("Unexpected request: %s %s", req.Method, req.URL.String())
-				}
-				response := tc.mockResponses[callCount]
-				err := tc.mockErrors[callCount]
-				callCount++
-				return response, err
-			})
-
-			// Create a JiraService with the mock client
-			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
-
-			// Call the method being tested
-			err := service.UpdateTicketLabels(tc.key, tc.addLabels, tc.removeLabels)
-
-			// Check the results
-			if tc.expectedError && err == nil {
-				t.Errorf("Expected an error but got nil")
-			}
-			if !tc.expectedError && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
 			}
 		})
 	}
@@ -491,71 +385,6 @@ func TestAddComment_RateLimiting(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
-				}
-			}
-		})
-	}
-}
-
-// TestGetTicketWithComments tests fetching a ticket with comments
-func TestGetTicketWithComments(t *testing.T) {
-	testCases := []struct {
-		name          string
-		key           string
-		mockResponse  *http.Response
-		expectedError bool
-	}{
-		{
-			name: "successful request with comments",
-			key:  "TEST-123",
-			mockResponse: &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"id": "12345",
-					"key": "TEST-123",
-					"fields": {
-						"summary": "Test ticket",
-						"comment": {
-							"comments": [
-								{"body": "First comment"},
-								{"body": "Second comment"}
-							]
-						}
-					}
-				}`))),
-			},
-			expectedError: false,
-		},
-		{
-			name: "error response",
-			key:  "TEST-456",
-			mockResponse: &http.Response{
-				StatusCode: http.StatusNotFound,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Issue not found"],"errors":{}}`))),
-			},
-			expectedError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
-				return tc.mockResponse, nil
-			})
-
-			service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
-
-			ticket, err := service.GetTicketWithComments(tc.key)
-
-			if tc.expectedError && err == nil {
-				t.Errorf("Expected an error but got nil")
-			}
-			if !tc.expectedError {
-				if err != nil {
-					t.Errorf("Expected no error but got: %v", err)
-				}
-				if ticket == nil {
-					t.Errorf("Expected a ticket but got nil")
 				}
 			}
 		})
@@ -830,7 +659,7 @@ func TestUpdateTicketField(t *testing.T) {
 		name          string
 		key           string
 		fieldID       string
-		value         interface{}
+		value         any
 		mockResponse  *http.Response
 		expectedError bool
 	}{
@@ -955,7 +784,7 @@ func TestUpdateTicketFieldByName(t *testing.T) {
 		name          string
 		key           string
 		fieldName     string
-		value         interface{}
+		value         any
 		mockResponses []*http.Response
 		expectedError bool
 	}{
@@ -1035,7 +864,7 @@ func TestSearchTickets(t *testing.T) {
 			mockResponse: &http.Response{
 				StatusCode: http.StatusOK,
 				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"total": 2,
+					"isLast": true,
 					"issues": [
 						{
 							"id": "12345",
@@ -1058,7 +887,7 @@ func TestSearchTickets(t *testing.T) {
 			mockResponse: &http.Response{
 				StatusCode: http.StatusCreated,
 				Body: io.NopCloser(bytes.NewReader([]byte(`{
-					"total": 1,
+					"isLast": true,
 					"issues": [
 						{
 							"id": "12345",
@@ -1075,7 +904,7 @@ func TestSearchTickets(t *testing.T) {
 			jql:  "project = EMPTY",
 			mockResponse: &http.Response{
 				StatusCode: http.StatusNoContent,
-				Body:       io.NopCloser(bytes.NewReader([]byte(`{"total": 0, "issues": []}`))),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"isLast": true, "issues": []}`))),
 			},
 			expectedError: false,
 		},
@@ -1112,6 +941,63 @@ func TestSearchTickets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSearchTickets_RequestedFields verifies that SearchTickets uses the
+// correct endpoint, requests all fields needed by mapFieldsToWorkItem,
+// and does not send the deprecated startAt parameter.
+func TestSearchTickets_RequestedFields(t *testing.T) {
+	requiredFields := []string{
+		"summary", "description", "status", "issuetype",
+		"project", "components", "labels", "assignee", "security",
+	}
+
+	var capturedURL string
+	var requestBody map[string]any
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		capturedURL = req.URL.Path
+		if err := json.NewDecoder(req.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"isLast":true,"issues":[]}`))),
+		}, nil
+	})
+
+	service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+	_, err := service.SearchTickets("project = TEST")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasSuffix(capturedURL, "/rest/api/3/search/jql") {
+		t.Errorf("URL = %q, want suffix /rest/api/3/search/jql", capturedURL)
+	}
+
+	if _, hasStartAt := requestBody["startAt"]; hasStartAt {
+		t.Error("request body should not contain deprecated 'startAt' parameter")
+	}
+
+	fieldsRaw, ok := requestBody["fields"]
+	if !ok {
+		t.Fatal("request body missing 'fields' key")
+	}
+	fields, ok := fieldsRaw.([]any)
+	if !ok {
+		t.Fatalf("fields is %T, want []any", fieldsRaw)
+	}
+
+	fieldSet := make(map[string]bool)
+	for _, f := range fields {
+		fieldSet[f.(string)] = true
+	}
+
+	for _, required := range requiredFields {
+		if !fieldSet[required] {
+			t.Errorf("required field %q not included in search request", required)
+		}
 	}
 }
 
@@ -1353,6 +1239,62 @@ func TestGetTicketSecurityLevel(t *testing.T) {
 						}
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestDoOperation_UsesBasicAuth(t *testing.T) {
+	var capturedAuth string
+	client := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		capturedAuth = req.Header.Get("Authorization")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{}`)),
+		}, nil
+	})
+
+	config := newTestJiraConfig()
+	svc := NewJiraServiceForTest(config, client, zap.NewNop(), instantSleep)
+
+	_, err := svc.doOperation("GET", "https://jira.example.com/rest/api/2/issue/TEST-1", nil, http.StatusOK)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Jira Cloud requires Basic Auth: base64(username:api_token)
+	want := "Basic " + "dXNlckBleGFtcGxlLmNvbTp0ZXN0LXRva2Vu" // base64("user@example.com:test-token")
+	if capturedAuth != want {
+		t.Errorf("Authorization header = %q, want %q", capturedAuth, want)
+	}
+}
+
+func TestIsTextContentType(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{"empty string treated as text", "", true},
+		{"application/json", "application/json", true},
+		{"application/json with charset", "application/json; charset=utf-8", true},
+		{"text/plain", "text/plain", true},
+		{"text/html", "text/html", true},
+		{"application/xml", "application/xml", true},
+		{"application/xhtml+xml", "application/xhtml+xml", true},
+		{"image/png", "image/png", false},
+		{"image/jpeg", "image/jpeg", false},
+		{"application/pdf", "application/pdf", false},
+		{"application/octet-stream", "application/octet-stream", false},
+		{"uppercase JSON", "Application/JSON", true},
+		{"mixed case image", "Image/PNG", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isTextContentType(tt.contentType)
+			if got != tt.want {
+				t.Errorf("isTextContentType(%q) = %v, want %v", tt.contentType, got, tt.want)
 			}
 		})
 	}

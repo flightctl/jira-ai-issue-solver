@@ -1,74 +1,48 @@
-# Multi-stage build for jira-ai-issue-solver
 # Build stage
 FROM golang:1.24-alpine AS builder
 
-# Set working directory
 WORKDIR /app
-
-# Copy go mod files
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
-
-# Copy source code
 COPY . .
 
-# Build the application with optimizations
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s" \
-    -a -installsuffix cgo \
-    -o jira-ai-issue-solver \
-    .
+    -o jira-ai-issue-solver .
 
 # Runtime stage
-FROM node:22-slim
+FROM alpine:3.21
 
-# Install necessary packages for the runtime
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    bash \
+# podman-remote-static: client-only binary that talks to the host's
+# podman via CONTAINER_HOST socket. Avoids the full podman package
+# which requires newuidmap and tries to initialize local rootless
+# storage even in remote mode.
+ARG PODMAN_VERSION=5.5.1
+ARG TARGETARCH
+RUN wget -qO- "https://github.com/containers/podman/releases/download/v${PODMAN_VERSION}/podman-remote-static-linux_${TARGETARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 "bin/podman-remote-static-linux_${TARGETARCH}" \
+    && mv "/usr/local/bin/podman-remote-static-linux_${TARGETARCH}" /usr/local/bin/podman \
+    && chmod +x /usr/local/bin/podman
+
+RUN apk add --no-cache \
     ca-certificates \
-    curl \
     git \
-    openssh-client \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
+    openssh-client
 
-# Install AI CLI tools
-# Using latest stable release (0.23.0) for reliability
-# Preview versions (0.24.x) have known PolicyEngine validation issues
-RUN npm install -g @google/gemini-cli@0.23.0 @anthropic-ai/claude-code
+RUN addgroup -g 1001 appgroup && \
+    adduser -u 1001 -G appgroup -s /bin/sh -D appuser
 
-# Create non-root user for security
-RUN groupadd -g 1001 appgroup && \
-    useradd -m -u 1001 -g appgroup -s /bin/bash appuser
-
-# Set working directory
 WORKDIR /app
-
-# Copy the binary from builder stage
 COPY --from=builder /app/jira-ai-issue-solver .
+RUN mkdir -p /app/temp /var/lib/ai-bot/workspaces && \
+    chown -R appuser:appgroup /app /var/lib/ai-bot
 
-# Note: No configuration files are copied to avoid secrets in image
-# Configuration should be provided via environment variables at runtime
-
-# Create necessary directories
-RUN mkdir -p /app/temp && \
-    chown -R appuser:appgroup /app
-
-# Switch to non-root user
 USER appuser
-
-# Expose the port the app runs on
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD ["wget", "-qO/dev/null", "http://localhost:8080/health"]
 
-# Set the entrypoint
 ENTRYPOINT ["./jira-ai-issue-solver"]
-
-# Default command (uses environment variables by default)
-CMD ["--config", "/app/config.yaml"] 

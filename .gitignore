@@ -22,6 +22,7 @@ go.work
 bin/
 dist/
 build/
+.review/
 
 # Temporary files
 *.tmp

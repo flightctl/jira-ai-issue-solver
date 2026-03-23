@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +30,7 @@ func getValidGitHubConfig() struct {
 	SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 	MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 	KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+	IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 } {
 	return struct {
 		AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
@@ -40,6 +42,7 @@ func getValidGitHubConfig() struct {
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 	}{
 		AppID:          123456,
 		PrivateKeyPath: "/tmp/test_key.pem",
@@ -86,7 +89,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -100,19 +108,18 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tmpKeyPath,
 					BotUsername:    "test-bot",
 				},
-				AI: struct {
-					GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-					MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
-					RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
-				}{
-					GenerateDocumentation: true,
-					MaxRetries:            5,
-					RetryDelaySeconds:     2,
+				Workspaces: WorkspacesConfig{
+					BaseDir: "/tmp/test-workspaces",
+					TTLDays: 7,
+				},
+				Guardrails: GuardrailsConfig{
+					MaxConcurrentJobs: 10,
 				},
 			},
 			wantErr: false,
@@ -135,7 +142,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -161,7 +173,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -187,7 +204,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -207,7 +229,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 						{
 							ProjectKeys:       ProjectKeys{"PROJ1"},
 							StatusTransitions: TicketTypeStatusTransitions{},
-							ComponentToRepo:   ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -233,7 +260,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -264,7 +296,12 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 									InReview:   "Testing",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -309,13 +346,20 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
   target_branch: "develop"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
 `, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -384,12 +428,18 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
+workspaces:
+  base_dir: /tmp/test-workspaces
 `, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -441,15 +491,28 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        FlightCtl: https://github.com/your-org/flightctl.git
-        flightctl: https://github.com/your-org/flightctl-lowercase.git
-        Backend: https://github.com/your-org/backend.git
-        backend: https://github.com/your-org/backend-lowercase.git
+      components:
+        FlightCtl:
+          repo: https://github.com/your-org/flightctl.git
+          profile: default
+        flightctl:
+          repo: https://github.com/your-org/flightctl-lowercase.git
+          profile: default
+        Backend:
+          repo: https://github.com/your-org/backend.git
+          profile: default
+        backend:
+          repo: https://github.com/your-org/backend-lowercase.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
 `, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -478,11 +541,11 @@ github:
 	}
 
 	// Verify component mappings (keys converted to lowercase by Viper)
-	if projectConfig.ComponentToRepo["flightctl"] != "https://github.com/your-org/flightctl.git" {
-		t.Errorf("Expected flightctl to map to flightctl.git, got '%s'", projectConfig.ComponentToRepo["flightctl"])
+	if projectConfig.Components["flightctl"].Repo != "https://github.com/your-org/flightctl.git" {
+		t.Errorf("Expected flightctl to map to flightctl.git, got '%s'", projectConfig.Components["flightctl"].Repo)
 	}
-	if projectConfig.ComponentToRepo["backend"] != "https://github.com/your-org/backend.git" {
-		t.Errorf("Expected backend to map to backend.git, got '%s'", projectConfig.ComponentToRepo["backend"])
+	if projectConfig.Components["backend"].Repo != "https://github.com/your-org/backend.git" {
+		t.Errorf("Expected backend to map to backend.git, got '%s'", projectConfig.Components["backend"].Repo)
 	}
 
 	// The test was originally designed to test case sensitivity, but Viper converts keys to lowercase
@@ -518,13 +581,20 @@ jira:
           todo: "Backlog"
           in_progress: "Development"
           in_review: "Testing"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
   target_branch: "develop"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
 `, tmpKeyPath)
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -664,11 +734,6 @@ func TestLoadConfig_WithAIConfiguration(t *testing.T) {
 	// Create a temporary config file
 	configContent := fmt.Sprintf(`
 ai_provider: claude
-ai:
-  generate_documentation: false
-claude:
-  cli_path: claude
-  timeout: 300
 jira:
   base_url: https://test.atlassian.net
   username: test-user
@@ -683,12 +748,19 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        "test-component": "https://github.com/test/repo"
+      components:
+        "test-component":
+          repo: "https://github.com/test/repo"
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
 `, tmpKeyPath)
 
 	tempFile, err := os.CreateTemp("", "config_test_*.yaml")
@@ -708,13 +780,9 @@ github:
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Verify AI configuration
+	// Verify AI provider
 	if config.AIProvider != "claude" {
 		t.Errorf("Expected AI provider to be 'claude', got '%s'", config.AIProvider)
-	}
-
-	if config.AI.GenerateDocumentation {
-		t.Error("Expected generate_documentation to be false, got true")
 	}
 }
 
@@ -770,7 +838,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -784,19 +857,18 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot[bot]",
 				},
-				AI: struct {
-					GenerateDocumentation bool `yaml:"generate_documentation" mapstructure:"generate_documentation" default:"true"`
-					MaxRetries            int  `yaml:"max_retries" mapstructure:"max_retries" default:"5"`
-					RetryDelaySeconds     int  `yaml:"retry_delay_seconds" mapstructure:"retry_delay_seconds" default:"2"`
-				}{
-					GenerateDocumentation: true,
-					MaxRetries:            5,
-					RetryDelaySeconds:     2,
+				Workspaces: WorkspacesConfig{
+					BaseDir: "/tmp/test-workspaces",
+					TTLDays: 7,
+				},
+				Guardrails: GuardrailsConfig{
+					MaxConcurrentJobs: 10,
 				},
 			},
 			wantErr: false,
@@ -826,7 +898,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -840,6 +917,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot",
@@ -876,7 +954,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -890,6 +973,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: "/non/existent/path/key.pem",
@@ -925,7 +1009,12 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 									InReview:   "In Review",
 								},
 							},
-							ComponentToRepo: ComponentToRepoMap{"test": "https://github.com/test/repo.git"},
+							Components: ComponentMap{
+								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+							},
+							Profiles: map[string]Profile{
+								"default": {},
+							},
 						},
 					},
 				},
@@ -939,6 +1028,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
+					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
@@ -958,7 +1048,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 				return
 			}
 			if tt.wantErr && tt.errMsg != "" {
-				if err == nil || !contains(err.Error(), tt.errMsg) {
+				if err == nil || !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("Config.validate() error = %v, want error containing %q", err, tt.errMsg)
 				}
 			}
@@ -1004,12 +1094,19 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        test: https://github.com/test/repo.git
+      components:
+        test:
+          repo: https://github.com/test/repo.git
+          profile: default
+      profiles:
+        default: {}
 github:
   app_id: 123456
   private_key_path: "` + tempKeyFile.Name() + `"
   bot_username: "test-bot[bot]"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
 `
 	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	if err != nil {
@@ -1057,48 +1154,36 @@ github:
 	}
 }
 
-func TestConfig_validateAIConfiguration(t *testing.T) {
+func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string
-		maxRetries    int
-		retryDelay    int
+		baseDir       string
+		ttlDays       int
 		expectedError string
 	}{
 		{
-			name:          "valid config with default values",
-			maxRetries:    5,
-			retryDelay:    2,
+			name:          "valid workspace config",
+			baseDir:       "/var/lib/ai-bot/workspaces",
+			ttlDays:       7,
 			expectedError: "",
 		},
 		{
-			name:          "valid config with minimum values",
-			maxRetries:    1,
-			retryDelay:    0,
-			expectedError: "",
+			name:          "missing base_dir",
+			baseDir:       "",
+			ttlDays:       7,
+			expectedError: "workspaces.base_dir is required",
 		},
 		{
-			name:          "valid config with high values",
-			maxRetries:    10,
-			retryDelay:    10,
-			expectedError: "",
+			name:          "zero ttl_days",
+			baseDir:       "/tmp/workspaces",
+			ttlDays:       0,
+			expectedError: "workspaces.ttl_days must be positive",
 		},
 		{
-			name:          "invalid max_retries zero",
-			maxRetries:    0,
-			retryDelay:    2,
-			expectedError: "ai.max_retries must be at least 1",
-		},
-		{
-			name:          "invalid max_retries negative",
-			maxRetries:    -1,
-			retryDelay:    2,
-			expectedError: "ai.max_retries must be at least 1",
-		},
-		{
-			name:          "invalid retry_delay_seconds negative",
-			maxRetries:    5,
-			retryDelay:    -1,
-			expectedError: "ai.retry_delay_seconds must be non-negative",
+			name:          "negative ttl_days",
+			baseDir:       "/tmp/workspaces",
+			ttlDays:       -1,
+			expectedError: "workspaces.ttl_days must be positive",
 		},
 	}
 
@@ -1121,51 +1206,131 @@ func TestConfig_validateAIConfiguration(t *testing.T) {
 				{
 					ProjectKeys: ProjectKeys{"TEST"},
 					StatusTransitions: TicketTypeStatusTransitions{
-						"default": StatusTransitions{
+						"Bug": StatusTransitions{
 							Todo:       "To Do",
 							InProgress: "In Progress",
 							InReview:   "In Review",
 						},
 					},
-					ComponentToRepo: ComponentToRepoMap{
-						"component1": "https://github.com/test/repo1.git",
+					Components: ComponentMap{
+						"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+					},
+					Profiles: map[string]Profile{
+						"default": {},
 					},
 				},
 			}
 			config.GitHub.AppID = 123456
 			config.GitHub.PrivateKeyPath = keyPath
 			config.GitHub.BotUsername = "test-bot"
-			config.AI.MaxRetries = tt.maxRetries
-			config.AI.RetryDelaySeconds = tt.retryDelay
+			config.Workspaces.BaseDir = tt.baseDir
+			config.Workspaces.TTLDays = tt.ttlDays
+			config.Guardrails.MaxConcurrentJobs = 10
 
 			err := config.validate()
 
 			if tt.expectedError == "" {
 				if err != nil {
-					t.Errorf("Expected no error, got: %v", err)
+					t.Errorf("expected no error, got: %v", err)
 				}
 			} else {
 				if err == nil {
-					t.Errorf("Expected error containing '%s', got nil", tt.expectedError)
-				} else if !contains(err.Error(), tt.expectedError) {
-					t.Errorf("Expected error containing '%s', got: %v", tt.expectedError, err)
+					t.Errorf("expected error containing %q, got nil", tt.expectedError)
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
+					t.Errorf("expected error containing %q, got: %v", tt.expectedError, err)
 				}
 			}
 		})
 	}
 }
 
-// contains checks if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
-}
-
-func stringContains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func TestConfig_validateContainerConfiguration(t *testing.T) {
+	tests := []struct {
+		name          string
+		runtime       string
+		expectedError string
+	}{
+		{
+			name:          "valid runtime auto",
+			runtime:       "auto",
+			expectedError: "",
+		},
+		{
+			name:          "valid runtime podman",
+			runtime:       "podman",
+			expectedError: "",
+		},
+		{
+			name:          "valid runtime docker",
+			runtime:       "docker",
+			expectedError: "",
+		},
+		{
+			name:          "empty runtime is valid (treated as auto)",
+			runtime:       "",
+			expectedError: "",
+		},
+		{
+			name:          "invalid runtime",
+			runtime:       "containerd",
+			expectedError: `container.runtime must be "auto", "podman", or "docker"`,
+		},
 	}
-	return false
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyPath := createTempKeyFile(t)
+			defer func() { _ = os.Remove(keyPath) }()
+
+			config := &Config{}
+			config.AIProvider = "claude"
+			config.Logging.Level = "info"
+			config.Logging.Format = "console"
+			config.Jira.BaseURL = "https://test.atlassian.net"
+			config.Jira.Username = "test@example.com"
+			config.Jira.APIToken = "test-token"
+			config.Jira.AssigneeToGitHubUsername = map[string]string{
+				"test@example.com": "test-user",
+			}
+			config.Jira.Projects = []ProjectConfig{
+				{
+					ProjectKeys: ProjectKeys{"TEST"},
+					StatusTransitions: TicketTypeStatusTransitions{
+						"Bug": StatusTransitions{
+							Todo:       "To Do",
+							InProgress: "In Progress",
+							InReview:   "In Review",
+						},
+					},
+					Components: ComponentMap{
+						"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+					},
+					Profiles: map[string]Profile{
+						"default": {},
+					},
+				},
+			}
+			config.GitHub.AppID = 123456
+			config.GitHub.PrivateKeyPath = keyPath
+			config.GitHub.BotUsername = "test-bot"
+			config.Workspaces.BaseDir = "/var/lib/workspaces"
+			config.Workspaces.TTLDays = 7
+			config.Container.Runtime = tt.runtime
+			config.Guardrails.MaxConcurrentJobs = 10
+
+			err := config.validate()
+
+			if tt.expectedError == "" {
+				if err != nil {
+					t.Errorf("expected no error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.expectedError)
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
+					t.Errorf("expected error containing %q, got: %v", tt.expectedError, err)
+				}
+			}
+		})
+	}
 }

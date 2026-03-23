@@ -10,8 +10,8 @@ logging:
 # Jira Configuration
 jira:
   base_url: https://your-domain.atlassian.net
-  username: your-username
-  api_token: your-jira-api-token
+  username: your-email@example.com  # Jira Cloud email (used for Basic Auth)
+  api_token: your-jira-api-token    # Jira Cloud API token (https://id.atlassian.com/manage-profile/security/api-tokens)
   interval_seconds: 300
 
   # Map Jira assignee email/username to GitHub username
@@ -34,32 +34,118 @@ jira:
       disable_error_comments: false
       # Status transitions can be configured per ticket type
       # All ticket types must be explicitly configured
+      # IMPORTANT: Status names are case-sensitive and must match Jira exactly
+      # (e.g., "In Progress" not "in progress")
       status_transitions:
         # Specific transitions for Bug tickets
         Bug:
           todo: "Open"
           in_progress: "In Progress"
           in_review: "Code Review"
-        
+
         # Specific transitions for Story tickets
         Story:
           todo: "Backlog"
           in_progress: "Development"
           in_review: "Testing"
-        
+
         # Specific transitions for Task tickets
         Task:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "Review"
-      
-      # Component to Repository Mapping for this project
-      # Note: Component names are case-sensitive and will be matched exactly as they appear in Jira
-      component_to_repo:
-        frontend: https://github.com/your-org/frontend.git
-        backend: https://github.com/your-org/backend.git
-        api: https://github.com/your-org/api.git
-    
+
+      # Profiles bundle container, imports, instructions, and workflow
+      # settings. Multiple components can reference the same profile
+      # to avoid duplication. Operator-defined profile settings take
+      # precedence over repo-level config (.ai-bot/container.json)
+      # on conflicts.
+      profiles:
+        # Profile for Go projects
+        go-dev:
+          container:
+            image: "your-org/dev-environment:latest"
+            resource_limits:
+              memory: "8g"
+              cpus: "4"
+            env:
+              CONTAINER_HOST: "unix:///run/podman/podman.sock"
+            tmpfs:
+              - "/tmp:size=4g"
+            extra_mounts:
+              - source: "/run/user/1000/podman/podman.sock"
+                target: "/run/podman/podman.sock"
+              - source: "/home/user/.cache/go-build"
+                target: "/home/builder/.cache/go-build"
+
+          # Auxiliary repositories to clone into the workspace before AI
+          # execution. Useful for providing shared AI workflows, skills,
+          # or guidelines without requiring each repo to declare imports.
+          imports:
+            - repo: https://github.com/your-org/ai-workflows
+              path: .ai-workflows                # destination relative to workspace root
+              ref: main                          # branch/tag/commit (optional)
+              install: .ai-workflows/install.sh  # shell command to run inside container after cloning (optional)
+              excludes:                          # output directories to exclude from commits (optional)
+                - .artifacts/
+
+          # Universal instructions for the AI agent. Appended to ALL
+          # task types (new tickets AND feedback). Use for validation
+          # commands and coding standards. Repo-level
+          # .ai-bot/instructions.md takes precedence when the profile
+          # instructions field is empty.
+          instructions: |
+            After making changes, validate with:
+            - `make build`
+            - `make test`
+            - `make lint`
+
+          # Workflow for new tickets only. Appended ONLY to new-ticket
+          # task files — feedback tasks do not receive this. Use for
+          # multi-phase workflows (diagnose → fix → test → review → document).
+          # Repo-level .ai-bot/new-ticket-workflow.md takes precedence
+          # when the profile field is empty.
+          # new_ticket_workflow: |
+          #   Read and execute .ai-workflows/bugfix/skills/unattended.md
+          #   with these settings:
+          #     branch: stay on the current branch (already created by the orchestration system)
+          #     lint_command: golangci-lint run --fix
+          #   All artifact paths (.artifacts/bugfix/{issue}/) should use
+          #   .ai-bot/ instead. Write the PR description to .ai-bot/pr.md.
+
+          # Workflow for PR feedback only. Appended ONLY to feedback
+          # task files — new-ticket tasks do not receive this. Use for
+          # structured feedback handling with session context recovery
+          # and artifact updates across review rounds.
+          # Repo-level .ai-bot/feedback-workflow.md takes precedence
+          # when the profile field is empty.
+          # feedback_workflow: |
+          #   Read and execute .ai-workflows/bugfix/skills/feedback.md
+          #   All artifact paths (.artifacts/bugfix/{issue}/) should use
+          #   .ai-bot/ instead.
+          #   Review comments are already provided in the task above
+          #   (use source 1: task file).
+
+        # Profile for a different language/toolchain
+        # rust-dev:
+        #   container:
+        #     image: "rust:1.78"
+        #   instructions: |
+        #     Run `cargo test` before committing.
+
+      # Components map Jira component names to their repository URL
+      # and profile. Component names are matched case-insensitively.
+      components:
+        frontend:
+          repo: https://github.com/your-org/frontend.git
+          profile: go-dev
+        backend:
+          repo: https://github.com/your-org/backend.git
+          profile: go-dev
+        api:
+          repo: https://github.com/your-org/api.git
+          profile: go-dev
+
     # Example project 2 - using PR URLs in comments instead of git field
     - project_keys:
         - "PROJ3"
@@ -70,11 +156,14 @@ jira:
           todo: "NEW"
           in_progress: "ASSIGNED"
           in_review: "POST"
-      component_to_repo:
-        mobile: https://github.com/your-org/mobile.git
-        # Example of case-sensitive mapping:
-        # FlightCtl: https://github.com/your-org/flightctl.git
-        # flightctl: https://github.com/your-org/flightctl-lowercase.git
+      profiles:
+        default:
+          container:
+            image: "your-org/mobile-dev:latest"
+      components:
+        mobile:
+          repo: https://github.com/your-org/mobile.git
+          profile: default
 
 # GitHub Configuration - GitHub App Authentication (Required)
 github:
@@ -99,7 +188,7 @@ github:
   # Bot loop prevention settings
   max_thread_depth: 5  # Maximum depth of bot reply threads (prevents infinite loops)
 
-  # List of known bot usernames to ignore (prevents bot-to-bot conversations)
+  # List of known bot usernames (prevents bot-to-bot conversations)
   # Add any additional code review bots your team uses
   # NOTE: Do NOT include [bot] suffixes - they are automatically handled
   # (e.g., use "github-actions" not "github-actions[bot]")
@@ -114,33 +203,98 @@ github:
     - "codefactor-io"
     - "codeclimate"
 
+  # List of usernames whose PR comments are completely ignored
+  # Use for CI/build bots whose comments are not code review feedback
+  # (e.g., packit build commands). Differs from known_bot_usernames:
+  # ignored users' comments are completely skipped, while known bots'
+  # comments are processed initially but loop prevention stops
+  # bot-to-bot conversations.
+  ignored_usernames:
+    - "packit-as-a-service"
+
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
 
-# AI Configuration
-ai:
-  generate_documentation: true  # Set to false to disable documentation generation (CLAUDE.md or GEMINI.md)
-
-# Claude CLI Configuration (used when ai_provider: claude)
+# Claude API key — passed to the container as an environment variable.
+# Get from https://console.anthropic.com/settings/keys
+# CLI-level settings (timeout, tool filtering, etc.) are configured per-repo
+# via .ai-bot/config.yaml or container environment, not here.
 claude:
-  cli_path: claude
-  timeout: 300
-  dangerously_skip_permissions: true
-  allowed_tools: "Bash Edit"
-  disallowed_tools: "Python"
-  # API key for headless/container environments (get from https://console.anthropic.com/settings/keys)
-  # If not set, Claude CLI will use interactive login (only works in non-container environments)
   api_key: "your-anthropic-api-key-here"  # sk-ant-api03-...
 
-# Gemini CLI Configuration (used when ai_provider: gemini)
+# Gemini configuration — passed to the container as environment variables.
 gemini:
-  cli_path: gemini
-  timeout: 300
-  model: "gemini-2.5-pro"
-  all_files: false
-  sandbox: false
-  # Note: YOLO mode (enabled by default) automatically approves all tool usage
   api_key: "your-gemini-api-key-here"
+  model: "gemini-2.5-pro"  # Optional: Gemini model to use. Repo-level .ai-bot/config.yaml can override.
 
-# Temporary Directory
-temp_dir: /tmp/jira-ai-issue-solver 
+# Workspace Configuration
+# Workspaces are ticket-scoped directories that persist across jobs.
+# Each ticket gets its own workspace directory, enabling AI-generated
+# artifacts (caches, build outputs) to survive between sessions.
+workspaces:
+  # Root directory for per-ticket workspaces. Each ticket gets a
+  # subdirectory named after its key (e.g., /var/lib/ai-bot/workspaces/PROJ-123/).
+  base_dir: /var/lib/ai-bot/workspaces
+
+  # Maximum age (in days) before a workspace is eligible for cleanup,
+  # regardless of ticket status. Set high enough to cover typical PR
+  # review turnaround times. If a workspace is cleaned up while its
+  # ticket still has an active PR, the feedback pipeline will re-clone
+  # automatically (but AI-generated artifacts from prior sessions will
+  # be lost).
+  ttl_days: 7
+
+# Container Configuration
+# AI sessions run inside ephemeral dev containers with full toolchain access.
+# The bot manages container lifecycle; the AI manages thinking.
+#
+# Container settings are resolved from multiple sources in priority order:
+#   1. Profile container settings (operator-defined, highest priority)
+#   2. .ai-bot/container.json in the target repo
+#   3. .devcontainer/devcontainer.json in the target repo
+#
+# Every component must have a container image configured via its profile
+# or repo-level config. There is no global fallback image.
+container:
+  # Container runtime preference: "auto" (detect, preferring podman),
+  # "podman", or "docker".
+  runtime: auto
+
+  # Host-level policy: applied to ALL spawned containers regardless
+  # of the resolution chain above.
+
+  # Disable SELinux confinement for spawned AI containers. Required
+  # when the host uses SELinux and containers need access to shared
+  # volumes or sockets without relabeling.
+  # disable_selinux: true
+
+  # User namespace mode for spawned containers. Common values:
+  #   "keep-id"                      - map host UID into container
+  #   "keep-id:uid=1000,gid=1000"    - map to specific UID/GID
+  # userns: "keep-id:uid=1000,gid=1000"
+
+# Guardrails Configuration
+# Safety and resource limits to prevent runaway costs and cascading failures.
+guardrails:
+  # Maximum number of jobs that can run simultaneously.
+  max_concurrent_jobs: 10
+
+  # Maximum number of times a ticket can fail before further submissions
+  # are rejected. Zero means no retries (one attempt total).
+  max_retries: 3
+
+  # Maximum daily AI session cost in USD. Job creation is paused when
+  # this budget is exceeded. The budget resets at midnight UTC.
+  # Zero or negative disables cost-based limiting.
+  max_daily_cost_usd: 50.0
+
+  # Maximum duration (in minutes) for an AI session inside a container.
+  # Zero means no timeout.
+  max_container_runtime_minutes: 60
+
+  # Circuit breaker: trips after N consecutive failures within the
+  # time window, pausing all job creation until the cooldown expires.
+  # Set threshold to zero to disable the circuit breaker.
+  circuit_breaker_threshold: 5
+  circuit_breaker_window_minutes: 10
+  circuit_breaker_cooldown_minutes: 5

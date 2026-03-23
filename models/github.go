@@ -2,42 +2,7 @@ package models
 
 import "time"
 
-// GitHubWebhook represents the webhook payload from GitHub
-type GitHubWebhook struct {
-	Action      string            `json:"action"`
-	PullRequest GitHubPullRequest `json:"pull_request"`
-	Repository  GitHubRepository  `json:"repository"`
-	Sender      GitHubUser        `json:"sender"`
-	Review      GitHubReview      `json:"review,omitempty"`
-}
-
-// GitHubPullRequest represents a GitHub pull request
-type GitHubPullRequest struct {
-	ID        int64      `json:"id"`
-	Number    int        `json:"number"`
-	State     string     `json:"state"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	HTMLURL   string     `json:"html_url"`
-	User      GitHubUser `json:"user"`
-	Head      GitHubRef  `json:"head"`
-	Base      GitHubRef  `json:"base"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-}
-
-// GitHubRepository represents a GitHub repository
-type GitHubRepository struct {
-	ID       int64      `json:"id"`
-	Name     string     `json:"name"`
-	FullName string     `json:"full_name"`
-	Owner    GitHubUser `json:"owner"`
-	HTMLURL  string     `json:"html_url"`
-	CloneURL string     `json:"clone_url"`
-	SSHURL   string     `json:"ssh_url"`
-}
-
-// GitHubUser represents a GitHub user
+// GitHubUser represents a GitHub user.
 type GitHubUser struct {
 	ID        int64  `json:"id"`
 	Login     string `json:"login"`
@@ -45,25 +10,8 @@ type GitHubUser struct {
 	HTMLURL   string `json:"html_url"`
 }
 
-// GitHubRef represents a Git reference in a GitHub pull request
-type GitHubRef struct {
-	Label string           `json:"label"`
-	Ref   string           `json:"ref"`
-	SHA   string           `json:"sha"`
-	Repo  GitHubRepository `json:"repo"`
-}
-
-// GitHubReview represents a GitHub pull request review
-type GitHubReview struct {
-	ID          int64      `json:"id"`
-	User        GitHubUser `json:"user"`
-	Body        string     `json:"body"`
-	State       string     `json:"state"`
-	HTMLURL     string     `json:"html_url"`
-	SubmittedAt time.Time  `json:"submitted_at"`
-}
-
-// GitHubCreatePRRequest represents the request to create a pull request
+// GitHubCreatePRRequest is the raw JSON payload sent to the GitHub REST API
+// when creating a pull request. Used internally by GitHubServiceImpl.
 type GitHubCreatePRRequest struct {
 	Title               string   `json:"title"`
 	Body                string   `json:"body"`
@@ -73,20 +21,7 @@ type GitHubCreatePRRequest struct {
 	MaintainerCanModify *bool    `json:"maintainer_can_modify,omitempty"`
 }
 
-// GitHubCreatePRResponse represents the response from creating a pull request
-type GitHubCreatePRResponse struct {
-	ID        int64     `json:"id"`
-	Number    int       `json:"number"`
-	State     string    `json:"state"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
-	HTMLURL   string    `json:"html_url"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// GitHubPRComment represents a PR comment
-// (moved from pr_review_processor.go)
+// GitHubPRComment represents a raw PR comment from the GitHub REST API.
 type GitHubPRComment struct {
 	ID          int64      `json:"id"`
 	InReplyToID int64      `json:"in_reply_to_id,omitempty"` // ID of comment this is replying to (for threaded replies)
@@ -100,33 +35,6 @@ type GitHubPRComment struct {
 	HTMLURL     string     `json:"html_url"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
-}
-
-// GitHubPRDetails represents detailed PR information including reviews
-type GitHubPRDetails struct {
-	Number    int               `json:"number"`
-	State     string            `json:"state"`
-	Title     string            `json:"title"`
-	Body      string            `json:"body"`
-	HTMLURL   string            `json:"html_url"`
-	Head      GitHubRef         `json:"head"`
-	Base      GitHubRef         `json:"base"`
-	Reviews   []GitHubReview    `json:"reviews,omitempty"`
-	Comments  []GitHubPRComment `json:"-"` // We'll populate this separately
-	Files     []GitHubPRFile    `json:"files,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
-}
-
-// GitHubPRFile represents a file changed in a PR
-type GitHubPRFile struct {
-	SHA       string `json:"sha"`
-	Filename  string `json:"filename"`
-	Status    string `json:"status"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Changes   int    `json:"changes"`
-	Patch     string `json:"patch"`
 }
 
 // GitHub Git Data API structures for creating verified commits
@@ -196,18 +104,6 @@ type GitHubCreateReferenceRequest struct {
 type GitHubReferenceRequest struct {
 	SHA   string `json:"sha"`
 	Force bool   `json:"force,omitempty"`
-}
-
-// GitHubReferenceResponse represents the response from updating a reference
-type GitHubReferenceResponse struct {
-	Ref    string `json:"ref"`
-	NodeID string `json:"node_id"`
-	URL    string `json:"url"`
-	Object struct {
-		Type string `json:"type"`
-		SHA  string `json:"sha"`
-		URL  string `json:"url"`
-	} `json:"object"`
 }
 
 // GitHubGetReferenceResponse represents the response from getting a reference

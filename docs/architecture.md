@@ -1,358 +1,435 @@
-# Architecture & Workflow
+# Architecture
 
-This document explains how the Jira AI Issue Solver works with GitHub App
-authentication and the fork-based workflow.
+This document describes how the Jira AI Issue Solver works: its components,
+data flow, container strategy, workspace lifecycle, security model, and
+operational concerns.
 
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Fork-Based Workflow](#fork-based-workflow)
-3. [GitHub App Authentication](#github-app-authentication)
-4. [Component Architecture](#component-architecture)
-5. [Security Considerations](#security-considerations)
-6. [Troubleshooting](#troubleshooting)
+For configuring target repositories, see [repo-configuration.md](repo-configuration.md).
+For GitHub App setup, see [admin-setup.md](admin-setup.md).
 
 ## Overview
 
-The Jira AI Issue Solver automatically processes Jira tickets and creates GitHub
-pull requests with AI-generated code changes. It uses a **fork-based workflow**
-where the bot pushes code to the developer's fork (not the bot's own fork),
-enabling true collaboration between the bot and the human developer.
+The Jira AI Issue Solver watches for Jira tickets, runs AI agents inside
+ephemeral containers against cloned repositories, and creates GitHub pull
+requests with the results. It handles the full lifecycle: ticket discovery,
+workspace management, container orchestration, PR creation, and review
+feedback processing.
 
-**Key Features:**
-
-- GitHub App authentication with fine-grained permissions
-- Fork-based workflow enabling bot + developer collaboration
-- Automatic installation ID discovery per repository
-- Verified commits with GitHub App signature
-- Configurable per-project workflows
-
-## Fork-Based Workflow
-
-### How It Works
-
-```text
-Main Repository (org/repo)
-    ↑
-    | Pull Request from alice:jira/PROJ-123
-    |
-Developer's Fork (alice/repo)
-    ← Bot pushes code changes (via GitHub App)
-    ← Developer pushes additional changes (owns the fork)
-
-GitHub App Installation:
-  - Installed on main repo (for creating PRs, reading comments)
-  - Installed on alice's fork (for pushing code)
+```mermaid
+flowchart LR
+    Jira["Jira<br/>(tickets)"] -->|poll| Scanners
+    Scanners -->|events| Coordinator
+    Coordinator -->|dispatch| Pipeline
+    Pipeline -->|clone/branch| Workspace
+    Pipeline -->|resolve/start| Container
+    Pipeline -->|commit/PR| GitHub["GitHub<br/>(PRs)"]
+    Container -->|AI runs inside| Workspace
 ```
 
-### Step-by-Step Process
+**Design principles:**
 
-1. **Ticket Assignment**: Jira ticket `PROJ-123` is assigned to Alice
-   (<alice@company.com>)
-2. **Username Mapping**: Bot maps `alice@company.com` → GitHub username `alice`
-3. **Fork Discovery**: Bot discovers Alice's fork at `alice/repo`
-4. **Installation Verification**: Bot verifies GitHub App is installed on
-   Alice's fork
-5. **Clone & Branch**: Bot clones Alice's fork and creates branch `jira/PROJ-123`
-6. **AI Generation**: Bot uses AI to generate code changes
-7. **Commit & Push**: Bot commits and pushes to Alice's fork
-8. **Create PR**: Bot creates PR from `alice:jira/PROJ-123` → `org:main`
-9. **Collaboration**: Alice can now push additional changes to the same branch
-   in her fork
-
-### Benefits
-
-✅ **True Collaboration**: Both bot and developer can push to the same branch
-✅ **Standard Workflow**: Uses GitHub's standard fork-based model
-✅ **Clear Attribution**: PR shows both bot commits and developer commits
-✅ **Developer Control**: Developer owns the fork and can uninstall the app anytime
-
-## GitHub App Authentication
-
-### What is a GitHub App?
-
-A **GitHub App** is GitHub's recommended authentication method for automated
-tools. Unlike user accounts with Personal Access Tokens, GitHub Apps:
-
-- Have **fine-grained permissions** (only what's needed)
-- Use **short-lived tokens** (1 hour, auto-refreshed)
-- Show as **`app-name[bot]`** in GitHub (clear audit trail)
-- Support **per-installation tokens** (different token for each repo)
-- Have **higher rate limits** than user accounts
-
-### How Authentication Works
-
-```text
-1. Bot starts with:
-   - App ID (e.g., 2591456)
-   - Private key (.pem file)
-
-2. Bot creates JWT (JSON Web Token):
-   - Signed with private key
-   - Proves "I am app 123456"
-   - Valid for 10 minutes
-
-3. Bot discovers installation:
-   GET /repos/alice/repo/installation
-   Authorization: Bearer <JWT>
-   Response: { "id": 789012 }
-
-4. Bot exchanges JWT for installation token:
-   POST /app/installations/789012/access_tokens
-   Authorization: Bearer <JWT>
-   Response: { "token": "ghs_...", "expires_at": "..." }
-
-5. Bot uses installation token:
-   - For all operations on alice/repo
-   - Token scoped to that specific installation
-   - Auto-refreshed when expired
-```
-
-### Installation Management
-
-The bot maintains a cache of installation tokens per repository:
-
-- **Discovery**: Automatically discovers installation IDs for repositories
-- **Caching**: Caches installation tokens to avoid repeated API calls
-- **Thread-safe**: Uses mutex locking for concurrent access
-- **Auto-refresh**: Tokens are automatically refreshed when expired
+- **Bot manages plumbing, AI acts autonomously.** The bot decides *what*
+  needs doing. The AI decides *how*.
+- **The container is the sandbox.** The AI runs with full permissions inside
+  an ephemeral container. The container provides safety isolation.
+- **The environment is the interface.** The bot communicates with the AI
+  through the filesystem: the repo, a task file, and the container's
+  toolchain. No prompt templates.
+- **Teams own their environments.** Teams provide container images with
+  their toolchain and AI CLI. The bot doesn't inject tools.
+- **Jira and GitHub are the state store.** No database. Ticket status = job
+  state. PR existence = completion proof. Crash recovery queries Jira.
 
 ## Component Architecture
 
-### Core Services
+```mermaid
+flowchart TB
+    subgraph Scanners["Scanners (scanner/)"]
+        WIS["WorkItemScanner<br/>polls for todo tickets"]
+        FS["FeedbackScanner<br/>polls for review comments"]
+    end
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                     Main Application                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────────┐      ┌──────────────────┐             │
-│  │ Jira Scanner     │      │ PR Feedback      │             │
-│  │ Service          │      │ Scanner Service  │             │
-│  └────────┬─────────┘      └────────┬─────────┘             │
-│           │                         │                       │
-│           └───────────┬─────────────┘                       │
-│                       │                                     │
-│                       ▼                                     │
-│            ┌────────────────────┐                           │
-│            │ Ticket Processor   │                           │
-│            └─────────┬──────────┘                           │
-│                      │                                      │
-│         ┌────────────┼────────────┐                         │
-│         │            │            │                         │
-│         ▼            ▼            ▼                         │
-│  ┌───────────┐ ┌──────────┐ ┌─────────┐                     │
-│  │  Jira     │ │ GitHub   │ │   AI    │                     │
-│  │ Service   │ │ Service  │ │ Service │                     │
-│  └───────────┘ └──────────┘ └─────────┘                     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+    subgraph JobMgr["Job Coordinator (jobmanager/)"]
+        Coord["Coordinator<br/>concurrency, retries,<br/>circuit breaker"]
+    end
+
+    subgraph Exec["Executor (executor/)"]
+        Pipe["Pipeline<br/>new-ticket + feedback flows"]
+    end
+
+    subgraph Infra["Infrastructure"]
+        IT["IssueTracker<br/>(tracker/jira/)"]
+        WM["WorkspaceManager<br/>(workspace/)"]
+        CM["ContainerManager<br/>(container/)"]
+        TF["TaskFileWriter<br/>(taskfile/)"]
+        PR["ProjectResolver<br/>(projectresolver/)"]
+        CT["CostTracker<br/>(costtracker/)"]
+    end
+
+    subgraph Services["External Service Clients (services/)"]
+        JS["JiraService<br/>REST API"]
+        GS["GitHubService<br/>App auth, Git Data API"]
+    end
+
+    subgraph Recovery["Startup (recovery/)"]
+        SR["StartupRunner<br/>orphan cleanup,<br/>stuck ticket reset"]
+    end
+
+    WIS --> Coord
+    FS --> Coord
+    Coord --> Pipe
+    Coord --> CT
+    Pipe --> IT
+    Pipe --> WM
+    Pipe --> CM
+    Pipe --> TF
+    Pipe --> PR
+    IT --> JS
+    WM --> GS
+    SR --> IT
+    SR --> CM
+    SR --> WM
+    SR --> Coord
 ```
 
-### Service Responsibilities
+### Package Responsibilities
 
-#### JiraService
+| Package | Purpose |
+|---------|---------|
+| `scanner/` | Polls Jira for new tickets and GitHub for review comments. Stateless — derives "addressed" state from bot replies. |
+| `jobmanager/` | Concurrency control, per-ticket retry tracking, circuit breaker, cost budget enforcement. |
+| `executor/` | Orchestrates the full job lifecycle: workspace setup, container launch, AI execution, commit, PR creation, status transitions. |
+| `tracker/` | `IssueTracker` interface for work item operations. `jira/` sub-package adapts `JiraService`. |
+| `workspace/` | Per-ticket workspace lifecycle: clone, branch, TTL-based cleanup, self-healing re-clone. |
+| `container/` | Container runtime detection, image resolution from repo config, container lifecycle with resource limits. |
+| `taskfile/` | Generates markdown task files. Appends universal instructions (all tasks) and workflow (new tickets only) from repo files or project-config fallback. |
+| `projectresolver/` | Maps ticket keys to project settings (component-to-repo, status transitions, imports). |
+| `costtracker/` | Tracks daily AI session costs with file-based persistence and budget enforcement. |
+| `commentfilter/` | Shared bot-loop prevention: ignored users, known bots, thread depth limits. |
+| `recovery/` | Startup crash recovery: orphan container cleanup, stuck ticket reset, workspace TTL enforcement. |
+| `repoconfig/` | Parses `.ai-bot/config.yaml` from target repositories for per-repo settings (PR, AI, imports). |
+| `services/` | Infrastructure clients: `JiraService` (REST API), `GitHubService` (App auth, Git Data API, fork management). |
+| `models/` | Configuration (`Config`), Jira API types, domain types (`WorkItem`, `SearchCriteria`, `ProjectSettings`). |
 
-- Search for tickets matching configured criteria
-- Update ticket status (To Do → In Progress → In Review)
-- Add comments and update custom fields
-- Retrieve ticket details and assignee information
+### Consumer-Defined Interfaces
 
-#### GitHubService
+Each package declares only the methods it needs from its dependencies,
+following Go's interface convention. There are no shared interface packages.
+The underlying implementation (`*GitHubServiceImpl`, `*JiraServiceImpl`)
+satisfies all consumers without any of them knowing the full API surface.
 
-- Manage GitHub App authentication and installation tokens
-- Clone repositories and manage Git operations
-- Create and manage branches
-- Commit and push changes (via API for verified commits)
-- Create pull requests and manage PR comments
-
-#### AIService
-
-- Interface for AI providers (Claude, Gemini)
-- Generate code changes based on ticket descriptions
-- Process PR feedback and generate responses
-- Retry logic for handling AI failures
-
-#### TicketProcessor
-
-- Orchestrates the end-to-end workflow
-- Maps assignees to GitHub usernames
-- Verifies fork existence and app installation
-- Coordinates between Jira, GitHub, and AI services
-
-#### Scanner Services
-
-- **JiraIssueScannerService**: Periodically scans for new tickets
-- **PRFeedbackScannerService**: Monitors tickets in review for PR comments
-- Bot loop prevention and concurrent processing protection
-
-### Configuration Model
-
-Multi-project configuration with per-project settings:
-
-```yaml
-jira:
-  projects:
-    - project_keys: ["PROJ1", "PROJ2"]
-      status_transitions:
-        Bug:
-          todo: "Open"
-          in_progress: "In Progress"
-          in_review: "Code Review"
-      component_to_repo:
-        frontend: https://github.com/org/frontend.git
-        backend: https://github.com/org/backend.git
+```mermaid
+flowchart LR
+    subgraph Consumers
+        E["executor/<br/>CreateBranch, HasChanges,<br/>CommitChanges, CreatePR, ..."]
+        W["workspace/<br/>CloneRepository"]
+        S["scanner/<br/>GetPRForBranch,<br/>GetPRComments"]
+    end
+    subgraph Impl["Implementation"]
+        GH["services.GitHubServiceImpl<br/>(satisfies all)"]
+    end
+    E --> GH
+    W --> GH
+    S --> GH
 ```
 
-**Key features:**
+## Workflow: New Ticket
 
-- Project-specific status transitions per ticket type
-- Component-to-repository mapping (case-sensitive)
-- Optional Git PR field for storing PR URLs
-- Per-project error handling configuration
+```mermaid
+sequenceDiagram
+    participant J as Jira
+    participant WIS as WorkItemScanner
+    participant C as Coordinator
+    participant P as Pipeline
+    participant WS as Workspace
+    participant CTR as Container
+    participant AI as AI Agent
+    participant GH as GitHub
 
-## Security Considerations
+    WIS->>J: Search for todo tickets
+    J-->>WIS: [PROJ-123]
+    WIS->>C: Submit(NewTicket, PROJ-123)
+    C->>C: Check concurrency, retries, circuit breaker
+    C->>P: Execute(job)
 
-### Private Key Protection
+    P->>P: Resolve project config, map component to repo
+    P->>WS: Create workspace (clone + branch)
+    WS->>GH: Clone repository
+    P->>P: Load repo config (.ai-bot/config.yaml)
+    P->>GH: Clone imports (auxiliary repos into workspace)
+    P->>P: Write task file (.ai-bot/task.md + instructions)
+    P->>CTR: Resolve container config
+    P->>CTR: Start container (workspace mounted)
+    P->>CTR: Run import install commands (if configured)
+    CTR->>AI: Run AI CLI with task file
+    AI->>AI: Read task, write code, validate
+    AI-->>CTR: Exit
+    P->>CTR: Stop container
 
-The GitHub App private key is the most sensitive credential:
+    P->>WS: Check for changes (git diff)
+    P->>P: Read AI-generated PR description (.ai-bot/pr.md)
+    P->>GH: Commit changes via Git Data API
+    P->>WS: Sync workspace with remote
+    P->>GH: Create pull request
+    P->>J: Transition to "In Review"
+    P->>J: Post PR URL
 
-✅ **Development**: Store outside git repo, use `chmod 600`
-✅ **Production**: Use secret manager (Google Secret Manager, AWS Secrets Manager)
-✅ **Containers**: Mount as read-only volume
-❌ **Never**: Commit to git, share publicly, or log in plaintext
+    P-->>C: Return result (cost, status)
+    C->>C: Record cost, update retry state
+```
 
-### Token Security
+## Workflow: PR Feedback
 
-- **Short-lived**: Installation tokens expire after 1 hour
-- **Auto-refresh**: Automatically refreshed by the SDK
-- **Scoped**: Each token is scoped to a specific repository installation
-- **In-memory**: Tokens are only kept in memory, never written to disk
+```mermaid
+sequenceDiagram
+    participant J as Jira
+    participant FS as FeedbackScanner
+    participant GH as GitHub
+    participant C as Coordinator
+    participant P as Pipeline
+    participant CTR as Container
+    participant AI as AI Agent
 
-### Principle of Least Privilege
+    FS->>J: Search for in-review tickets
+    J-->>FS: [PROJ-123]
+    FS->>GH: Get PR for branch (ai-bot/PROJ-123)
+    FS->>GH: Get PR comments
+    GH-->>FS: [comment1, comment2]
+    FS->>FS: Filter bots, ignored users, addressed comments
+    FS->>C: Submit(Feedback, PROJ-123)
 
-The GitHub App requests only the minimum permissions needed:
+    C->>P: Execute(job)
+    P->>P: Reuse existing workspace (sync with remote)
+    P->>P: Load repo config, clone imports (if new)
+    P->>P: Write feedback task file (+ instructions)
+    P->>CTR: Start container
+    P->>CTR: Run import install commands (if configured)
+    CTR->>AI: Run AI CLI with feedback task
+    AI->>AI: Address review comments
+    AI-->>CTR: Exit
+    P->>CTR: Stop container
 
-- ✅ **Contents: Read & Write** - Clone, create branches, push commits
-- ✅ **Pull Requests: Read & Write** - Create PRs, read/post comments
-- ❌ **No Issues access** (unless explicitly needed)
-- ❌ **No Admin access**
-- ❌ **No Secrets access**
-- ❌ **No Actions/Workflows access**
+    P->>GH: Commit + push changes
+    P->>GH: Reply to PR comments
+    P-->>C: Return result
+```
 
-### Installation Isolation
+## Container Strategy
 
-Each fork has its own installation:
+AI agents run inside ephemeral containers with the target repository
+mounted. The container provides:
 
-- If one installation is compromised, others are unaffected
-- Users can uninstall the app from their fork anytime
-- No cross-repository access beyond what's granted per installation
+- The project's toolchain (compiler, linter, test framework)
+- The AI CLI (`claude`, `gemini`, etc.)
+- Network access to the AI API endpoint
 
-### Audit Trail
+The container does **not** receive GitHub tokens, Jira credentials, or
+host filesystem access. The bot commits via the GitHub API after the
+AI finishes.
 
-All bot actions are clearly attributed:
+### Configuration Resolution
 
-- Commits show as authored by `app-name[bot]`
-- PRs created by `app-name[bot]`
-- Comments posted by `app-name[bot]`
-- Full separation from human developer actions
+```mermaid
+flowchart TB
+    A[".ai-bot/container.json<br/>(bot-specific)"] -->|exists?| B{Found?}
+    B -->|yes| R["Use .ai-bot/container.json"]
+    B -->|no| C[".devcontainer/devcontainer.json<br/>(standard devcontainer)"]
+    C -->|exists?| D{Found?}
+    D -->|yes| R2["Use devcontainer.json<br/>(practical subset)"]
+    D -->|no| E["Use bot-level defaults<br/>(container.default_image)"]
+    E -->|image empty?| F{Has default?}
+    F -->|yes| R3["Use admin default"]
+    F -->|no| R4["Use built-in fallback<br/>(ubuntu:latest)"]
+
+    R --> M["Merge: missing fields<br/>filled from lower priority"]
+    R2 --> M
+    R3 --> M
+    R4 --> M
+```
+
+Only the highest-priority repo-level source is used — sources 1 and 2 do
+not stack. Within the selected source, unset fields fall through to
+bot-level defaults. See [repo-configuration.md](repo-configuration.md) for
+file formats and examples.
+
+### Security Boundary
+
+| Resource | AI has access? | How |
+|----------|---------------|-----|
+| Source code | Yes | Mounted at `/workspace` |
+| Project toolchain | Yes | Installed in container image |
+| AI API (Anthropic/Google) | Yes | API key in env var |
+| GitHub API | No | No token in container |
+| Jira API | No | No credentials in container |
+| Host filesystem | No | Container isolation |
+| Other containers | No | Container isolation |
+
+The AI runs with full permissions inside the container because the
+container **is** the permission boundary.
+
+## Workspace Lifecycle
+
+Workspaces are scoped to **tickets**, not jobs. A workspace directory
+persists across all jobs for the same ticket, enabling AI-generated
+artifacts to survive between sessions.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: First job clones repo
+    Created --> Reused: Subsequent jobs<br/>(git fetch + reset)
+    Reused --> Reused: More feedback jobs
+    Reused --> Destroyed: TTL expired
+    Created --> Destroyed: TTL expired
+    Destroyed --> Created: Self-healing re-clone<br/>(if ticket still active)
+```
+
+### What survives between jobs
+
+| Content | Survives? | Why |
+|---------|-----------|-----|
+| Committed source files | Yes | `git reset --hard` updates to match remote |
+| Human developer commits | Yes | `git fetch` pulls before reset |
+| Untracked artifacts (caches, indexes) | Yes | `git reset --hard` ignores untracked files |
+| Uncommitted modifications | No | Already committed via API, reset discards local copy |
+| Container filesystem | No | Container destroyed after each job |
+
+### Cleanup triggers
+
+- **TTL expiry**: Workspaces older than `workspaces.ttl_days` are removed
+  at startup, regardless of ticket status.
+- **Startup cleanup**: `StartupRunner` scans for orphaned workspaces on
+  boot and removes those for tickets no longer in active states.
+
+## Fork-Based Workflow
+
+The bot pushes code to the **developer's fork**, enabling true
+collaboration. Both bot and developer can push to the same branch.
+
+```mermaid
+flowchart LR
+    subgraph Developer
+        Fork["alice/repo<br/>(fork)"]
+    end
+    subgraph Organization
+        Main["org/repo<br/>(main)"]
+    end
+
+    Bot["Bot"] -->|"push to<br/>alice:ai-bot/PROJ-123"| Fork
+    Developer -->|"push additional<br/>changes"| Fork
+    Fork -->|"PR"| Main
+```
+
+**Process:**
+
+1. Jira ticket assigned to Alice (`alice@company.com`)
+2. Bot maps `alice@company.com` to GitHub username `alice`
+3. Bot clones Alice's fork, creates branch `ai-bot/PROJ-123`
+4. AI generates changes inside container
+5. Bot commits via GitHub API (verified commits)
+6. Bot creates PR from `alice:ai-bot/PROJ-123` to `org:main`
+7. Alice can push additional changes to the same branch
+
+## GitHub App Authentication
+
+The bot uses a GitHub App for authentication:
+
+- **Fine-grained permissions**: Only Contents and Pull Requests (read/write)
+- **Short-lived tokens**: Installation tokens expire after 1 hour, auto-refreshed
+- **Per-installation scope**: Different token for each repository
+- **Clear audit trail**: Actions attributed to `app-name[bot]`
+
+```mermaid
+sequenceDiagram
+    participant Bot
+    participant GitHub
+
+    Bot->>Bot: Create JWT (signed with private key)
+    Bot->>GitHub: GET /repos/alice/repo/installation
+    GitHub-->>Bot: installation_id: 789012
+    Bot->>GitHub: POST /app/installations/789012/access_tokens
+    GitHub-->>Bot: token: ghs_..., expires_at: ...
+    Bot->>GitHub: Use installation token for API calls
+    Note over Bot,GitHub: Token cached, auto-refreshed on expiry
+```
+
+## Crash Recovery
+
+On startup, `StartupRunner` recovers from prior crashes:
+
+```mermaid
+flowchart TB
+    Start["Bot starts"] --> Orphans["Clean up orphan containers<br/>(prefix-based filter)"]
+    Orphans --> Stuck["Query Jira for tickets<br/>stuck in 'In Progress'"]
+    Stuck --> Reset["Reset stuck tickets<br/>to 'Todo' status"]
+    Reset --> TTL["Remove expired workspaces<br/>(older than ttl_days)"]
+    TTL --> Ready["Ready to start scanners"]
+```
+
+No database is needed. Jira ticket status and GitHub PR existence are the
+durable state. The filesystem (workspace directories and container names)
+is discoverable by naming convention.
+
+## Bot-Loop Prevention
+
+The feedback scanner filters comments to prevent infinite bot-to-bot
+conversations:
+
+| Mechanism | Config key | Behavior |
+|-----------|-----------|----------|
+| Ignored users | `github.ignored_usernames` | Comments completely skipped (for CI bots like packit) |
+| Known bots | `github.known_bot_usernames` | Processed initially, but loop prevention stops reply chains |
+| Thread depth | `github.max_thread_depth` | Maximum bot replies per conversation thread (default: 5) |
+
+## Guardrails
+
+Safety mechanisms to prevent runaway costs and cascading failures:
+
+| Guardrail | Config key | Description |
+|-----------|-----------|-------------|
+| Concurrency limit | `guardrails.max_concurrent_jobs` | Maximum parallel jobs |
+| Retry limit | `guardrails.max_retries` | Per-ticket failure limit before rejection |
+| Daily cost budget | `guardrails.max_daily_cost_usd` | Pauses job creation when exceeded |
+| Container timeout | `guardrails.max_container_runtime_minutes` | Kills containers exceeding this duration |
+| Circuit breaker | `guardrails.circuit_breaker_threshold` | Pauses all jobs after N consecutive failures |
+
+## Configuration
+
+The bot uses a multi-project configuration model. Each project can have its
+own status transitions, component-to-repo mappings, and PR field settings.
+
+See:
+- [`config.example.yaml`](../config.example.yaml) for the complete
+  bot-level configuration reference
+- [`docs/repo-configuration.md`](repo-configuration.md) for per-repository
+  `.ai-bot/` configuration
 
 ## Troubleshooting
 
 ### "GitHub App is not installed on {owner}/{repo}"
 
-**Cause**: The app isn't installed on the repository.
+The app isn't installed on the target repository.
 
-**Solutions:**
-
-1. **For main repo**: Admin must install the app (see [admin-setup.md](admin-setup.md))
-2. **For developer fork**: Developer must install the app (see
-   [contributor-setup.md](contributor-setup.md))
-3. Verify the app is installed: Go to
-   `https://github.com/{owner}/{repo}/settings/installations`
+1. **Main repo**: Admin installs the app (see [admin-setup.md](admin-setup.md))
+2. **Developer fork**: Developer installs the app (see [contributor-setup.md](contributor-setup.md))
+3. Verify: `https://github.com/{owner}/{repo}/settings/installations`
 
 ### "failed to get installation ID"
 
-**Cause**: App ID or private key is incorrect, or the app was deleted/revoked.
+App ID or private key is incorrect.
 
-**Solutions:**
-
-1. Verify `JIRA_AI_GITHUB_APP_ID` matches the app ID from GitHub
-2. Verify `JIRA_AI_GITHUB_BOT_USERNAME` matches the app name (WITHOUT `[bot]`
-   suffix - it's added automatically)
-3. Check the private key file exists and is readable
-4. Verify the private key hasn't been revoked: Check app settings → Private keys
-5. Test the private key: `openssl rsa -in key.pem -check -noout`
-
-### "403 Forbidden" when creating PR
-
-**Cause**: App doesn't have required permissions or isn't installed on main repo.
-
-**Solutions:**
-
-1. Check app permissions: `https://github.com/settings/apps/{app-name}` → Permissions
-2. Ensure "Pull requests: Read & write" is enabled
-3. Verify app is installed on the main repository (where PR will be created)
-4. Check installation hasn't been suspended
+1. Verify `github.app_id` matches the app ID from GitHub
+2. Verify `github.bot_username` matches the app name (without `[bot]` suffix)
+3. Check private key file exists, is readable, and hasn't been revoked
 
 ### "404 Not Found" when pushing
 
-**Cause**: Fork doesn't exist or GitHub username mapping is wrong.
-
-**Solutions:**
+Fork doesn't exist or username mapping is wrong.
 
 1. Verify the fork exists: `https://github.com/{username}/{repo}`
 2. Check `jira.assignee_to_github_username` mapping in config
-3. Ensure the mapped username matches the actual GitHub account
-4. Verify the repository is actually a fork (not a separate repo with same
-   name)
+3. Ensure the repository is actually a fork (not a separate repo)
 
-### "No GitHub username mapping found for assignee"
-
-**Cause**: Missing assignee mapping in configuration.
-
-**Solution:**
-
-Add to `config.yaml`:
-
-```yaml
-jira:
-  assignee_to_github_username:
-    "alice@company.com": alice
-```
-
-Or set environment variable:
-
-```bash
-export JIRA_AI_JIRA_ASSIGNEE_TO_GITHUB_USERNAME='{"alice@company.com":"alice"}'
-```
-
-### Rate Limiting
-
-**Symptoms**: `API rate limit exceeded` errors
-
-**Cause**: Too many API calls in a short period.
-
-**GitHub App Rate Limits:**
-
-- 5,000 requests per hour per installation
-- 12,500 requests per hour for app-level endpoints
-
-**Solutions:**
-
-1. Increase `jira.interval_seconds` to reduce polling frequency
-2. Check for inefficient API usage in logs
-3. Verify installation token caching is working (should see "using cached
-   token" logs)
-4. Check rate limit status: `GET /rate_limit` with installation token
-
-### Bot loop prevention
-
-**Symptoms**: Bot responds to its own comments or other bots infinitely.
-
-**Cause**: Bot doesn't recognize other bot usernames.
-
-**Solution:**
+### Bot responds to other bots infinitely
 
 Add bot usernames to config (without `[bot]` suffix):
 
@@ -360,96 +437,25 @@ Add bot usernames to config (without `[bot]` suffix):
 github:
   known_bot_usernames:
     - "github-actions"
-    - "dependabot"
-    - "renovate"
-    - "coderabbitai"    # Add any code review bots your team uses
+    - "coderabbitai"
 ```
-
-The bot automatically handles the `[bot]` suffix for GitHub App bots.
 
 ### AI generates no changes
 
-**Symptoms**: Bot completes but PR has no file changes.
+1. Check ticket description is clear and actionable
+2. Check container logs for AI errors or timeouts
+3. Verify container resource limits are sufficient
+4. The coordinator retries failed jobs up to `guardrails.max_retries` times
 
-**Cause**: AI completed successfully but didn't modify any files.
+### Rate limiting
 
-**Solution:**
-
-The bot automatically retries up to 5 times (configurable):
-
-```yaml
-ai:
-  max_retries: 5              # Number of retry attempts if AI generates no changes
-  retry_delay_seconds: 2      # Delay between retries
-```
-
-Note: Total retry time is constrained to 30 minutes maximum
-(`max_retries × retry_delay_seconds ≤ 1800 seconds`).
-
-If retries are exhausted, the ticket fails with an error message. Check:
-
-1. Ticket description is clear and actionable
-2. AI has sufficient context (repository structure, existing code)
-3. AI service logs for errors or timeouts
-
-## Rate Limits & Performance
-
-### GitHub API Limits
-
-**GitHub-imposed limits (not user-configurable):**
-
-GitHub enforces the following rate limits for GitHub Apps:
-
-- 5,000 requests/hour per installation (for repository-specific operations)
-- 12,500 requests/hour for app-level calls (e.g., listing installations)
-- Higher limits than user accounts with Personal Access Tokens
-
-These limits cannot be changed. Users must work within these constraints.
-
-**Best Practices for staying within limits:**
-
-- Cache installation tokens (implemented by default)
-- Batch operations where possible
-- Monitor rate limit headers in responses
-- Adjust scan intervals based on usage (increase `jira.interval_seconds` to reduce API calls)
-
-### Concurrent Processing
-
-The bot uses `sync.Map` to prevent duplicate processing:
-
-- Each ticket is processed at most once concurrently
-- Automatic cleanup when processing completes
-- Safe for multiple scanner goroutines
-
-### AI Service Timeouts
-
-Configurable timeouts prevent indefinite hangs:
-
-```yaml
-claude:
-  timeout: 300  # seconds (5 minutes)
-
-gemini:
-  timeout: 300  # seconds (5 minutes)
-```
-
-Adjust based on:
-
-- Complexity of typical tickets
-- AI service response times
-- Network conditions
-
-## Resources
-
-- [GitHub Apps Documentation](https://docs.github.com/en/apps)
-- [GitHub App Permissions](https://docs.github.com/en/rest/overview/permissions-required-for-github-apps)
-- [go-github SDK](https://github.com/google/go-github) - Official Go SDK
-- [ghinstallation](https://github.com/bradleyfalzon/ghinstallation) - GitHub
-  App auth for Go
+GitHub App rate limits: 5,000 requests/hour per installation. Increase
+`jira.interval_seconds` to reduce polling frequency.
 
 ## Related Documentation
 
-- **[Contributor Setup](contributor-setup.md)** - Quick guide for developers
-- **[Admin Setup](admin-setup.md)** - How to create and configure the GitHub App
-- **[Testing Setup](testing-setup.md)** - Testing in your environment
-- **[Debugging Guide](debugging.md)** - Debugging the application
+- **[Repository Configuration](repo-configuration.md)** — Configuring target repos
+- **[Admin Setup](admin-setup.md)** — Creating the GitHub App
+- **[Contributor Setup](contributor-setup.md)** — Developer fork setup
+- **[Testing Setup](testing-setup.md)** — Deploying and testing the bot
+- **[Debugging Guide](debugging.md)** — Debugging the application

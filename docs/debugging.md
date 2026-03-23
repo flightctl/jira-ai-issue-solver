@@ -118,7 +118,8 @@ quit (q)         # Exit debugger
 (dlv) break services.NewJiraService
 
 # Set breakpoint in Jira API calls
-(dlv) break services.(*JiraService).GetIssue
+(dlv) break services.(*JiraServiceImpl).GetTicket
+(dlv) break services.(*JiraServiceImpl).SearchTickets
 ```
 
 ### GitHub Service
@@ -127,26 +128,36 @@ quit (q)         # Exit debugger
 # Set breakpoint in GitHub service
 (dlv) break services.NewGitHubService
 
-# Set breakpoint in PR operations
-(dlv) break services.(*GitHubService).CreatePullRequest
+# Set breakpoint in commit and PR operations
+(dlv) break services.(*GitHubServiceImpl).CommitChanges
+(dlv) break services.(*GitHubServiceImpl).CloneRepository
 ```
 
-### AI Service
+### Executor Pipeline
 
 ```bash
-# Set breakpoint in AI service calls
-(dlv) break services.(*ClaudeService).ProcessIssue
-(dlv) break services.(*GeminiService).ProcessIssue
+# Set breakpoint in job execution
+(dlv) break executor.(*Pipeline).Execute
+
+# Set breakpoint in new-ticket pipeline
+(dlv) break executor.(*Pipeline).executeNewTicket
 ```
 
-### Scanner Services
+### Scanners
 
 ```bash
-# Set breakpoint in issue scanner
-(dlv) break services.(*JiraIssueScannerService).Start
+# Set breakpoint in work item scanner
+(dlv) break scanner.(*WorkItemScanner).scan
 
-# Set breakpoint in PR feedback scanner
-(dlv) break services.(*PRFeedbackScannerService).Start
+# Set breakpoint in feedback scanner
+(dlv) break scanner.(*FeedbackScanner).scan
+```
+
+### Job Coordinator
+
+```bash
+# Set breakpoint in job submission
+(dlv) break jobmanager.(*Coordinator).Submit
 ```
 
 ## Debugging Configuration Issues
@@ -200,16 +211,17 @@ quit (q)         # Exit debugger
 - Check API tokens and URLs
 - Monitor network requests
 
-### 3. AI service not responding
+### 3. Container or AI not responding
 
-- Set breakpoints in AI service methods
-- Check API keys and endpoints
-- Monitor request/response data
+- Set breakpoints in executor pipeline (`executor.(*Pipeline).Execute`)
+- Check container runtime logs (`podman logs <container-name>`)
+- Verify AI API keys are configured and valid
+- Check `guardrails.max_container_runtime_minutes` timeout
 
 ### 4. Infinite loops or hanging
 
 - Use `goroutines` command to see all running goroutines
-- Set breakpoints in scanner services
+- Set breakpoints in scanner packages (`scanner.(*WorkItemScanner).scan`)
 - Check for deadlocks in channel operations
 
 ## Performance Debugging
