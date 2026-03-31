@@ -76,4 +76,9 @@ type RepoLocator interface {
 	// LocateRepo returns the GitHub owner and repo name for the
 	// given work item's component-to-repo mapping.
 	LocateRepo(workItem models.WorkItem) (owner, repo string, err error)
+
+	// ForkOwner returns the GitHub username that owns the fork where
+	// the bot pushes branches. Returns empty string when the assignee
+	// has no mapping (no fork-based workflow).
+	ForkOwner(workItem models.WorkItem) string
 }

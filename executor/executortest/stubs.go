@@ -42,6 +42,7 @@ type StubGitService struct {
 	CommitChangesFunc      func(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error)
 	StripRemoteAuthFunc    func(dir string) error
 	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
+	FetchRemoteFunc        func(dir string) error
 	SyncWithRemoteFunc     func(dir, branch string, importExcludes []string) error
 	CreatePRFunc           func(params models.PRParams) (*models.PR, error)
 	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
@@ -95,6 +96,13 @@ func (s *StubGitService) StripRemoteAuth(dir string) error {
 func (s *StubGitService) RestoreRemoteAuth(dir, owner, repo string) error {
 	if s.RestoreRemoteAuthFunc != nil {
 		return s.RestoreRemoteAuthFunc(dir, owner, repo)
+	}
+	return nil
+}
+
+func (s *StubGitService) FetchRemote(dir string) error {
+	if s.FetchRemoteFunc != nil {
+		return s.FetchRemoteFunc(dir)
 	}
 	return nil
 }

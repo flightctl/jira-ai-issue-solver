@@ -123,6 +123,11 @@ type GitService interface {
 	// remote access (e.g., SyncWithRemote).
 	RestoreRemoteAuth(dir, owner, repo string) error
 
+	// FetchRemote fetches all refs from the origin remote. Used in
+	// fork-based workflows to fetch fork branches into a workspace
+	// that was cloned from upstream.
+	FetchRemote(dir string) error
+
 	// SyncWithRemote reconciles the local workspace with the remote
 	// branch after an API-created commit. importExcludes lists
 	// additional directories to preserve across the hard reset.

@@ -1554,8 +1554,23 @@ func (s *GitHubServiceImpl) RestoreRemoteAuth(directory, owner, repo string) err
 // fetching and hard-resetting to the remote ref. Excluded artifact
 // directories are preserved across the reset because they are filtered
 // from API commits and therefore absent on the remote branch.
-func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExcludes []string) error {
+// FetchRemote fetches all refs from the origin remote. Used in
+// fork-based workflows to make fork branches available in a
+// workspace that was originally cloned from upstream.
+func (s *GitHubServiceImpl) FetchRemote(directory string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "FetchRemote")
+
+	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
+	if err := fetchCmd.run(); err != nil {
+		return fmt.Errorf("failed to fetch from origin: %w, stderr: %s", err, fetchCmd.getStderr())
+	}
+	s.logger.Debug("git fetch origin", fn, zap.String("stdout", fetchCmd.getStdout()), zap.String("stderr", fetchCmd.getStderr()))
+
+	return nil
+}
+
+func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExcludes []string) error {
 	fn := zap.String("function", "SyncWithRemote")
 
 	// Preserve excluded directories across the hard reset.
@@ -1565,14 +1580,12 @@ func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExclu
 	excludes := mergeExcludes(importExcludes)
 	preserved := s.preserveExcludedDirs(directory, excludes, fn)
 
-	// Fetch the latest state from the remote.
-	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
-	if err := fetchCmd.run(); err != nil {
-		return fmt.Errorf("failed to fetch from origin: %w, stderr: %s", err, fetchCmd.getStderr())
+	if err := s.FetchRemote(directory); err != nil {
+		return err
 	}
-	s.logger.Debug("git fetch origin", fn, zap.String("stdout", fetchCmd.getStdout()), zap.String("stderr", fetchCmd.getStderr()))
 
 	// Reset the working tree and index to match the remote branch.
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	ref := "origin/" + branch
 	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", ref), directory, debugEnabled, true)
 	if err := resetCmd.run(); err != nil {
@@ -2044,10 +2057,16 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 		return nil, fmt.Errorf("list PRs for branch %s: %w", head, err)
 	}
 
-	// The Head filter may include the owner prefix (owner:branch).
-	// Filter results to match the exact branch name.
+	// The head parameter may use "owner:branch" format for cross-repo
+	// (fork) PRs. Extract just the branch name for comparison since
+	// pr.GetHead().GetRef() returns the branch without an owner prefix.
+	refToMatch := head
+	if _, branch, ok := strings.Cut(head, ":"); ok {
+		refToMatch = branch
+	}
+
 	for _, pr := range prs {
-		if pr.GetHead().GetRef() == head {
+		if pr.GetHead().GetRef() == refToMatch {
 			return &models.PRDetails{
 				Number:     pr.GetNumber(),
 				Title:      pr.GetTitle(),

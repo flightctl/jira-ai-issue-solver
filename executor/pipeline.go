@@ -214,7 +214,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	authStripped := true
 	defer func() {
 		if authStripped {
-			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); restoreErr != nil {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); restoreErr != nil {
 				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
 			}
 		}
@@ -250,7 +250,9 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 12a: Restore remote auth ---
 	// Must happen before SyncWithRemote which needs fetch access.
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); err != nil {
+	// In fork mode, origin is set to the fork so that SyncWithRemote
+	// fetches from the fork (where the API commit was created).
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
 		return result, fmt.Errorf("restore remote auth: %w", err)
 	}
 	authStripped = false
@@ -276,7 +278,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: %s", job.TicketKey, workItem.Summary)
 	_, err = p.git.CommitChanges(
-		settings.Owner, settings.Repo, branchName,
+		settings.CommitOwner(), settings.Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
@@ -307,7 +309,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		Repo:      settings.Repo,
 		Title:     prTitle,
 		Body:      prBody,
-		Head:      branchName,
+		Head:      settings.PRHead(branchName),
 		Base:      settings.BaseBranch,
 		Draft:     draft,
 		Labels:    repoCfg.PR.Labels,
@@ -660,7 +662,7 @@ func (p *Pipeline) prepareBranch(
 	}
 
 	remoteExists, err := p.git.RemoteBranchExists(
-		settings.Owner, settings.Repo, branchName)
+		settings.CommitOwner(), settings.Repo, branchName)
 	if err != nil {
 		return fmt.Errorf("check remote branch: %w", err)
 	}

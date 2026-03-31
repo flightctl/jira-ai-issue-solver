@@ -166,7 +166,7 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 	branchName := fmt.Sprintf("%s/%s", r.cfg.BotUsername, item.Key)
 
 	// Check for an existing PR.
-	pr, err := r.git.GetPRForBranch(settings.Owner, settings.Repo, branchName)
+	pr, err := r.git.GetPRForBranch(settings.Owner, settings.Repo, settings.PRHead(branchName))
 	if err == nil && pr != nil {
 		// Case 1: PR exists but ticket still "In Progress".
 		// The status transition was interrupted — complete it.
@@ -180,7 +180,7 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 
 	// No PR found. Check if the branch has commits beyond base.
 	hasCommits, err := r.git.BranchHasCommits(
-		settings.Owner, settings.Repo, branchName, settings.BaseBranch)
+		settings.CommitOwner(), settings.Repo, branchName, settings.BaseBranch)
 	if err != nil {
 		// Can't determine branch state. Revert to todo so it can be
 		// retried cleanly by the normal pipeline.
@@ -252,7 +252,7 @@ func (r *StartupRunner) createPRFromCommits(
 		Repo:      settings.Repo,
 		Title:     title,
 		Body:      body,
-		Head:      branchName,
+		Head:      settings.PRHead(branchName),
 		Base:      settings.BaseBranch,
 		Assignees: assignees,
 	})

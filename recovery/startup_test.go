@@ -829,6 +829,70 @@ func TestRun_BranchNameFormat(t *testing.T) {
 	}
 }
 
+// --- Fork-based workflow ---
+
+func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
+	d := newDeps()
+	d.tracker.SearchWorkItemsFunc = func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+		return []models.WorkItem{
+			{Key: "PROJ-100", Summary: "Fork test", Type: "Bug",
+				Components: []string{}, Labels: []string{}},
+		}, nil
+	}
+
+	// Return settings with GitHubUsername set.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			BaseBranch:       "main",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			InProgressStatus: "In Progress",
+			GitHubUsername:   "contributor-gh",
+		}, nil
+	}
+
+	// No PR found. BranchHasCommits should receive contributor-gh as owner.
+	var branchOwner string
+	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
+		branchOwner = owner
+		return true, nil
+	}
+
+	// GetPRForBranch should receive "contributor-gh:ai-bot/PROJ-100" as head.
+	var prHead string
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		prHead = head
+		return nil, errors.New("no PR")
+	}
+
+	// CreatePR should receive "contributor-gh:ai-bot/PROJ-100" as Head.
+	var createdPRHead string
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		createdPRHead = params.Head
+		return &models.PR{Number: 10, URL: "https://github.com/upstream-org/repo/pull/10"}, nil
+	}
+
+	r := d.runner(t)
+	_ = r.Run(context.Background())
+
+	// Verify GetPRForBranch received owner-prefixed head.
+	if prHead != "contributor-gh:ai-bot/PROJ-100" {
+		t.Errorf("GetPRForBranch head = %q, want contributor-gh:ai-bot/PROJ-100", prHead)
+	}
+
+	// Verify BranchHasCommits received fork owner.
+	if branchOwner != "contributor-gh" {
+		t.Errorf("BranchHasCommits owner = %q, want contributor-gh", branchOwner)
+	}
+
+	// Verify CreatePR received owner-prefixed head.
+	if createdPRHead != "contributor-gh:ai-bot/PROJ-100" {
+		t.Errorf("CreatePR head = %q, want contributor-gh:ai-bot/PROJ-100", createdPRHead)
+	}
+}
+
 // --- InProgressCriteria passed through ---
 
 func TestRun_PassesInProgressCriteria(t *testing.T) {

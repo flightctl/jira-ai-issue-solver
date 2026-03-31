@@ -183,7 +183,15 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 	}
 
 	branchName := fmt.Sprintf("%s/%s", s.cfg.BotUsername, item.Key)
-	pr, err := s.prs.GetPRForBranch(owner, repo, branchName)
+
+	// For fork-based PRs, the GitHub API needs "owner:branch" format
+	// to find cross-repo PRs.
+	head := branchName
+	if forkOwner := s.repos.ForkOwner(item); forkOwner != "" {
+		head = forkOwner + ":" + branchName
+	}
+
+	pr, err := s.prs.GetPRForBranch(owner, repo, head)
 	if err != nil {
 		logger.Warn("No PR found for ticket, skipping", zap.Error(err))
 		return false

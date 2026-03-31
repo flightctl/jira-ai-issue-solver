@@ -106,6 +106,16 @@ func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, e
 	return owner, repo, nil
 }
 
+// ForkOwner returns the GitHub username that owns the assignee's fork.
+// Returns empty string if the work item has no assignee or the
+// assignee is not in the assignee-to-GitHub-username mapping.
+func (r *ConfigResolver) ForkOwner(workItem models.WorkItem) string {
+	if workItem.Assignee == nil {
+		return ""
+	}
+	return r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
+}
+
 // findProjectConfig returns the ProjectConfig for the work item's
 // project key. Returns an error if no configuration can be found.
 func (r *ConfigResolver) findProjectConfig(workItem models.WorkItem) (*models.ProjectConfig, error) {

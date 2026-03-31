@@ -2072,6 +2072,287 @@ func TestExecuteNewTicket_SkipsExistingAttachments(t *testing.T) {
 	}
 }
 
+// --- Fork-based workflow tests ---
+
+func TestNewTicketPipeline_ForkMode(t *testing.T) {
+	d := newTestDeps(t)
+
+	// Configure fork mode via GitHubUsername.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "bot-fork",
+		}, nil
+	}
+
+	// Capture arguments to verify fork owner is used.
+	var commitOwner, commitRepo string
+	d.git.CommitChangesFunc = func(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+		commitOwner = owner
+		commitRepo = repo
+		return "abc123", nil
+	}
+
+	var restoreOwner, restoreRepo string
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		restoreOwner = owner
+		restoreRepo = repo
+		return nil
+	}
+
+	var prParams models.PRParams
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prParams = params
+		return &models.PR{Number: 42, URL: "https://github.com/upstream-org/repo/pull/42"}, nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newTicketJob("PROJ-123"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify CommitChanges uses fork owner.
+	if commitOwner != "bot-fork" {
+		t.Errorf("CommitChanges owner = %q, want bot-fork", commitOwner)
+	}
+	if commitRepo != "repo" {
+		t.Errorf("CommitChanges repo = %q, want repo", commitRepo)
+	}
+
+	// Verify RestoreRemoteAuth uses fork owner.
+	if restoreOwner != "bot-fork" {
+		t.Errorf("RestoreRemoteAuth owner = %q, want bot-fork", restoreOwner)
+	}
+	if restoreRepo != "repo" {
+		t.Errorf("RestoreRemoteAuth repo = %q, want repo", restoreRepo)
+	}
+
+	// Verify PR params: Owner/Repo should be upstream, Head should be "bot-fork:branch".
+	if prParams.Owner != "upstream-org" {
+		t.Errorf("PR Owner = %q, want upstream-org", prParams.Owner)
+	}
+	if prParams.Repo != "repo" {
+		t.Errorf("PR Repo = %q, want repo", prParams.Repo)
+	}
+	if !strings.HasPrefix(prParams.Head, "bot-fork:") {
+		t.Errorf("PR Head = %q, should start with bot-fork:", prParams.Head)
+	}
+	if !strings.Contains(prParams.Head, "PROJ-123") {
+		t.Errorf("PR Head = %q, should contain ticket key", prParams.Head)
+	}
+
+	// Verify result is valid.
+	if result.PRURL == "" {
+		t.Error("expected non-empty PRURL")
+	}
+}
+
+func TestPrepareBranch_ForkMode(t *testing.T) {
+	d := newTestDeps(t)
+
+	// Configure fork mode.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "bot-fork",
+		}, nil
+	}
+
+	// Workspace is reused and remote branch exists.
+	d.workspaces.FindOrCreateFunc = func(ticketKey, repoURL string) (string, bool, error) {
+		return d.wsDir, true, nil // reused
+	}
+
+	var remoteCheckOwner, remoteCheckRepo string
+	d.git.RemoteBranchExistsFunc = func(owner, repo, branch string) (bool, error) {
+		remoteCheckOwner = owner
+		remoteCheckRepo = repo
+		return true, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify RemoteBranchExists was called with fork owner.
+	if remoteCheckOwner != "bot-fork" {
+		t.Errorf("RemoteBranchExists owner = %q, want bot-fork", remoteCheckOwner)
+	}
+	if remoteCheckRepo != "repo" {
+		t.Errorf("RemoteBranchExists repo = %q, want repo", remoteCheckRepo)
+	}
+}
+
+func TestFeedbackPipeline_ForkMode(t *testing.T) {
+	d := newTestDeps(t)
+
+	// Configure fork mode.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "bot-fork",
+		}, nil
+	}
+
+	// Track the head format passed to GetPRForBranch.
+	var prHead string
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		prHead = head
+		return &models.PRDetails{
+			Number: 42,
+			Title:  "Fix a bug",
+			Branch: "ai-bot/PROJ-1",
+			URL:    "https://github.com/upstream-org/repo/pull/42",
+		}, nil
+	}
+
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	// Track RestoreRemoteAuth and FetchRemote calls.
+	var restoreCalled, fetchCalled bool
+	var restoreOwner, restoreRepo string
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		if !restoreCalled {
+			// First call is the fork setup.
+			restoreCalled = true
+			restoreOwner = owner
+			restoreRepo = repo
+		}
+		return nil
+	}
+	d.git.FetchRemoteFunc = func(dir string) error {
+		fetchCalled = true
+		return nil
+	}
+
+	// Track CommitChanges owner.
+	var commitOwner, commitRepo string
+	d.git.CommitChangesFunc = func(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+		commitOwner = owner
+		commitRepo = repo
+		return "abc123", nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify GetPRForBranch received "bot-fork:ai-bot/PROJ-1" head format.
+	if prHead != "bot-fork:ai-bot/PROJ-1" {
+		t.Errorf("GetPRForBranch head = %q, want bot-fork:ai-bot/PROJ-1", prHead)
+	}
+
+	// Verify RestoreRemoteAuth was called with fork owner before switching branch.
+	if !restoreCalled {
+		t.Fatal("RestoreRemoteAuth should be called to set fork remote")
+	}
+	if restoreOwner != "bot-fork" {
+		t.Errorf("RestoreRemoteAuth owner = %q, want bot-fork", restoreOwner)
+	}
+	if restoreRepo != "repo" {
+		t.Errorf("RestoreRemoteAuth repo = %q, want repo", restoreRepo)
+	}
+
+	// Verify FetchRemote was called.
+	if !fetchCalled {
+		t.Error("FetchRemote should be called in fork mode")
+	}
+
+	// Verify CommitChanges uses fork owner.
+	if commitOwner != "bot-fork" {
+		t.Errorf("CommitChanges owner = %q, want bot-fork", commitOwner)
+	}
+	if commitRepo != "repo" {
+		t.Errorf("CommitChanges repo = %q, want repo", commitRepo)
+	}
+}
+
+func TestFeedbackPipeline_NonForkMode_SkipsFetchRemote(t *testing.T) {
+	d := newTestDeps(t)
+
+	// No GitHubUsername set (non-fork mode).
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42,
+			Title:  "Fix a bug",
+			Branch: "ai-bot/PROJ-1",
+			URL:    "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	// Track FetchRemote — should NOT be called in non-fork mode.
+	fetchCalled := false
+	d.git.FetchRemoteFunc = func(dir string) error {
+		fetchCalled = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fetchCalled {
+		t.Error("FetchRemote should NOT be called in non-fork mode")
+	}
+}
+
 func equalSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

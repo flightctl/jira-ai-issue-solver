@@ -634,6 +634,67 @@ func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
 	}
 }
 
+// --- ForkOwner ---
+
+func TestConfigResolver_ForkOwner(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Jira.AssigneeToGitHubUsername = map[string]string{
+		"alice@example.com": "alice-gh",
+		"bob@example.com":   "bob-gh",
+	}
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		workItem models.WorkItem
+		want     string
+	}{
+		{
+			name: "assignee in mapping",
+			workItem: models.WorkItem{
+				Key:        "PROJ-1",
+				Type:       "Bug",
+				Components: []string{"backend"},
+				Assignee:   &models.Author{Email: "alice@example.com"},
+			},
+			want: "alice-gh",
+		},
+		{
+			name: "assignee not in mapping",
+			workItem: models.WorkItem{
+				Key:        "PROJ-2",
+				Type:       "Bug",
+				Components: []string{"backend"},
+				Assignee:   &models.Author{Email: "charlie@example.com"},
+			},
+			want: "",
+		},
+		{
+			name: "no assignee",
+			workItem: models.WorkItem{
+				Key:        "PROJ-3",
+				Type:       "Bug",
+				Components: []string{"backend"},
+				Assignee:   nil,
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.ForkOwner(tt.workItem)
+			if got != tt.want {
+				t.Errorf("ForkOwner() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Imports propagation ---
 
 func TestResolveProject_PropagatesImports(t *testing.T) {

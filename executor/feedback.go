@@ -55,7 +55,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 3: Find PR by branch ---
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	prDetails, err := p.git.GetPRForBranch(settings.Owner, settings.Repo, branchName)
+	prDetails, err := p.git.GetPRForBranch(settings.Owner, settings.Repo, settings.PRHead(branchName))
 	if err != nil {
 		return result, fmt.Errorf("find PR for branch %s: %w", branchName, err)
 	}
@@ -68,6 +68,11 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	logger.Info("Workspace ready",
 		zap.String("path", wsPath),
 		zap.Bool("reused", reused))
+
+	// --- Step 4a: Set origin to fork and fetch ---
+	if err := p.ensureForkRemote(wsPath, settings); err != nil {
+		return result, err
+	}
 
 	// --- Step 5: Switch to branch and sync with remote ---
 	if err := p.git.SwitchBranch(wsPath, branchName); err != nil {
@@ -145,7 +150,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	authStripped := true
 	defer func() {
 		if authStripped {
-			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); restoreErr != nil {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); restoreErr != nil {
 				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
 			}
 		}
@@ -178,7 +183,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	result.CostUSD = session.CostUSD
 
 	// --- Step 13a: Restore remote auth ---
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); err != nil {
+	// In fork mode, origin is set to the fork so that SyncWithRemote
+	// fetches from the fork (where the API commit was created).
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
 		return result, fmt.Errorf("restore remote auth: %w", err)
 	}
 	authStripped = false
@@ -203,7 +210,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: address PR feedback", job.TicketKey)
 	sha, err := p.git.CommitChanges(
-		settings.Owner, settings.Repo, branchName,
+		settings.CommitOwner(), settings.Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
@@ -286,6 +293,22 @@ func (p *Pipeline) commentFilterConfig() commentfilter.Config {
 		KnownBotUsernames: p.cfg.KnownBotUsernames,
 		MaxThreadDepth:    p.cfg.MaxThreadDepth,
 	}
+}
+
+// ensureForkRemote sets the workspace origin to the assignee's fork
+// and fetches its refs so the PR branch is available locally. This is
+// a no-op when fork mode is not active (GitHubUsername is empty).
+func (p *Pipeline) ensureForkRemote(wsPath string, settings *models.ProjectSettings) error {
+	if settings.ForkOwner() == "" {
+		return nil
+	}
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
+		return fmt.Errorf("set fork remote: %w", err)
+	}
+	if err := p.git.FetchRemote(wsPath); err != nil {
+		return fmt.Errorf("fetch fork: %w", err)
+	}
+	return nil
 }
 
 // handleFeedbackFailure posts an error comment on feedback failure.
