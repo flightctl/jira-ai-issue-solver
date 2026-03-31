@@ -807,6 +807,8 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 				zap.String("file", filename))
 			treeEntries = append(treeEntries, models.GitHubTreeEntry{
 				Path: filename,
+				Mode: "100644",
+				Type: "blob",
 				SHA:  nil, // nil SHA tells GitHub to delete this file
 			})
 
@@ -830,6 +832,8 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			if !isExcludedPath(oldPath, excludes) {
 				treeEntries = append(treeEntries, models.GitHubTreeEntry{
 					Path: oldPath,
+					Mode: "100644",
+					Type: "blob",
 					SHA:  nil,
 				})
 			}
