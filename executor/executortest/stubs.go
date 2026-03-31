@@ -48,6 +48,7 @@ type StubGitService struct {
 	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
 	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
+	PostIssueCommentFunc   func(owner, repo string, prNumber int, body string) error
 	CloneImportFunc        func(url, destDir, ref string) error
 }
 
@@ -138,6 +139,13 @@ func (s *StubGitService) GetPRComments(owner, repo string, number int, since tim
 func (s *StubGitService) ReplyToComment(owner, repo string, prNumber int, commentID int64, body string) error {
 	if s.ReplyToCommentFunc != nil {
 		return s.ReplyToCommentFunc(owner, repo, prNumber, commentID, body)
+	}
+	return nil
+}
+
+func (s *StubGitService) PostIssueComment(owner, repo string, prNumber int, body string) error {
+	if s.PostIssueCommentFunc != nil {
+		return s.PostIssueCommentFunc(owner, repo, prNumber, body)
 	}
 	return nil
 }

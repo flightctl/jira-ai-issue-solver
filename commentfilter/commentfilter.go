@@ -19,10 +19,41 @@
 package commentfilter
 
 import (
+	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"jira-ai-issue-solver/models"
 )
+
+// addressedRe matches the HTML comment marker embedded in bot replies
+// to conversation comments. The captured group is the comment ID.
+var addressedRe = regexp.MustCompile(`<!-- addressed: (\d+) -->`)
+
+// AddressedMarker returns the HTML comment marker that links a bot
+// reply to the conversation comment it addresses.
+func AddressedMarker(commentID int64) string {
+	return fmt.Sprintf("<!-- addressed: %d -->", commentID)
+}
+
+// parseAddressedIDs extracts comment IDs from addressed markers in
+// the given text. Returns nil if no markers are found.
+func parseAddressedIDs(body string) []int64 {
+	matches := addressedRe.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(matches))
+	for _, m := range matches {
+		id, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
 
 // Config holds bot-loop prevention settings.
 type Config struct {
@@ -96,14 +127,7 @@ func Filter(comments []models.PRComment, cfg Config) []models.PRComment {
 func HasNewActionable(comments []models.PRComment, cfg Config) bool {
 	filtered := Filter(comments, cfg)
 	normBot := normalizeUsername(cfg.BotUsername)
-
-	// Build set of comment IDs the bot has replied to.
-	botRepliedTo := make(map[int64]bool)
-	for _, c := range filtered {
-		if normalizeUsername(c.Author.Username) == normBot && c.InReplyTo != 0 {
-			botRepliedTo[c.InReplyTo] = true
-		}
-	}
+	botRepliedTo := BotRepliedTo(filtered, normBot)
 
 	for _, c := range filtered {
 		if normalizeUsername(c.Author.Username) == normBot {
@@ -115,6 +139,28 @@ func HasNewActionable(comments []models.PRComment, cfg Config) bool {
 	}
 
 	return false
+}
+
+// BotRepliedTo builds the set of comment IDs that the bot has
+// replied to. For review comments this is detected via InReplyTo;
+// for conversation comments it is detected via addressed markers
+// embedded in the bot's comment body.
+func BotRepliedTo(comments []models.PRComment, normBot string) map[int64]bool {
+	replied := make(map[int64]bool)
+	for _, c := range comments {
+		if normalizeUsername(c.Author.Username) != normBot {
+			continue
+		}
+		// Review comment reply: threaded via InReplyTo.
+		if c.InReplyTo != 0 {
+			replied[c.InReplyTo] = true
+		}
+		// Conversation comment reply: marker in body.
+		for _, id := range parseAddressedIDs(c.Body) {
+			replied[id] = true
+		}
+	}
+	return replied
 }
 
 // normalizeUsername strips the GitHub [bot] suffix and lowercases

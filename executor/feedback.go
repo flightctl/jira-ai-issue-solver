@@ -247,21 +247,15 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 // and addressed (bot has already replied). Bot's own comments are
 // excluded from both lists.
 //
-// A comment is considered "addressed" when the bot has posted a reply
-// to it (identified by a bot comment whose InReplyTo matches the
-// comment's ID). All other non-bot comments are "new".
+// A review comment is "addressed" when the bot has a threaded reply
+// to it (InReplyTo match). A conversation comment is "addressed"
+// when the bot has posted a comment containing an addressed marker
+// (<!-- addressed: ID -->) referencing it.
 //
 // Both returned slices are non-nil (empty slices, not nil).
 func CategorizeComments(comments []models.PRComment, botUsername string) (newComments, addressed []models.PRComment) {
 	normBot := normalizeUsername(botUsername)
-
-	// Find which comment IDs the bot has replied to.
-	botRepliedTo := make(map[int64]bool)
-	for _, c := range comments {
-		if normalizeUsername(c.Author.Username) == normBot && c.InReplyTo != 0 {
-			botRepliedTo[c.InReplyTo] = true
-		}
-	}
+	botRepliedTo := commentfilter.BotRepliedTo(comments, normBot)
 
 	// Categorize non-bot comments.
 	for _, c := range comments {
@@ -334,7 +328,13 @@ func (p *Pipeline) handleFeedbackFailure(
 // When the AI provides a per-comment response summary (via
 // comment-responses.json), the reply includes that summary alongside
 // the commit reference. Otherwise, a generic "Addressed in <sha>"
-// reply is used. Failures are logged but not fatal.
+// reply is used.
+//
+// Review comments are replied to via the threaded review comment API.
+// Conversation comments are replied to via a new issue comment that
+// includes a machine-readable marker for deduplication.
+//
+// Failures are logged but not fatal.
 func (p *Pipeline) replyToComments(
 	logger *zap.Logger,
 	settings *models.ProjectSettings,
@@ -354,11 +354,25 @@ func (p *Pipeline) replyToComments(
 		} else {
 			replyBody = fmt.Sprintf("Addressed in %s.", shortSHA)
 		}
-		if err := p.git.ReplyToComment(
-			settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
-			logger.Warn("Failed to reply to comment",
-				zap.Int64("comment_id", c.ID),
-				zap.Error(err))
+
+		if c.IsReviewComment {
+			if err := p.git.ReplyToComment(
+				settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
+				logger.Warn("Failed to reply to review comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
+		} else {
+			// Conversation comments don't support threading, so
+			// embed a marker that CategorizeComments can parse to
+			// detect addressed comments.
+			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			if err := p.git.PostIssueComment(
+				settings.Owner, settings.Repo, prDetails.Number, markedBody); err != nil {
+				logger.Warn("Failed to reply to conversation comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
 		}
 	}
 }

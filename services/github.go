@@ -1657,11 +1657,42 @@ func (s *GitHubServiceImpl) ReplyToComment(owner, repo string, prNumber int, com
 		return fmt.Errorf("failed to reply to PR comment: %w", err)
 	}
 
-	s.logger.Debug("Replied to comment",
+	s.logger.Debug("Replied to review comment",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", prNumber),
 		zap.Int64("comment_id", commentID))
+
+	return nil
+}
+
+// PostIssueComment posts a top-level comment on a PR (via the issues
+// endpoint). Used for replying to conversation comments, which do not
+// support threading.
+func (s *GitHubServiceImpl) PostIssueComment(owner, repo string, prNumber int, body string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	comment := &github.IssueComment{Body: github.Ptr(body)}
+	_, _, err = ghClient.Issues.CreateComment(ctx, owner, repo, prNumber, comment)
+	if err != nil {
+		return fmt.Errorf("failed to post issue comment: %w", err)
+	}
+
+	s.logger.Debug("Posted issue comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int("pr_number", prNumber))
 
 	return nil
 }
@@ -1889,20 +1920,37 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 		return nil, fmt.Errorf("failed to get conversation comments: %w", err)
 	}
 
-	// Merge both types of comments
-	allGH := append(reviewComments, conversationComments...)
-
 	s.logger.Debug("Retrieved PR comments",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", number),
 		zap.Int("review_comments", len(reviewComments)),
 		zap.Int("conversation_comments", len(conversationComments)),
-		zap.Int("total_comments", len(allGH)))
+		zap.Int("total_comments", len(reviewComments)+len(conversationComments)))
 
 	// Convert to models.PRComment and apply the since filter.
-	result := make([]models.PRComment, 0, len(allGH))
-	for _, c := range allGH {
+	// Review comments and conversation comments are converted
+	// separately so IsReviewComment is set correctly.
+	result := make([]models.PRComment, 0, len(reviewComments)+len(conversationComments))
+	for _, c := range reviewComments {
+		if !since.IsZero() && !c.CreatedAt.After(since) {
+			continue
+		}
+		result = append(result, models.PRComment{
+			ID: c.ID,
+			Author: models.Author{
+				Name:     c.User.Login,
+				Username: c.User.Login,
+			},
+			Body:            c.Body,
+			FilePath:        c.Path,
+			Line:            c.Line,
+			Timestamp:       c.CreatedAt,
+			InReplyTo:       c.InReplyToID,
+			IsReviewComment: true,
+		})
+	}
+	for _, c := range conversationComments {
 		if !since.IsZero() && !c.CreatedAt.After(since) {
 			continue
 		}
@@ -1913,10 +1961,7 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 				Username: c.User.Login,
 			},
 			Body:      c.Body,
-			FilePath:  c.Path,
-			Line:      c.Line,
 			Timestamp: c.CreatedAt,
-			InReplyTo: c.InReplyToID,
 		})
 	}
 

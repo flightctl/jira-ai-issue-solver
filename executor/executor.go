@@ -146,9 +146,15 @@ type GitService interface {
 	GetPRComments(owner, repo string, number int,
 		since time.Time) ([]models.PRComment, error)
 
-	// ReplyToComment posts a reply to a specific PR comment.
+	// ReplyToComment posts a threaded reply to a PR review comment.
 	ReplyToComment(owner, repo string, prNumber int,
 		commentID int64, body string) error
+
+	// PostIssueComment posts a top-level comment on a PR (via the
+	// issues endpoint). Used for replying to conversation comments,
+	// which do not support threading.
+	PostIssueComment(owner, repo string, prNumber int,
+		body string) error
 
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after

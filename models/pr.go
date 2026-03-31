@@ -16,13 +16,14 @@ type PRDetails struct {
 // PRComment represents a single comment on a pull request.
 // Covers both file-level review comments and general PR comments.
 type PRComment struct {
-	ID        int64
-	Author    Author
-	Body      string
-	FilePath  string // Empty for general (non-file-specific) comments.
-	Line      int    // Zero for general comments.
-	Timestamp time.Time
-	InReplyTo int64 // Zero if this is not a reply to another comment.
+	ID              int64
+	Author          Author
+	Body            string
+	FilePath        string // Empty for general (non-file-specific) comments.
+	Line            int    // Zero for general comments.
+	Timestamp       time.Time
+	InReplyTo       int64 // Zero if this is not a reply to another comment.
+	IsReviewComment bool  // True for file-level review comments, false for conversation comments.
 }
 
 // PRParams contains the parameters for creating a new pull request.
