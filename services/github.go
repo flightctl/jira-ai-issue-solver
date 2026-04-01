@@ -536,10 +536,27 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 	// Use first parent as base tree (the branch we're merging into)
 	firstParent := parentSHAs[0]
 
-	// Get the base tree from the first parent on GitHub
+	// Get the base tree from the first parent on GitHub.
+	// The parent may not exist on the remote when the AI created
+	// local commits (rebase, merge, or regular commits that only
+	// exist locally). In that case, fall back to the remote branch
+	// HEAD so we can still create a valid API commit.
 	baseTreeSHA, err := s.getTreeSHAFromCommit(owner, repo, firstParent, token)
 	if err != nil {
-		return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
+		remoteSHA, branchExists, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, token)
+		if remoteErr != nil || !branchExists {
+			return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
+		}
+		s.logger.Warn("Local parent not found on remote, falling back to remote branch HEAD",
+			zap.String("localParent", firstParent),
+			zap.String("remoteSHA", remoteSHA),
+			zap.Error(err))
+		firstParent = remoteSHA
+		parentSHAs = []string{remoteSHA}
+		baseTreeSHA, err = s.getTreeSHAFromCommit(owner, repo, firstParent, token)
+		if err != nil {
+			return "", fmt.Errorf("failed to get base tree from remote branch HEAD: %w", err)
+		}
 	}
 
 	// Create blobs for files that changed from the first parent
