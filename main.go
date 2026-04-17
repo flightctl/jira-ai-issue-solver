@@ -239,11 +239,27 @@ func main() {
 		logger.Fatal("Failed to create feedback scanner", zap.Error(err))
 	}
 
+	cleanupScanner, err := scanner.NewWorkspaceCleanupScanner(
+		wsMgr,
+		issueTracker,
+		scanner.WorkspaceCleanupConfig{
+			PollInterval:   time.Duration(config.Jira.IntervalSeconds) * time.Second,
+			ActiveStatuses: activeStatuses,
+		},
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create workspace cleanup scanner", zap.Error(err))
+	}
+
 	if err := ticketScanner.Start(ctx); err != nil {
 		logger.Fatal("Failed to start work item scanner", zap.Error(err))
 	}
 	if err := feedbackScanner.Start(ctx); err != nil {
 		logger.Fatal("Failed to start feedback scanner", zap.Error(err))
+	}
+	if err := cleanupScanner.Start(ctx); err != nil {
+		logger.Fatal("Failed to start workspace cleanup scanner", zap.Error(err))
 	}
 
 	logger.Info("Scanners started")
@@ -290,6 +306,7 @@ func main() {
 	cancel()
 	ticketScanner.Stop()
 	feedbackScanner.Stop()
+	cleanupScanner.Stop()
 
 	// Drain running jobs.
 	coordinator.Shutdown()

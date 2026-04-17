@@ -12,11 +12,13 @@ import (
 
 // Compile-time checks.
 var (
-	_ scanner.Scanner       = (*StubScanner)(nil)
-	_ scanner.IssueSearcher = (*StubIssueSearcher)(nil)
-	_ scanner.JobSubmitter  = (*StubJobSubmitter)(nil)
-	_ scanner.PRFetcher     = (*StubPRFetcher)(nil)
-	_ scanner.RepoLocator   = (*StubRepoLocator)(nil)
+	_ scanner.Scanner             = (*StubScanner)(nil)
+	_ scanner.IssueSearcher       = (*StubIssueSearcher)(nil)
+	_ scanner.JobSubmitter        = (*StubJobSubmitter)(nil)
+	_ scanner.PRFetcher           = (*StubPRFetcher)(nil)
+	_ scanner.RepoLocator         = (*StubRepoLocator)(nil)
+	_ scanner.WorkspaceCleaner    = (*StubWorkspaceCleaner)(nil)
+	_ scanner.TicketStatusChecker = (*StubTicketStatusChecker)(nil)
 )
 
 // StubScanner is a test double for [scanner.Scanner].
@@ -110,4 +112,32 @@ func (s *StubRepoLocator) ForkOwner(workItem models.WorkItem) string {
 		return s.ForkOwnerFunc(workItem)
 	}
 	return ""
+}
+
+// StubWorkspaceCleaner is a test double for [scanner.WorkspaceCleaner].
+// Set the corresponding Func field to control each method's behavior.
+// When a Func field is nil, the method returns zero values.
+type StubWorkspaceCleaner struct {
+	CleanupByFilterFunc func(shouldRemove func(string) bool) (int, error)
+}
+
+func (s *StubWorkspaceCleaner) CleanupByFilter(shouldRemove func(string) bool) (int, error) {
+	if s.CleanupByFilterFunc != nil {
+		return s.CleanupByFilterFunc(shouldRemove)
+	}
+	return 0, nil
+}
+
+// StubTicketStatusChecker is a test double for [scanner.TicketStatusChecker].
+// Set the corresponding Func field to control each method's behavior.
+// When a Func field is nil, the method returns a zero-value WorkItem.
+type StubTicketStatusChecker struct {
+	GetWorkItemFunc func(key string) (*models.WorkItem, error)
+}
+
+func (s *StubTicketStatusChecker) GetWorkItem(key string) (*models.WorkItem, error) {
+	if s.GetWorkItemFunc != nil {
+		return s.GetWorkItemFunc(key)
+	}
+	return &models.WorkItem{}, nil
 }
