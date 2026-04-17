@@ -611,6 +611,7 @@ func (p *Pipeline) buildContainerEnv(provider string) map[string]string {
 	switch provider {
 	case "claude":
 		if p.cfg.ClaudeVertex != nil {
+			env["CLAUDE_CODE_USE_VERTEX"] = "1"
 			env["ANTHROPIC_VERTEX_PROJECT_ID"] = p.cfg.ClaudeVertex.ProjectID
 			env["CLOUD_ML_REGION"] = p.cfg.ClaudeVertex.Region
 			env["GOOGLE_APPLICATION_CREDENTIALS"] = containerCredsMountTarget
@@ -672,6 +673,13 @@ func (p *Pipeline) prepareBranch(
 	settings *models.ProjectSettings,
 ) error {
 	if !reused {
+		if forkOwner := settings.ForkOwner(); forkOwner != "" {
+			if err := p.git.SyncFork(forkOwner, settings.Repo, settings.BaseBranch); err != nil {
+				logger.Warn("Failed to sync fork with upstream",
+					zap.String("fork", forkOwner+"/"+settings.Repo),
+					zap.Error(err))
+			}
+		}
 		if err := p.git.CreateBranch(wsPath, branchName); err != nil {
 			return fmt.Errorf("create branch: %w", err)
 		}
@@ -750,6 +758,11 @@ func buildPRContent(workItem *models.WorkItem, ticketKey, titlePrefix string, ai
 		if aiPR.Body != "" {
 			body += "\n\n" + aiPR.Body
 		}
+	} else if aiPR != nil && aiPR.Body != "" {
+		// AI wrote a body but no usable title — use Jira summary as
+		// title but keep the AI-generated body.
+		title = fmt.Sprintf("%s: %s", ticketKey, workItem.Summary)
+		body = fmt.Sprintf("Resolves %s\n\n%s", ticketKey, aiPR.Body)
 	} else {
 		title = fmt.Sprintf("%s: %s", ticketKey, workItem.Summary)
 		body = fmt.Sprintf("Resolves %s\n\n## Summary\n%s", ticketKey, workItem.Summary)

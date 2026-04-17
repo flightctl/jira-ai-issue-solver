@@ -85,6 +85,12 @@ type Executor interface {
 // The underlying implementation (e.g., services.GitHubServiceImpl)
 // satisfies this interface.
 type GitService interface {
+	// SyncFork syncs a fork's default branch with its upstream
+	// parent via the GitHub merge-upstream API. Called before
+	// CreateBranch in fork-based workflows to prevent stale
+	// branches that produce massive diffs.
+	SyncFork(forkOwner, repo, branch string) error
+
 	// CreateBranch creates a new git branch in the workspace and
 	// switches to it.
 	CreateBranch(dir, name string) error

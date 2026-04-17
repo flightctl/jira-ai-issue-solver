@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -957,6 +958,9 @@ func TestExecuteNewTicket_VertexAI_SetsEnvVars(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if envVars["CLAUDE_CODE_USE_VERTEX"] != "1" {
+		t.Errorf("CLAUDE_CODE_USE_VERTEX = %q, want 1", envVars["CLAUDE_CODE_USE_VERTEX"])
 	}
 	if envVars["ANTHROPIC_VERTEX_PROJECT_ID"] != "my-gcp-project" {
 		t.Errorf("ANTHROPIC_VERTEX_PROJECT_ID = %q, want my-gcp-project", envVars["ANTHROPIC_VERTEX_PROJECT_ID"])
@@ -2016,6 +2020,52 @@ func TestParsePRContent_LabeledTitleWithBody(t *testing.T) {
 	}
 }
 
+func TestParsePRContent_GenericHeadingReturnsEmptyTitle(t *testing.T) {
+	headings := []string{
+		"## Summary",
+		"# Summary",
+		"## Description",
+		"## Test plan",
+		"## Overview",
+		"## Changes",
+	}
+	for _, h := range headings {
+		t.Run(h, func(t *testing.T) {
+			content := h + "\n\nSome body content."
+			title, body := executor.ParsePRContent(content)
+			if title != "" {
+				t.Errorf("Title = %q, want empty for generic heading", title)
+			}
+			if !strings.Contains(body, "Some body content") {
+				t.Errorf("Body should contain content, got: %q", body)
+			}
+		})
+	}
+}
+
+func TestReadPRDescription_GenericHeadingNoTitle(t *testing.T) {
+	dir := t.TempDir()
+	aiBotDir := filepath.Join(dir, ".ai-bot")
+	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := "## Summary\n- Fixed the bug\n- Added tests\n\n## Test plan\n- [ ] Manual test"
+	if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pr := executor.ReadPRDescription(dir)
+	if pr == nil {
+		t.Fatal("expected non-nil PRDescription with body")
+	}
+	if pr.Title != "" {
+		t.Errorf("Title = %q, want empty", pr.Title)
+	}
+	if !strings.Contains(pr.Body, "Fixed the bug") {
+		t.Errorf("Body should contain content, got: %q", pr.Body)
+	}
+}
+
 // --- buildPRContent ---
 
 func TestBuildPRContent_Default(t *testing.T) {
@@ -2077,12 +2127,27 @@ func TestBuildPRContent_SecurityLevelIgnoresAIPR(t *testing.T) {
 	}
 }
 
-func TestBuildPRContent_AIPREmptyTitle_FallsBack(t *testing.T) {
+func TestBuildPRContent_AIPREmptyTitle_UsesJiraTitleWithAIBody(t *testing.T) {
 	workItem := &models.WorkItem{Key: "PROJ-1", Summary: "Fix bug"}
-	aiPR := &executor.PRDescription{Title: "", Body: "some body"}
-	title, _ := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
+	aiPR := &executor.PRDescription{Title: "", Body: "## Summary\nAI-generated body."}
+	title, body := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
 	if title != "PROJ-1: Fix bug" {
 		t.Errorf("Title = %q, want Jira fallback %q", title, "PROJ-1: Fix bug")
+	}
+	if !strings.Contains(body, "AI-generated body") {
+		t.Errorf("Body should contain AI content, got: %q", body)
+	}
+}
+
+func TestBuildPRContent_AIPREmptyTitleAndBody_FallsBackCompletely(t *testing.T) {
+	workItem := &models.WorkItem{Key: "PROJ-1", Summary: "Fix bug", Description: "Details."}
+	aiPR := &executor.PRDescription{Title: "", Body: ""}
+	title, body := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
+	if title != "PROJ-1: Fix bug" {
+		t.Errorf("Title = %q, want Jira fallback %q", title, "PROJ-1: Fix bug")
+	}
+	if !strings.Contains(body, "Details.") {
+		t.Errorf("Body should contain Jira description, got: %q", body)
 	}
 }
 
@@ -2482,6 +2547,115 @@ func TestPrepareBranch_ForkMode(t *testing.T) {
 	}
 	if remoteCheckRepo != "repo" {
 		t.Errorf("RemoteBranchExists repo = %q, want repo", remoteCheckRepo)
+	}
+}
+
+func TestPrepareBranch_ForkMode_SyncsForkBeforeCreateBranch(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "backend",
+			CloneURL:         "https://github.com/upstream-org/backend.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "adalton",
+		}, nil
+	}
+
+	// Fresh workspace (not reused) triggers CreateBranch path.
+	d.workspaces.FindOrCreateFunc = func(ticketKey, repoURL string) (string, bool, error) {
+		return d.wsDir, false, nil
+	}
+
+	var syncOwner, syncRepo, syncBranch string
+	var syncCalled bool
+	d.git.SyncForkFunc = func(forkOwner, repo, branch string) error {
+		syncCalled = true
+		syncOwner = forkOwner
+		syncRepo = repo
+		syncBranch = branch
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !syncCalled {
+		t.Fatal("SyncFork was not called")
+	}
+	if syncOwner != "adalton" {
+		t.Errorf("SyncFork forkOwner = %q, want adalton", syncOwner)
+	}
+	if syncRepo != "backend" {
+		t.Errorf("SyncFork repo = %q, want backend", syncRepo)
+	}
+	if syncBranch != "main" {
+		t.Errorf("SyncFork branch = %q, want main", syncBranch)
+	}
+}
+
+func TestPrepareBranch_NoFork_SkipsSyncFork(t *testing.T) {
+	d := newTestDeps(t)
+
+	// No GitHubUsername = no fork mode.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	d.git.SyncForkFunc = func(forkOwner, repo, branch string) error {
+		t.Fatal("SyncFork should not be called without fork mode")
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareBranch_ForkMode_SyncForkErrorIsNonFatal(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "adalton",
+		}, nil
+	}
+
+	d.git.SyncForkFunc = func(forkOwner, repo, branch string) error {
+		return fmt.Errorf("merge-upstream failed: 403 Forbidden")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("SyncFork error should be non-fatal, got: %v", err)
 	}
 }
 

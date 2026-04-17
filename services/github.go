@@ -2191,3 +2191,65 @@ func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool
 
 	return true, nil
 }
+
+// SyncFork syncs a fork's branch with its upstream parent using the
+// GitHub merge-upstream API. This ensures the fork's default branch
+// is current before creating feature branches, preventing PRs that
+// include hundreds of unrelated commits.
+func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
+	token, err := s.getAuthTokenForRepo(forkOwner, repo)
+	if err != nil {
+		return fmt.Errorf("get auth token for fork %s/%s: %w", forkOwner, repo, err)
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/merge-upstream", forkOwner, repo)
+
+	payload := struct {
+		Branch string `json:"branch"`
+	}{Branch: branch}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal merge-upstream request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return fmt.Errorf("create merge-upstream request: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("merge-upstream request failed: %w", err)
+	}
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body",
+				zap.Error(localErr), zap.String("operation", "SyncFork"))
+		}
+	}()
+
+	if resp.StatusCode == http.StatusOK {
+		s.logger.Info("Fork synced with upstream",
+			zap.String("fork", forkOwner+"/"+repo),
+			zap.String("branch", branch))
+		return nil
+	}
+
+	// 409 means the branch cannot be fast-forwarded (fork has diverged).
+	// This is not fatal — CreateBranch will still work from origin/branch.
+	if resp.StatusCode == http.StatusConflict {
+		s.logger.Warn("Fork has diverged from upstream, cannot fast-forward",
+			zap.String("fork", forkOwner+"/"+repo),
+			zap.String("branch", branch))
+		return nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("merge-upstream failed for %s/%s: %s, status: %d",
+		forkOwner, repo, string(body), resp.StatusCode)
+}

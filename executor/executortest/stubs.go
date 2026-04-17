@@ -35,6 +35,7 @@ func (s *Stub) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager.Job
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubGitService struct {
+	SyncForkFunc           func(forkOwner, repo, branch string) error
 	CreateBranchFunc       func(dir, name string) error
 	SwitchBranchFunc       func(dir, name string) error
 	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
@@ -50,6 +51,13 @@ type StubGitService struct {
 	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
 	PostIssueCommentFunc   func(owner, repo string, prNumber int, body string) error
 	CloneImportFunc        func(url, destDir, ref string) error
+}
+
+func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
+	if s.SyncForkFunc != nil {
+		return s.SyncForkFunc(forkOwner, repo, branch)
+	}
+	return nil
 }
 
 func (s *StubGitService) CreateBranch(dir, name string) error {
