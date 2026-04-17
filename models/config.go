@@ -1086,11 +1086,5 @@ func (c *Config) validateClaudeAuth() error {
 		return fmt.Errorf("claude: incomplete Vertex AI configuration — missing: %s", strings.Join(missing, ", "))
 	}
 
-	if hasVertexCreds {
-		if _, err := os.Stat(c.Claude.VertexCredentialsFile); os.IsNotExist(err) {
-			return fmt.Errorf("claude.vertex_credentials_file does not exist: %s", c.Claude.VertexCredentialsFile)
-		}
-	}
-
 	return nil
 }

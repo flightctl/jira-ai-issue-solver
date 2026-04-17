@@ -235,7 +235,7 @@ claude:
   # Mode 2: Vertex AI
   vertex_project_id: "your-gcp-project-id"
   vertex_region: "us-east5"
-  vertex_credentials_file: "/path/to/gcp-sa-key.json"
+  vertex_credentials_file: "/path/to/gcp-sa-key.json"  # Host path — mounted into AI containers by the bot
 
   # Optional: Claude model override (e.g., "claude-sonnet-4-6").
   # Repo-level .ai-bot/config.yaml can further override this.

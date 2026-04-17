@@ -1307,12 +1307,9 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 
 	t.Run("vertex complete config is valid", func(t *testing.T) {
 		config := validBaseConfig(t)
-		credsFile := createTempKeyFile(t)
-		t.Cleanup(func() { _ = os.Remove(credsFile) })
-
 		config.Claude.VertexProjectID = "my-project"
 		config.Claude.VertexRegion = "us-east5"
-		config.Claude.VertexCredentialsFile = credsFile
+		config.Claude.VertexCredentialsFile = "/host/path/to/sa-key.json"
 		if err := config.validate(); err != nil {
 			t.Errorf("expected no error, got: %v", err)
 		}
@@ -1333,11 +1330,8 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 
 	t.Run("incomplete vertex missing region", func(t *testing.T) {
 		config := validBaseConfig(t)
-		credsFile := createTempKeyFile(t)
-		t.Cleanup(func() { _ = os.Remove(credsFile) })
-
 		config.Claude.VertexProjectID = "my-project"
-		config.Claude.VertexCredentialsFile = credsFile
+		config.Claude.VertexCredentialsFile = "/host/path/to/sa-key.json"
 		err := config.validate()
 		if err == nil {
 			t.Fatal("expected error for incomplete vertex config")
@@ -1362,19 +1356,6 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex credentials file does not exist", func(t *testing.T) {
-		config := validBaseConfig(t)
-		config.Claude.VertexProjectID = "my-project"
-		config.Claude.VertexRegion = "us-east5"
-		config.Claude.VertexCredentialsFile = "/nonexistent/path/sa-key.json"
-		err := config.validate()
-		if err == nil {
-			t.Fatal("expected error for missing credentials file")
-		}
-		if !strings.Contains(err.Error(), "does not exist") {
-			t.Errorf("error = %q, should mention 'does not exist'", err.Error())
-		}
-	})
 }
 
 func TestConfig_validateContainerConfiguration(t *testing.T) {
