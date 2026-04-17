@@ -68,5 +68,34 @@ type ProjectSettings struct {
 	// GitHubUsername is the GitHub username of the ticket assignee,
 	// resolved from the assignee-to-GitHub-username config mapping.
 	// Empty when the assignee has no mapping or the ticket is unassigned.
+	// When set, fork-based workflow is used: commits go to the
+	// assignee's fork (GitHubUsername/Repo) and PRs are created as
+	// cross-repo PRs targeting the upstream Owner/Repo.
 	GitHubUsername string
+}
+
+// ForkOwner returns the GitHub owner of the assignee's fork.
+// Returns empty string if no fork is configured (no assignee mapping).
+func (s *ProjectSettings) ForkOwner() string {
+	return s.GitHubUsername
+}
+
+// CommitOwner returns the repo owner to target for commits and
+// branch operations. When a fork owner is configured, commits go
+// to the fork; otherwise they go directly to the upstream repo.
+func (s *ProjectSettings) CommitOwner() string {
+	if s.GitHubUsername != "" {
+		return s.GitHubUsername
+	}
+	return s.Owner
+}
+
+// PRHead returns the head ref for PR creation. For fork-based PRs
+// this is "forkOwner:branch" (GitHub's cross-repo format); for
+// same-repo PRs it is just the branch name.
+func (s *ProjectSettings) PRHead(branch string) string {
+	if s.GitHubUsername != "" {
+		return s.GitHubUsername + ":" + branch
+	}
+	return branch
 }

@@ -126,7 +126,7 @@ func TestBuildExecCommand_ExitCodePreservation(t *testing.T) {
 }
 
 func TestBuildClaudeCommand(t *testing.T) {
-	cmd := buildClaudeCommand("")
+	cmd := buildClaudeCommand("", "")
 	if !strings.HasPrefix(cmd, "claude ") {
 		t.Errorf("expected command to start with 'claude ', got %q", cmd)
 	}
@@ -135,6 +135,23 @@ func TestBuildClaudeCommand(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "-p") {
 		t.Error("missing -p flag")
+	}
+}
+
+func TestBuildClaudeCommand_WithModel(t *testing.T) {
+	cmd := buildClaudeCommand("", "claude-sonnet-4-6")
+	if !strings.Contains(cmd, "--model") {
+		t.Error("missing --model flag")
+	}
+	if !strings.Contains(cmd, "claude-sonnet-4-6") {
+		t.Error("missing model name")
+	}
+}
+
+func TestBuildClaudeCommand_NoModel(t *testing.T) {
+	cmd := buildClaudeCommand("", "")
+	if strings.Contains(cmd, "--model") {
+		t.Error("should not contain --model when empty")
 	}
 }
 
@@ -152,8 +169,8 @@ func TestBuildGeminiCommand(t *testing.T) {
 }
 
 func TestBuildScriptParams(t *testing.T) {
-	t.Run("nil repo config uses default model", func(t *testing.T) {
-		params := buildScriptParams("gemini", "gemini-3.1-pro", nil)
+	t.Run("nil repo config uses default gemini model", func(t *testing.T) {
+		params := buildScriptParams("gemini", "", "gemini-3.1-pro", nil)
 		if params.Provider != "gemini" {
 			t.Errorf("provider = %q, want %q", params.Provider, "gemini")
 		}
@@ -162,8 +179,18 @@ func TestBuildScriptParams(t *testing.T) {
 		}
 	})
 
-	t.Run("nil repo config no default", func(t *testing.T) {
-		params := buildScriptParams("claude", "", nil)
+	t.Run("nil repo config uses default claude model", func(t *testing.T) {
+		params := buildScriptParams("claude", "claude-sonnet-4-6", "", nil)
+		if params.Provider != "claude" {
+			t.Errorf("provider = %q, want %q", params.Provider, "claude")
+		}
+		if params.Model != "claude-sonnet-4-6" {
+			t.Errorf("model = %q, want %q", params.Model, "claude-sonnet-4-6")
+		}
+	})
+
+	t.Run("nil repo config no defaults", func(t *testing.T) {
+		params := buildScriptParams("claude", "", "", nil)
 		if params.Provider != "claude" {
 			t.Errorf("provider = %q, want %q", params.Provider, "claude")
 		}
@@ -172,7 +199,7 @@ func TestBuildScriptParams(t *testing.T) {
 		}
 	})
 
-	t.Run("repo config overrides default model", func(t *testing.T) {
+	t.Run("repo config overrides default gemini model", func(t *testing.T) {
 		repoCfg := &repoconfig.Config{
 			ValidationCommands: []string{},
 			Imports:            []repoconfig.Import{},
@@ -181,9 +208,24 @@ func TestBuildScriptParams(t *testing.T) {
 				Gemini: &repoconfig.GeminiConfig{Model: "gemini-2.5-pro"},
 			},
 		}
-		params := buildScriptParams("gemini", "gemini-3.1-pro", repoCfg)
+		params := buildScriptParams("gemini", "", "gemini-3.1-pro", repoCfg)
 		if params.Model != "gemini-2.5-pro" {
 			t.Errorf("model = %q, want %q (repo override)", params.Model, "gemini-2.5-pro")
+		}
+	})
+
+	t.Run("repo config overrides default claude model", func(t *testing.T) {
+		repoCfg := &repoconfig.Config{
+			ValidationCommands: []string{},
+			Imports:            []repoconfig.Import{},
+			PR:                 repoconfig.PRConfig{Labels: []string{}},
+			AI: repoconfig.AIConfig{
+				Claude: &repoconfig.ClaudeConfig{Model: "claude-opus-4-6"},
+			},
+		}
+		params := buildScriptParams("claude", "claude-sonnet-4-6", "", repoCfg)
+		if params.Model != "claude-opus-4-6" {
+			t.Errorf("model = %q, want %q (repo override)", params.Model, "claude-opus-4-6")
 		}
 	})
 
@@ -196,16 +238,16 @@ func TestBuildScriptParams(t *testing.T) {
 				Gemini: &repoconfig.GeminiConfig{Model: ""},
 			},
 		}
-		params := buildScriptParams("gemini", "gemini-3.1-pro", repoCfg)
+		params := buildScriptParams("gemini", "", "gemini-3.1-pro", repoCfg)
 		if params.Model != "gemini-3.1-pro" {
 			t.Errorf("model = %q, want %q (default preserved)", params.Model, "gemini-3.1-pro")
 		}
 	})
 
-	t.Run("default model only applies to gemini provider", func(t *testing.T) {
-		params := buildScriptParams("claude", "gemini-3.1-pro", nil)
+	t.Run("default model only applies to matching provider", func(t *testing.T) {
+		params := buildScriptParams("claude", "", "gemini-3.1-pro", nil)
 		if params.Model != "" {
-			t.Errorf("model = %q, want empty for claude provider", params.Model)
+			t.Errorf("model = %q, want empty — gemini default should not apply to claude", params.Model)
 		}
 	})
 }

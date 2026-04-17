@@ -104,6 +104,10 @@ type ClaudeConfig struct {
 	// AllowedTools restricts which tools the AI can use
 	// (e.g., "Bash Edit Read Write").
 	AllowedTools string `yaml:"allowed_tools"`
+
+	// Model specifies the Claude model to use
+	// (e.g., "claude-sonnet-4-6"). Overrides the bot-level default.
+	Model string `yaml:"model"`
 }
 
 // GeminiConfig contains Gemini-specific settings.

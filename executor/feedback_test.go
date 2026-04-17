@@ -23,7 +23,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 	d := newFeedbackDeps(t)
 
 	var commitBranch string
-	d.git.CommitChangesFunc = func(_, _, branch, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, branch, _, _ string, _ *models.Author, _ []string) (string, error) {
 		commitBranch = branch
 		return "abc1234567890", nil
 	}
@@ -75,7 +75,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 	d := newFeedbackDeps(t)
 
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -113,7 +113,7 @@ func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 func TestExecuteFeedback_FallbackWhenNoResponsesFile(t *testing.T) {
 	d := newFeedbackDeps(t)
 
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "def5678901234", nil
 	}
 
@@ -305,7 +305,7 @@ func TestExecuteFeedback_NoNewComments(t *testing.T) {
 
 func TestExecuteFeedback_CommitFails(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -466,7 +466,7 @@ func TestExecuteFeedback_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -508,9 +508,9 @@ func TestExecuteFeedback_MultipleComments(t *testing.T) {
 
 	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
-			{ID: 1, Author: models.Author{Username: "reviewer1"}, Body: "Fix this"},
-			{ID: 2, Author: models.Author{Username: "reviewer2"}, Body: "Also fix that"},
-			{ID: 3, Author: models.Author{Username: "ai-bot"}, Body: "Addressed", InReplyTo: 1},
+			{ID: 1, Author: models.Author{Username: "reviewer1"}, Body: "Fix this", IsReviewComment: true},
+			{ID: 2, Author: models.Author{Username: "reviewer2"}, Body: "Also fix that", IsReviewComment: true},
+			{ID: 3, Author: models.Author{Username: "ai-bot"}, Body: "Addressed", InReplyTo: 1, IsReviewComment: true},
 		}, nil
 	}
 
@@ -539,6 +539,129 @@ func TestExecuteFeedback_MultipleComments(t *testing.T) {
 	// Only replied to comment 2 (the new one).
 	if len(repliedIDs) != 1 || repliedIDs[0] != 2 {
 		t.Errorf("repliedIDs = %v, want [2]", repliedIDs)
+	}
+}
+
+// --- Conversation comment reply routing ---
+
+func TestExecuteFeedback_ConversationCommentUsesPostIssueComment(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Update docs", IsReviewComment: false},
+		}, nil
+	}
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc1234567890", nil
+	}
+
+	reviewReplyCalled := false
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, _ int64, _ string) error {
+		reviewReplyCalled = true
+		return nil
+	}
+
+	var issueCommentBody string
+	d.git.PostIssueCommentFunc = func(_, _ string, _ int, body string) error {
+		issueCommentBody = body
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reviewReplyCalled {
+		t.Error("ReplyToComment should NOT be called for conversation comments")
+	}
+	if issueCommentBody == "" {
+		t.Fatal("PostIssueComment should be called for conversation comments")
+	}
+	if !strings.Contains(issueCommentBody, "abc1234") {
+		t.Errorf("issue comment should contain short SHA, got %q", issueCommentBody)
+	}
+	if !strings.Contains(issueCommentBody, "<!-- addressed: 100 -->") {
+		t.Errorf("issue comment should contain addressed marker, got %q", issueCommentBody)
+	}
+}
+
+func TestExecuteFeedback_ReviewCommentUsesReplyToComment(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this line", IsReviewComment: true},
+		}, nil
+	}
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "def5678901234", nil
+	}
+
+	var repliedID int64
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
+		repliedID = commentID
+		return nil
+	}
+
+	issueCommentCalled := false
+	d.git.PostIssueCommentFunc = func(_, _ string, _ int, _ string) error {
+		issueCommentCalled = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repliedID != 1 {
+		t.Errorf("ReplyToComment called with ID %d, want 1", repliedID)
+	}
+	if issueCommentCalled {
+		t.Error("PostIssueComment should NOT be called for review comments")
+	}
+}
+
+func TestExecuteFeedback_MixedCommentTypes(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix line", IsReviewComment: true},
+			{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "Update readme", IsReviewComment: false},
+		}, nil
+	}
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc1234567890", nil
+	}
+
+	var reviewRepliedIDs []int64
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
+		reviewRepliedIDs = append(reviewRepliedIDs, commentID)
+		return nil
+	}
+
+	var issueCommentBodies []string
+	d.git.PostIssueCommentFunc = func(_, _ string, _ int, body string) error {
+		issueCommentBodies = append(issueCommentBodies, body)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviewRepliedIDs) != 1 || reviewRepliedIDs[0] != 1 {
+		t.Errorf("review replies = %v, want [1]", reviewRepliedIDs)
+	}
+	if len(issueCommentBodies) != 1 {
+		t.Fatalf("issue comments count = %d, want 1", len(issueCommentBodies))
+	}
+	if !strings.Contains(issueCommentBodies[0], "<!-- addressed: 2 -->") {
+		t.Errorf("issue comment should contain addressed marker for ID 2, got %q", issueCommentBodies[0])
 	}
 }
 
@@ -656,6 +779,36 @@ func TestCategorizeComments_BotReplyToOwnComment(t *testing.T) {
 	}
 	if len(addrC) != 0 {
 		t.Errorf("addressed = %v, want empty", addrC)
+	}
+}
+
+func TestCategorizeComments_ConversationCommentAddressedViaMarker(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Update docs"},
+		{ID: 200, Author: models.Author{Username: "bot"}, Body: "Done.\n<!-- addressed: 100 -->"},
+	}
+
+	newC, addrC := executor.CategorizeComments(comments, "bot")
+
+	if len(addrC) != 1 || addrC[0].ID != 100 {
+		t.Errorf("addressed = %v, want [comment 100]", addrC)
+	}
+	if len(newC) != 0 {
+		t.Errorf("new = %v, want empty", newC)
+	}
+}
+
+func TestCategorizeComments_MarkerFromNonBotIgnored(t *testing.T) {
+	// A reviewer quoting the marker text should not count.
+	comments := []models.PRComment{
+		{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Update docs"},
+		{ID: 200, Author: models.Author{Username: "reviewer2"}, Body: "<!-- addressed: 100 -->"},
+	}
+
+	newC, _ := executor.CategorizeComments(comments, "bot")
+
+	if len(newC) != 2 {
+		t.Errorf("new count = %d, want 2 (marker from non-bot ignored)", len(newC))
 	}
 }
 
@@ -885,11 +1038,16 @@ func TestExecuteFeedback_AuthRestoredOnExecFailure(t *testing.T) {
 
 func TestExecuteFeedback_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
-	p := d.pipeline(t)
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"claude": "test-key"},
+		MaxRetries:      3,
+	})
 	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
 
 	if err == nil {
@@ -920,7 +1078,7 @@ func newFeedbackDeps(t *testing.T) *testDeps {
 	}
 	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
-			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Please fix this"},
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Please fix this", IsReviewComment: true},
 		}, nil
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -356,7 +357,7 @@ func TestExecuteNewTicket_ContainerStartFails(t *testing.T) {
 
 func TestExecuteNewTicket_CommitFails(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -577,7 +578,7 @@ func TestExecuteNewTicket_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -603,7 +604,7 @@ func TestExecuteNewTicket_NoAssignee_NilCoAuthor(t *testing.T) {
 	d := newTestDeps(t)
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -931,11 +932,205 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	}
 }
 
+// --- Vertex AI authentication ---
+
+func TestExecuteNewTicket_VertexAI_SetsEnvVars(t *testing.T) {
+	d := newTestDeps(t)
+
+	var envVars map[string]string
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		envVars = env
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	credsFile := createTempCredsFile(t)
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if envVars["CLAUDE_CODE_USE_VERTEX"] != "1" {
+		t.Errorf("CLAUDE_CODE_USE_VERTEX = %q, want 1", envVars["CLAUDE_CODE_USE_VERTEX"])
+	}
+	if envVars["ANTHROPIC_VERTEX_PROJECT_ID"] != "my-gcp-project" {
+		t.Errorf("ANTHROPIC_VERTEX_PROJECT_ID = %q, want my-gcp-project", envVars["ANTHROPIC_VERTEX_PROJECT_ID"])
+	}
+	if envVars["CLOUD_ML_REGION"] != "us-east5" {
+		t.Errorf("CLOUD_ML_REGION = %q, want us-east5", envVars["CLOUD_ML_REGION"])
+	}
+	if envVars["GOOGLE_APPLICATION_CREDENTIALS"] != executor.ContainerCredsMountTarget {
+		t.Errorf("GOOGLE_APPLICATION_CREDENTIALS = %q, want %q", envVars["GOOGLE_APPLICATION_CREDENTIALS"], executor.ContainerCredsMountTarget)
+	}
+	if _, ok := envVars["ANTHROPIC_API_KEY"]; ok {
+		t.Error("ANTHROPIC_API_KEY should not be set when using Vertex AI")
+	}
+}
+
+func TestExecuteNewTicket_VertexAI_MountsCredentialsFile(t *testing.T) {
+	d := newTestDeps(t)
+
+	credsFile := createTempCredsFile(t)
+
+	var receivedCfg *container.Config
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		receivedCfg = cfg
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the credentials mount in ExtraMounts.
+	var found bool
+	for _, m := range receivedCfg.ExtraMounts {
+		if m.Target == executor.ContainerCredsMountTarget {
+			found = true
+			if m.Source != credsFile {
+				t.Errorf("mount source = %q, want %q", m.Source, credsFile)
+			}
+			if m.Options != "ro" {
+				t.Errorf("mount options = %q, want ro", m.Options)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected credentials file mount in ExtraMounts")
+	}
+}
+
+func TestExecuteNewTicket_VertexAI_OverridesAPIKey(t *testing.T) {
+	d := newTestDeps(t)
+
+	var envVars map[string]string
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		envVars = env
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	credsFile := createTempCredsFile(t)
+
+	// Both AIAPIKeys and ClaudeVertex set — Vertex should take precedence.
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"claude": "sk-ant-should-not-be-used"},
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := envVars["ANTHROPIC_API_KEY"]; ok {
+		t.Error("ANTHROPIC_API_KEY should not be set when Vertex is configured")
+	}
+	if envVars["ANTHROPIC_VERTEX_PROJECT_ID"] != "my-gcp-project" {
+		t.Errorf("ANTHROPIC_VERTEX_PROJECT_ID = %q, want my-gcp-project", envVars["ANTHROPIC_VERTEX_PROJECT_ID"])
+	}
+}
+
+func TestExecuteNewTicket_VertexAI_NotUsedForGemini(t *testing.T) {
+	d := newTestDeps(t)
+
+	var envVars map[string]string
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		envVars = env
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	var receivedCfg *container.Config
+	origResolve := d.containers.ResolveConfigFunc
+	d.containers.ResolveConfigFunc = func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
+		cfg, err := origResolve(repoDir, projectOverride)
+		if err != nil {
+			return nil, err
+		}
+		receivedCfg = cfg
+		return cfg, nil
+	}
+
+	credsFile := createTempCredsFile(t)
+
+	// Vertex is configured but provider is gemini — vertex should not apply.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			AIProvider:       "gemini",
+		}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"gemini": "g-key"},
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should use gemini env, not vertex.
+	if envVars["AI_PROVIDER"] != "gemini" {
+		t.Errorf("AI_PROVIDER = %q, want gemini", envVars["AI_PROVIDER"])
+	}
+	if _, ok := envVars["ANTHROPIC_VERTEX_PROJECT_ID"]; ok {
+		t.Error("ANTHROPIC_VERTEX_PROJECT_ID should not be set for gemini provider")
+	}
+	if envVars["GEMINI_API_KEY"] != "g-key" {
+		t.Errorf("GEMINI_API_KEY = %q, want g-key", envVars["GEMINI_API_KEY"])
+	}
+
+	// Credentials file should not be mounted.
+	for _, m := range receivedCfg.ExtraMounts {
+		if m.Target == executor.ContainerCredsMountTarget {
+			t.Error("credentials file should not be mounted for gemini provider")
+		}
+	}
+}
+
 // --- ErrNoChanges handling ---
 
 func TestExecuteNewTicket_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -1744,6 +1939,148 @@ func TestReadPRDescription_StripsMarkdownHeading(t *testing.T) {
 	}
 }
 
+// --- parsePRContent ---
+
+func TestParsePRContent_LabeledTitle(t *testing.T) {
+	content := "# PR Description\n\n**Title:** Fix AAP OAuth app configuration precedence\n\n**Jira Ticket:** EDM-3430"
+	title, body := executor.ParsePRContent(content)
+
+	if title != "Fix AAP OAuth app configuration precedence" {
+		t.Errorf("Title = %q, want %q", title, "Fix AAP OAuth app configuration precedence")
+	}
+	// Body should exclude metadata lines.
+	if strings.Contains(body, "PR Description") {
+		t.Error("body should not contain generic heading")
+	}
+	if strings.Contains(body, "Jira Ticket") {
+		t.Error("body should not contain Jira ticket metadata")
+	}
+}
+
+func TestParsePRContent_LabeledTitlePlainText(t *testing.T) {
+	content := "Title: Fix the bug\n\nSome body content."
+	title, body := executor.ParsePRContent(content)
+
+	if title != "Fix the bug" {
+		t.Errorf("Title = %q, want %q", title, "Fix the bug")
+	}
+	if body != "Some body content." {
+		t.Errorf("Body = %q, want %q", body, "Some body content.")
+	}
+}
+
+func TestParsePRContent_HeadingSection(t *testing.T) {
+	content := "## Title\n\n**[EDM-3430]: Fix OAuth config**\n\n## Summary\nThe fix addresses the issue."
+	title, body := executor.ParsePRContent(content)
+
+	if title != "[EDM-3430]: Fix OAuth config" {
+		t.Errorf("Title = %q, want %q", title, "[EDM-3430]: Fix OAuth config")
+	}
+	if !strings.Contains(body, "The fix addresses") {
+		t.Errorf("Body should contain summary content, got: %q", body)
+	}
+	if strings.Contains(body, "## Title") {
+		t.Error("body should not contain the ## Title heading")
+	}
+}
+
+func TestParsePRContent_FallbackFirstLine(t *testing.T) {
+	content := "Fix NPE in UserService\n\n## Summary\nAdded null check."
+	title, body := executor.ParsePRContent(content)
+
+	if title != "Fix NPE in UserService" {
+		t.Errorf("Title = %q, want %q", title, "Fix NPE in UserService")
+	}
+	if !strings.Contains(body, "Added null check") {
+		t.Errorf("Body should contain 'Added null check', got: %q", body)
+	}
+}
+
+func TestParsePRContent_FallbackStripsHeadingPrefix(t *testing.T) {
+	content := "# Fix the bug\n\nBody text."
+	title, body := executor.ParsePRContent(content)
+
+	if title != "Fix the bug" {
+		t.Errorf("Title = %q, want %q", title, "Fix the bug")
+	}
+	if body != "Body text." {
+		t.Errorf("Body = %q, want %q", body, "Body text.")
+	}
+}
+
+func TestParsePRContent_LabeledTitleWithBody(t *testing.T) {
+	content := "# PR Description\n\n**Title:** Fix the bug\n\n## Summary\nDetailed explanation here."
+	title, body := executor.ParsePRContent(content)
+
+	if title != "Fix the bug" {
+		t.Errorf("Title = %q, want %q", title, "Fix the bug")
+	}
+	if !strings.Contains(body, "Detailed explanation") {
+		t.Errorf("Body should contain summary, got: %q", body)
+	}
+}
+
+func TestParsePRContent_GenericHeadingReturnsEmptyTitle(t *testing.T) {
+	headings := []string{
+		"## Summary",
+		"# Summary",
+		"## Description",
+		"## Test plan",
+		"## Overview",
+		"## Changes",
+	}
+	for _, h := range headings {
+		t.Run(h, func(t *testing.T) {
+			content := h + "\n\nSome body content."
+			title, body := executor.ParsePRContent(content)
+			if title != "" {
+				t.Errorf("Title = %q, want empty for generic heading", title)
+			}
+			if !strings.Contains(body, "Some body content") {
+				t.Errorf("Body should contain content, got: %q", body)
+			}
+		})
+	}
+}
+
+func TestParsePRContent_LabeledTitleIgnoredAfterHeader(t *testing.T) {
+	// A "Title:" line deep in the body should not be picked up as the PR title.
+	var lines []string
+	for i := range 15 {
+		lines = append(lines, fmt.Sprintf("Line %d of body content", i+1))
+	}
+	lines = append(lines, "Title: This should NOT be the title")
+	content := strings.Join(lines, "\n")
+
+	title, _ := executor.ParsePRContent(content)
+	if title == "This should NOT be the title" {
+		t.Error("Strategy 1 matched a Title: line outside the header region")
+	}
+}
+
+func TestReadPRDescription_GenericHeadingNoTitle(t *testing.T) {
+	dir := t.TempDir()
+	aiBotDir := filepath.Join(dir, ".ai-bot")
+	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := "## Summary\n- Fixed the bug\n- Added tests\n\n## Test plan\n- [ ] Manual test"
+	if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pr := executor.ReadPRDescription(dir)
+	if pr == nil {
+		t.Fatal("expected non-nil PRDescription with body")
+	}
+	if pr.Title != "" {
+		t.Errorf("Title = %q, want empty", pr.Title)
+	}
+	if !strings.Contains(pr.Body, "Fixed the bug") {
+		t.Errorf("Body should contain content, got: %q", pr.Body)
+	}
+}
+
 // --- buildPRContent ---
 
 func TestBuildPRContent_Default(t *testing.T) {
@@ -1805,12 +2142,27 @@ func TestBuildPRContent_SecurityLevelIgnoresAIPR(t *testing.T) {
 	}
 }
 
-func TestBuildPRContent_AIPREmptyTitle_FallsBack(t *testing.T) {
+func TestBuildPRContent_AIPREmptyTitle_UsesJiraTitleWithAIBody(t *testing.T) {
 	workItem := &models.WorkItem{Key: "PROJ-1", Summary: "Fix bug"}
-	aiPR := &executor.PRDescription{Title: "", Body: "some body"}
-	title, _ := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
+	aiPR := &executor.PRDescription{Title: "", Body: "## Summary\nAI-generated body."}
+	title, body := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
 	if title != "PROJ-1: Fix bug" {
 		t.Errorf("Title = %q, want Jira fallback %q", title, "PROJ-1: Fix bug")
+	}
+	if !strings.Contains(body, "AI-generated body") {
+		t.Errorf("Body should contain AI content, got: %q", body)
+	}
+}
+
+func TestBuildPRContent_AIPREmptyTitleAndBody_FallsBackCompletely(t *testing.T) {
+	workItem := &models.WorkItem{Key: "PROJ-1", Summary: "Fix bug", Description: "Details."}
+	aiPR := &executor.PRDescription{Title: "", Body: ""}
+	title, body := executor.BuildPRContent(workItem, "PROJ-1", "", aiPR)
+	if title != "PROJ-1: Fix bug" {
+		t.Errorf("Title = %q, want Jira fallback %q", title, "PROJ-1: Fix bug")
+	}
+	if !strings.Contains(body, "Details.") {
+		t.Errorf("Body should contain Jira description, got: %q", body)
 	}
 }
 
@@ -1822,6 +2174,19 @@ func TestBuildPRContent_AITitleWithTicketKey(t *testing.T) {
 	}
 	title, _ := executor.BuildPRContent(workItem, "EDM-2747", "", aiPR)
 	want := "EDM-2747: Differentiate manual stop from completion"
+	if title != want {
+		t.Errorf("Title = %q, want %q (no duplicate key)", title, want)
+	}
+}
+
+func TestBuildPRContent_AITitleWithBracketedTicketKey(t *testing.T) {
+	workItem := &models.WorkItem{Key: "EDM-3430", Summary: "Fix bug"}
+	aiPR := &executor.PRDescription{
+		Title: "[EDM-3430]: Fix OAuth config precedence",
+		Body:  "Root cause analysis.",
+	}
+	title, _ := executor.BuildPRContent(workItem, "EDM-3430", "", aiPR)
+	want := "EDM-3430: Fix OAuth config precedence"
 	if title != want {
 		t.Errorf("Title = %q, want %q (no duplicate key)", title, want)
 	}
@@ -2072,6 +2437,522 @@ func TestExecuteNewTicket_SkipsExistingAttachments(t *testing.T) {
 	}
 }
 
+// --- Fork-based workflow tests ---
+
+func TestNewTicketPipeline_ForkMode(t *testing.T) {
+	d := newTestDeps(t)
+
+	// Configure fork mode via GitHubUsername.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "bot-fork",
+		}, nil
+	}
+
+	// Capture arguments to verify fork owner and upstream owner.
+	var commitUpstreamOwner, commitOwner, commitRepo string
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		commitUpstreamOwner = upstreamOwner
+		commitOwner = owner
+		commitRepo = repo
+		return "abc123", nil
+	}
+
+	var restoreOwner, restoreRepo string
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		restoreOwner = owner
+		restoreRepo = repo
+		return nil
+	}
+
+	var prParams models.PRParams
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prParams = params
+		return &models.PR{Number: 42, URL: "https://github.com/upstream-org/repo/pull/42"}, nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newTicketJob("PROJ-123"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify CommitChanges uses fork owner.
+	if commitOwner != "bot-fork" {
+		t.Errorf("CommitChanges owner = %q, want bot-fork", commitOwner)
+	}
+	if commitRepo != "repo" {
+		t.Errorf("CommitChanges repo = %q, want repo", commitRepo)
+	}
+
+	// Verify RestoreRemoteAuth uses fork owner.
+	if restoreOwner != "bot-fork" {
+		t.Errorf("RestoreRemoteAuth owner = %q, want bot-fork", restoreOwner)
+	}
+	if restoreRepo != "repo" {
+		t.Errorf("RestoreRemoteAuth repo = %q, want repo", restoreRepo)
+	}
+
+	// Verify PR params: Owner/Repo should be upstream, Head should be "bot-fork:branch".
+	if prParams.Owner != "upstream-org" {
+		t.Errorf("PR Owner = %q, want upstream-org", prParams.Owner)
+	}
+	if prParams.Repo != "repo" {
+		t.Errorf("PR Repo = %q, want repo", prParams.Repo)
+	}
+	if !strings.HasPrefix(prParams.Head, "bot-fork:") {
+		t.Errorf("PR Head = %q, should start with bot-fork:", prParams.Head)
+	}
+	if !strings.Contains(prParams.Head, "PROJ-123") {
+		t.Errorf("PR Head = %q, should contain ticket key", prParams.Head)
+	}
+
+	// Verify upstream owner is passed for tree resolution.
+	if commitUpstreamOwner != "upstream-org" {
+		t.Errorf("CommitChanges upstreamOwner = %q, want upstream-org", commitUpstreamOwner)
+	}
+
+	// Verify result is valid.
+	if result.PRURL == "" {
+		t.Error("expected non-empty PRURL")
+	}
+}
+
+func TestPrepareBranch_ForkMode(t *testing.T) {
+	d := newTestDeps(t)
+
+	// Configure fork mode.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "bot-fork",
+		}, nil
+	}
+
+	// Workspace is reused and remote branch exists.
+	d.workspaces.FindOrCreateFunc = func(ticketKey, repoURL string) (string, bool, error) {
+		return d.wsDir, true, nil // reused
+	}
+
+	var remoteCheckOwner, remoteCheckRepo string
+	d.git.RemoteBranchExistsFunc = func(owner, repo, branch string) (bool, error) {
+		remoteCheckOwner = owner
+		remoteCheckRepo = repo
+		return true, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify RemoteBranchExists was called with fork owner.
+	if remoteCheckOwner != "bot-fork" {
+		t.Errorf("RemoteBranchExists owner = %q, want bot-fork", remoteCheckOwner)
+	}
+	if remoteCheckRepo != "repo" {
+		t.Errorf("RemoteBranchExists repo = %q, want repo", remoteCheckRepo)
+	}
+}
+
+func TestPrepareBranch_ForkMode_SyncsForkBeforeCreateBranch(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "backend",
+			CloneURL:         "https://github.com/upstream-org/backend.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "adalton",
+		}, nil
+	}
+
+	// Fresh workspace (not reused) triggers CreateBranch path.
+	d.workspaces.FindOrCreateFunc = func(ticketKey, repoURL string) (string, bool, error) {
+		return d.wsDir, false, nil
+	}
+
+	var syncOwner, syncRepo, syncBranch string
+	var syncCalled bool
+	d.git.SyncForkFunc = func(forkOwner, repo, branch string) error {
+		syncCalled = true
+		syncOwner = forkOwner
+		syncRepo = repo
+		syncBranch = branch
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !syncCalled {
+		t.Fatal("SyncFork was not called")
+	}
+	if syncOwner != "adalton" {
+		t.Errorf("SyncFork forkOwner = %q, want adalton", syncOwner)
+	}
+	if syncRepo != "backend" {
+		t.Errorf("SyncFork repo = %q, want backend", syncRepo)
+	}
+	if syncBranch != "main" {
+		t.Errorf("SyncFork branch = %q, want main", syncBranch)
+	}
+}
+
+func TestPrepareBranch_NoFork_SkipsSyncFork(t *testing.T) {
+	d := newTestDeps(t)
+
+	// No GitHubUsername = no fork mode.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	d.git.SyncForkFunc = func(forkOwner, repo, branch string) error {
+		t.Fatal("SyncFork should not be called without fork mode")
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareBranch_ForkMode_SyncForkErrorIsNonFatal(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "adalton",
+		}, nil
+	}
+
+	d.git.SyncForkFunc = func(forkOwner, repo, branch string) error {
+		return fmt.Errorf("merge-upstream failed: 403 Forbidden")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("SyncFork error should be non-fatal, got: %v", err)
+	}
+}
+
+func TestFeedbackPipeline_ForkMode(t *testing.T) {
+	d := newTestDeps(t)
+
+	// Configure fork mode.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "upstream-org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/upstream-org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			GitHubUsername:   "bot-fork",
+		}, nil
+	}
+
+	// Track the head format passed to GetPRForBranch.
+	var prHead string
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		prHead = head
+		return &models.PRDetails{
+			Number: 42,
+			Title:  "Fix a bug",
+			Branch: "ai-bot/PROJ-1",
+			URL:    "https://github.com/upstream-org/repo/pull/42",
+		}, nil
+	}
+
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	// Track RestoreRemoteAuth and FetchRemote calls.
+	var restoreCalled, fetchCalled bool
+	var restoreOwner, restoreRepo string
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		if !restoreCalled {
+			// First call is the fork setup.
+			restoreCalled = true
+			restoreOwner = owner
+			restoreRepo = repo
+		}
+		return nil
+	}
+	d.git.FetchRemoteFunc = func(dir string) error {
+		fetchCalled = true
+		return nil
+	}
+
+	// Track CommitChanges owner.
+	var commitUpstreamOwner, commitOwner, commitRepo string
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		commitUpstreamOwner = upstreamOwner
+		commitOwner = owner
+		commitRepo = repo
+		return "abc123", nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify GetPRForBranch received "bot-fork:ai-bot/PROJ-1" head format.
+	if prHead != "bot-fork:ai-bot/PROJ-1" {
+		t.Errorf("GetPRForBranch head = %q, want bot-fork:ai-bot/PROJ-1", prHead)
+	}
+
+	// Verify RestoreRemoteAuth was called with fork owner before switching branch.
+	if !restoreCalled {
+		t.Fatal("RestoreRemoteAuth should be called to set fork remote")
+	}
+	if restoreOwner != "bot-fork" {
+		t.Errorf("RestoreRemoteAuth owner = %q, want bot-fork", restoreOwner)
+	}
+	if restoreRepo != "repo" {
+		t.Errorf("RestoreRemoteAuth repo = %q, want repo", restoreRepo)
+	}
+
+	// Verify FetchRemote was called.
+	if !fetchCalled {
+		t.Error("FetchRemote should be called in fork mode")
+	}
+
+	// Verify CommitChanges uses fork owner with upstream for tree lookup.
+	if commitUpstreamOwner != "upstream-org" {
+		t.Errorf("CommitChanges upstreamOwner = %q, want upstream-org", commitUpstreamOwner)
+	}
+	if commitOwner != "bot-fork" {
+		t.Errorf("CommitChanges owner = %q, want bot-fork", commitOwner)
+	}
+	if commitRepo != "repo" {
+		t.Errorf("CommitChanges repo = %q, want repo", commitRepo)
+	}
+}
+
+// --- Feedback ErrNoChanges final attempt ---
+
+func TestFeedbackPipeline_ErrNoChanges_NonFinalAttempt_ReturnsError(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Title: "Fix a bug",
+			Branch: head, URL: "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 10, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "", services.ErrNoChanges
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"claude": "test-key"},
+		MaxRetries:      3,
+	})
+
+	// AttemptNum 1 (of 4 total) — not the final attempt.
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err == nil {
+		t.Fatal("expected error on non-final attempt with ErrNoChanges")
+	}
+	if !strings.Contains(err.Error(), "no committable changes") {
+		t.Errorf("error = %q, should mention 'no committable changes'", err.Error())
+	}
+}
+
+func TestFeedbackPipeline_ErrNoChanges_FinalAttempt_PostsUnableToAddress(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Title: "Fix a bug",
+			Branch: head, URL: "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+
+	reviewComment := models.PRComment{
+		ID: 10, Author: models.Author{Username: "reviewer"},
+		Body: "Fix this", IsReviewComment: true,
+	}
+	conversationComment := models.PRComment{
+		ID: 20, Author: models.Author{Username: "reviewer"},
+		Body: "Also fix that", IsReviewComment: false,
+	}
+
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{reviewComment, conversationComment}, nil
+	}
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "", services.ErrNoChanges
+	}
+
+	var reviewReplies []int64
+	d.git.ReplyToCommentFunc = func(owner, repo string, prNumber int, commentID int64, body string) error {
+		reviewReplies = append(reviewReplies, commentID)
+		if !strings.Contains(body, "unable to produce code changes") {
+			t.Errorf("review reply body = %q, should mention inability", body)
+		}
+		return nil
+	}
+
+	var issueCommentBodies []string
+	d.git.PostIssueCommentFunc = func(owner, repo string, prNumber int, body string) error {
+		issueCommentBodies = append(issueCommentBodies, body)
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"claude": "test-key"},
+		MaxRetries:      3,
+	})
+
+	// AttemptNum 4 (> MaxRetries 3) — final attempt.
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 4,
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error on final attempt, got %v", err)
+	}
+
+	// Verify review comment got a threaded reply.
+	if len(reviewReplies) != 1 || reviewReplies[0] != 10 {
+		t.Errorf("review replies = %v, want [10]", reviewReplies)
+	}
+
+	// Verify conversation comment got an issue comment with addressed marker.
+	if len(issueCommentBodies) != 1 {
+		t.Fatalf("expected 1 issue comment, got %d", len(issueCommentBodies))
+	}
+	if !strings.Contains(issueCommentBodies[0], "unable to produce code changes") {
+		t.Error("issue comment should mention inability")
+	}
+	if !strings.Contains(issueCommentBodies[0], "<!-- addressed: 20 -->") {
+		t.Errorf("issue comment should contain addressed marker for comment 20, got: %q", issueCommentBodies[0])
+	}
+}
+
+func TestFeedbackPipeline_NonForkMode_SkipsFetchRemote(t *testing.T) {
+	d := newTestDeps(t)
+
+	// No GitHubUsername set (non-fork mode).
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42,
+			Title:  "Fix a bug",
+			Branch: "ai-bot/PROJ-1",
+			URL:    "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	// Track FetchRemote — should NOT be called in non-fork mode.
+	fetchCalled := false
+	d.git.FetchRemoteFunc = func(dir string) error {
+		fetchCalled = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fetchCalled {
+		t.Error("FetchRemote should NOT be called in non-fork mode")
+	}
+}
+
 func equalSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -2116,7 +2997,7 @@ func newTestDeps(t *testing.T) *testDeps {
 			HasChangesFunc: func(dir string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 				return "abc123", nil
 			},
 			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {
@@ -2200,4 +3081,17 @@ func writeSessionOutput(t *testing.T, wsDir string, output executor.SessionOutpu
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func createTempCredsFile(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "gcp-sa-key-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	return f.Name()
 }

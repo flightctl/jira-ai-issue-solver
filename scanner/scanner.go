@@ -76,4 +76,23 @@ type RepoLocator interface {
 	// LocateRepo returns the GitHub owner and repo name for the
 	// given work item's component-to-repo mapping.
 	LocateRepo(workItem models.WorkItem) (owner, repo string, err error)
+
+	// ForkOwner returns the GitHub username that owns the fork where
+	// the bot pushes branches. Returns empty string when the assignee
+	// has no mapping (no fork-based workflow).
+	ForkOwner(workItem models.WorkItem) string
+}
+
+// WorkspaceCleaner removes workspaces matching a caller-provided
+// predicate. Used by [WorkspaceCleanupScanner] to remove workspaces
+// for tickets in terminal states.
+type WorkspaceCleaner interface {
+	CleanupByFilter(shouldRemove func(ticketKey string) bool) (int, error)
+}
+
+// TicketStatusChecker retrieves the current status of a ticket. Used
+// by [WorkspaceCleanupScanner] to determine whether a workspace's
+// ticket is still active.
+type TicketStatusChecker interface {
+	GetWorkItem(key string) (*models.WorkItem, error)
 }

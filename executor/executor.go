@@ -85,6 +85,12 @@ type Executor interface {
 // The underlying implementation (e.g., services.GitHubServiceImpl)
 // satisfies this interface.
 type GitService interface {
+	// SyncFork syncs a fork's default branch with its upstream
+	// parent via the GitHub merge-upstream API. Called before
+	// CreateBranch in fork-based workflows to prevent stale
+	// branches that produce massive diffs.
+	SyncFork(forkOwner, repo, branch string) error
+
 	// CreateBranch creates a new git branch in the workspace and
 	// switches to it.
 	CreateBranch(dir, name string) error
@@ -106,10 +112,16 @@ type GitService interface {
 	// CommitChanges creates a verified commit via the GitHub API
 	// from local workspace changes. Returns the commit SHA.
 	// Returns services.ErrNoChanges if all changes are bot
-	// artifacts and there is nothing to commit. importExcludes
-	// lists additional directories (from import config) to exclude
-	// from commits beyond the built-in .ai-bot/ exclusion.
-	CommitChanges(owner, repo, branch, message, dir string,
+	// artifacts and there is nothing to commit.
+	//
+	// upstreamOwner is the GitHub owner of the upstream repository.
+	// In non-fork workflows it equals owner. In fork workflows it
+	// identifies where the parent commit originated so the tree
+	// can be resolved there when the fork API cannot find it.
+	// importExcludes lists additional directories (from import
+	// config) to exclude from commits beyond the built-in .ai-bot/
+	// exclusion.
+	CommitChanges(upstreamOwner, owner, repo, branch, message, dir string,
 		coAuthor *models.Author, importExcludes []string) (string, error)
 
 	// StripRemoteAuth removes authentication credentials from the
@@ -122,6 +134,11 @@ type GitService interface {
 	// called after AI execution, before any operation that needs
 	// remote access (e.g., SyncWithRemote).
 	RestoreRemoteAuth(dir, owner, repo string) error
+
+	// FetchRemote fetches all refs from the origin remote. Used in
+	// fork-based workflows to fetch fork branches into a workspace
+	// that was cloned from upstream.
+	FetchRemote(dir string) error
 
 	// SyncWithRemote reconciles the local workspace with the remote
 	// branch after an API-created commit. importExcludes lists
@@ -141,9 +158,15 @@ type GitService interface {
 	GetPRComments(owner, repo string, number int,
 		since time.Time) ([]models.PRComment, error)
 
-	// ReplyToComment posts a reply to a specific PR comment.
+	// ReplyToComment posts a threaded reply to a PR review comment.
 	ReplyToComment(owner, repo string, prNumber int,
 		commentID int64, body string) error
+
+	// PostIssueComment posts a top-level comment on a PR (via the
+	// issues endpoint). Used for replying to conversation comments,
+	// which do not support threading.
+	PostIssueComment(owner, repo string, prNumber int,
+		body string) error
 
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after
@@ -176,6 +199,12 @@ type Config struct {
 	// into the container environment (e.g., {"claude": "sk-..."}).
 	AIAPIKeys map[string]string
 
+	// ClaudeVertex holds Vertex AI authentication settings for
+	// Claude. When configured, the pipeline injects Vertex-specific
+	// env vars and mounts the credentials file into the container
+	// instead of setting ANTHROPIC_API_KEY.
+	ClaudeVertex *ClaudeVertexConfig
+
 	// SessionTimeout is the maximum duration for an AI session
 	// inside the container. Zero means no explicit timeout (only
 	// the parent context controls cancellation).
@@ -194,7 +223,35 @@ type Config struct {
 	// thread are excluded. Zero or negative disables the limit.
 	MaxThreadDepth int
 
+	// DefaultClaudeModel is the Claude model to use when the
+	// repo-level config doesn't specify one (e.g., "claude-sonnet-4-6").
+	// Empty means Claude Code's built-in default.
+	DefaultClaudeModel string
+
 	// DefaultGeminiModel is the Gemini model to use when the
 	// repo-level config doesn't specify one (e.g., "gemini-2.5-pro").
 	DefaultGeminiModel string
+
+	// MaxRetries is the maximum retry count from the job manager.
+	// Used by the feedback pipeline to post an honest "unable to
+	// address" reply on the final attempt instead of failing
+	// silently and looping.
+	MaxRetries int
+}
+
+// ClaudeVertexConfig holds Vertex AI authentication settings for
+// Claude Code. These are injected into the container as environment
+// variables, and the credentials file is mounted read-only.
+type ClaudeVertexConfig struct {
+	// ProjectID is the GCP project ID
+	// (env: ANTHROPIC_VERTEX_PROJECT_ID).
+	ProjectID string
+
+	// Region is the GCP region (env: CLOUD_ML_REGION).
+	Region string
+
+	// CredentialsFile is the host path to the GCP service account
+	// JSON key file. Mounted read-only into the container at
+	// /run/secrets/gcp-sa-key.json.
+	CredentialsFile string
 }

@@ -356,11 +356,29 @@ type Config struct {
 	// AI Provider selection
 	AIProvider string `yaml:"ai_provider" mapstructure:"ai_provider" default:"claude"` // "claude" or "gemini"
 
-	// Claude configuration — only the API key is needed at the bot level;
+	// Claude configuration — authentication is needed at the bot level;
 	// CLI path, timeout, and tool settings are configured per-repo via
 	// .ai-bot/config.yaml or container environment.
+	//
+	// Two authentication modes are supported (mutually exclusive):
+	//   1. Direct API key: set api_key (JIRA_AI_CLAUDE_API_KEY)
+	//   2. Vertex AI: set vertex_project_id, vertex_region, and
+	//      vertex_credentials_file (JIRA_AI_CLAUDE_VERTEX_*)
 	Claude struct {
 		APIKey string `yaml:"api_key" mapstructure:"api_key"`
+
+		// Model overrides the default Claude model (e.g.,
+		// "claude-sonnet-4-6"). Repo-level .ai-bot/config.yaml
+		// can further override this. Empty means Claude Code's
+		// built-in default.
+		Model string `yaml:"model" mapstructure:"model"`
+
+		// Vertex AI authentication fields. When set, Claude Code
+		// uses Anthropic's Vertex AI integration instead of the
+		// direct API. All three fields must be set together.
+		VertexProjectID       string `yaml:"vertex_project_id" mapstructure:"vertex_project_id"`
+		VertexRegion          string `yaml:"vertex_region" mapstructure:"vertex_region"`
+		VertexCredentialsFile string `yaml:"vertex_credentials_file" mapstructure:"vertex_credentials_file"`
 	} `yaml:"claude" mapstructure:"claude"`
 
 	// Gemini configuration.
@@ -597,6 +615,10 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// AI API key configuration
 	bindEnv("claude.api_key")
+	bindEnv("claude.model")
+	bindEnv("claude.vertex_project_id")
+	bindEnv("claude.vertex_region")
+	bindEnv("claude.vertex_credentials_file")
 	bindEnv("gemini.api_key")
 	bindEnv("gemini.model")
 
@@ -847,6 +869,10 @@ func (c *Config) validate() error {
 		return errors.New("ai_provider must be either 'claude' or 'gemini'")
 	}
 
+	if err := c.validateClaudeAuth(); err != nil {
+		return err
+	}
+
 	// Validate logging configuration
 	if !c.Logging.Level.IsValid() {
 		return fmt.Errorf("invalid log level: %s. Valid options are: debug, info, warn, error", c.Logging.Level)
@@ -1028,5 +1054,41 @@ func (cc *ContainerCfg) validate() error {
 			return fmt.Errorf("container.runtime must be \"auto\", \"podman\", or \"docker\", got %q", cc.Runtime)
 		}
 	}
+	return nil
+}
+
+// validateClaudeAuth checks that Claude authentication is configured
+// correctly: either a direct API key or all three Vertex AI fields,
+// but not both.
+func (c *Config) validateClaudeAuth() error {
+	hasAPIKey := c.Claude.APIKey != ""
+	hasVertexProject := c.Claude.VertexProjectID != ""
+	hasVertexRegion := c.Claude.VertexRegion != ""
+	hasVertexCreds := c.Claude.VertexCredentialsFile != ""
+	hasAnyVertex := hasVertexProject || hasVertexRegion || hasVertexCreds
+	hasAllVertex := hasVertexProject && hasVertexRegion && hasVertexCreds
+
+	if hasAPIKey && hasAnyVertex {
+		return errors.New("claude: api_key and vertex_* fields are mutually exclusive — configure one authentication mode, not both")
+	}
+
+	if hasAnyVertex && !hasAllVertex {
+		var missing []string
+		if !hasVertexProject {
+			missing = append(missing, "vertex_project_id")
+		}
+		if !hasVertexRegion {
+			missing = append(missing, "vertex_region")
+		}
+		if !hasVertexCreds {
+			missing = append(missing, "vertex_credentials_file")
+		}
+		return fmt.Errorf("claude: incomplete Vertex AI configuration — missing: %s", strings.Join(missing, ", "))
+	}
+
+	if c.AIProvider == "claude" && !hasAPIKey && !hasAllVertex {
+		return errors.New("claude: ai_provider is \"claude\" but no authentication configured — set api_key or all vertex_* fields")
+	}
+
 	return nil
 }

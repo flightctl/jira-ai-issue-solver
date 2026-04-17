@@ -984,3 +984,157 @@ func TestGitHubService_HasChanges_NewBranch(t *testing.T) {
 		t.Error("Expected HasChanges to return false for new branch with no divergent commits, but got true")
 	}
 }
+
+func TestSyncFork_Success(t *testing.T) {
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method == "POST" && strings.Contains(req.URL.Path, "/merge-upstream") {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"message":"Successfully fetched and fast-forwarded from upstream","merge_type":"fast-forward"}`))),
+			}, nil
+		}
+		if strings.Contains(req.URL.Path, "/installation") {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":1,"access_tokens_url":"https://api.github.com/app/installations/1/access_tokens","target_type":"User","account":{"login":"adalton"}}`))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}, nil
+	})
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		mockClient.Transport,
+		config.GitHub.AppID,
+		keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	service := &GitHubServiceImpl{
+		config:              config,
+		client:              mockClient,
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		installationIDs:     map[string]int64{"adalton/repo": 1},
+		logger:              zap.NewNop(),
+	}
+
+	err = service.SyncFork("adalton", "repo", "main")
+	if err != nil {
+		t.Fatalf("SyncFork should succeed, got: %v", err)
+	}
+}
+
+func TestSyncFork_ConflictIsNonFatal(t *testing.T) {
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method == "POST" && strings.Contains(req.URL.Path, "/merge-upstream") {
+			return &http.Response{
+				StatusCode: http.StatusConflict,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"message":"merge conflict"}`))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}, nil
+	})
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		mockClient.Transport,
+		config.GitHub.AppID,
+		keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	service := &GitHubServiceImpl{
+		config:              config,
+		client:              mockClient,
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		installationIDs:     map[string]int64{"adalton/repo": 1},
+		logger:              zap.NewNop(),
+	}
+
+	err = service.SyncFork("adalton", "repo", "main")
+	if err != nil {
+		t.Fatalf("SyncFork should treat 409 as non-fatal, got: %v", err)
+	}
+}
+
+func TestSyncFork_APIError(t *testing.T) {
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method == "POST" && strings.Contains(req.URL.Path, "/merge-upstream") {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"message":"forbidden"}`))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}, nil
+	})
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		mockClient.Transport,
+		config.GitHub.AppID,
+		keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	service := &GitHubServiceImpl{
+		config:              config,
+		client:              mockClient,
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		installationIDs:     map[string]int64{"adalton/repo": 1},
+		logger:              zap.NewNop(),
+	}
+
+	err = service.SyncFork("adalton", "repo", "main")
+	if err == nil {
+		t.Fatal("SyncFork should return error for 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("error should mention API response, got: %v", err)
+	}
+}

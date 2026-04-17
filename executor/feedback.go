@@ -55,7 +55,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 3: Find PR by branch ---
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	prDetails, err := p.git.GetPRForBranch(settings.Owner, settings.Repo, branchName)
+	prDetails, err := p.git.GetPRForBranch(settings.Owner, settings.Repo, settings.PRHead(branchName))
 	if err != nil {
 		return result, fmt.Errorf("find PR for branch %s: %w", branchName, err)
 	}
@@ -68,6 +68,11 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	logger.Info("Workspace ready",
 		zap.String("path", wsPath),
 		zap.Bool("reused", reused))
+
+	// --- Step 4a: Set origin to fork and fetch ---
+	if err := p.ensureForkRemote(wsPath, settings); err != nil {
+		return result, err
+	}
 
 	// --- Step 5: Switch to branch and sync with remote ---
 	if err := p.git.SwitchBranch(wsPath, branchName); err != nil {
@@ -124,7 +129,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	logger.Info("AI provider selected", zap.String("provider", provider))
 
 	// --- Step 11: Build AI command ---
-	sp := buildScriptParams(provider, p.cfg.DefaultGeminiModel, repoCfg)
+	sp := buildScriptParams(provider, p.cfg.DefaultClaudeModel, p.cfg.DefaultGeminiModel, repoCfg)
 	execCommand := buildExecCommand(sp)
 
 	// --- Step 12: Resolve and start container ---
@@ -145,7 +150,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	authStripped := true
 	defer func() {
 		if authStripped {
-			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); restoreErr != nil {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); restoreErr != nil {
 				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
 			}
 		}
@@ -178,7 +183,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	result.CostUSD = session.CostUSD
 
 	// --- Step 13a: Restore remote auth ---
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); err != nil {
+	// In fork mode, origin is set to the fork so that SyncWithRemote
+	// fetches from the fork (where the API commit was created).
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
 		return result, fmt.Errorf("restore remote auth: %w", err)
 	}
 	authStripped = false
@@ -203,10 +210,15 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: address PR feedback", job.TicketKey)
 	sha, err := p.git.CommitChanges(
-		settings.Owner, settings.Repo, branchName,
+		settings.Owner, settings.CommitOwner(), settings.Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
+		if p.isFinalAttempt(job.AttemptNum) {
+			logger.Info("Final attempt produced no changes, posting unable-to-address replies")
+			p.replyUnableToAddress(logger, settings, prDetails, newComments)
+			return result, nil
+		}
 		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
 	}
 	if err != nil {
@@ -240,21 +252,15 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 // and addressed (bot has already replied). Bot's own comments are
 // excluded from both lists.
 //
-// A comment is considered "addressed" when the bot has posted a reply
-// to it (identified by a bot comment whose InReplyTo matches the
-// comment's ID). All other non-bot comments are "new".
+// A review comment is "addressed" when the bot has a threaded reply
+// to it (InReplyTo match). A conversation comment is "addressed"
+// when the bot has posted a comment containing an addressed marker
+// (<!-- addressed: ID -->) referencing it.
 //
 // Both returned slices are non-nil (empty slices, not nil).
 func CategorizeComments(comments []models.PRComment, botUsername string) (newComments, addressed []models.PRComment) {
 	normBot := normalizeUsername(botUsername)
-
-	// Find which comment IDs the bot has replied to.
-	botRepliedTo := make(map[int64]bool)
-	for _, c := range comments {
-		if normalizeUsername(c.Author.Username) == normBot && c.InReplyTo != 0 {
-			botRepliedTo[c.InReplyTo] = true
-		}
-	}
+	botRepliedTo := commentfilter.BotRepliedTo(comments, normBot)
 
 	// Categorize non-bot comments.
 	for _, c := range comments {
@@ -288,6 +294,22 @@ func (p *Pipeline) commentFilterConfig() commentfilter.Config {
 	}
 }
 
+// ensureForkRemote sets the workspace origin to the assignee's fork
+// and fetches its refs so the PR branch is available locally. This is
+// a no-op when fork mode is not active (GitHubUsername is empty).
+func (p *Pipeline) ensureForkRemote(wsPath string, settings *models.ProjectSettings) error {
+	if settings.ForkOwner() == "" {
+		return nil
+	}
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
+		return fmt.Errorf("set fork remote: %w", err)
+	}
+	if err := p.git.FetchRemote(wsPath); err != nil {
+		return fmt.Errorf("fetch fork: %w", err)
+	}
+	return nil
+}
+
 // handleFeedbackFailure posts an error comment on feedback failure.
 // Unlike [Pipeline.handleFailure] for new tickets, feedback failures
 // do not revert the ticket status (it stays "in review").
@@ -311,7 +333,13 @@ func (p *Pipeline) handleFeedbackFailure(
 // When the AI provides a per-comment response summary (via
 // comment-responses.json), the reply includes that summary alongside
 // the commit reference. Otherwise, a generic "Addressed in <sha>"
-// reply is used. Failures are logged but not fatal.
+// reply is used.
+//
+// Review comments are replied to via the threaded review comment API.
+// Conversation comments are replied to via a new issue comment that
+// includes a machine-readable marker for deduplication.
+//
+// Failures are logged but not fatal.
 func (p *Pipeline) replyToComments(
 	logger *zap.Logger,
 	settings *models.ProjectSettings,
@@ -331,11 +359,65 @@ func (p *Pipeline) replyToComments(
 		} else {
 			replyBody = fmt.Sprintf("Addressed in %s.", shortSHA)
 		}
-		if err := p.git.ReplyToComment(
-			settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
-			logger.Warn("Failed to reply to comment",
-				zap.Int64("comment_id", c.ID),
-				zap.Error(err))
+
+		if c.IsReviewComment {
+			if err := p.git.ReplyToComment(
+				settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
+				logger.Warn("Failed to reply to review comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
+		} else {
+			// Conversation comments don't support threading, so
+			// embed a marker that CategorizeComments can parse to
+			// detect addressed comments.
+			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			if err := p.git.PostIssueComment(
+				settings.Owner, settings.Repo, prDetails.Number, markedBody); err != nil {
+				logger.Warn("Failed to reply to conversation comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
+		}
+	}
+}
+
+// isFinalAttempt returns true when the current attempt is the last
+// one before the job manager stops retrying. This accounts for the
+// coordinator's check (failureCounts > maxRetries), which allows
+// maxRetries+1 total attempts.
+func (p *Pipeline) isFinalAttempt(attemptNum int) bool {
+	return p.cfg.MaxRetries >= 0 && attemptNum > p.cfg.MaxRetries
+}
+
+// replyUnableToAddress posts a reply to each comment indicating that
+// the bot was unable to make changes after multiple attempts. The
+// reply includes an addressed marker so the comment is not picked up
+// again by future scanner cycles.
+func (p *Pipeline) replyUnableToAddress(
+	logger *zap.Logger,
+	settings *models.ProjectSettings,
+	prDetails *models.PRDetails,
+	comments []models.PRComment,
+) {
+	for _, c := range comments {
+		replyBody := "I was unable to produce code changes to address this comment after multiple attempts."
+
+		if c.IsReviewComment {
+			if err := p.git.ReplyToComment(
+				settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
+				logger.Warn("Failed to reply to review comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
+		} else {
+			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			if err := p.git.PostIssueComment(
+				settings.Owner, settings.Repo, prDetails.Number, markedBody); err != nil {
+				logger.Warn("Failed to reply to conversation comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
 		}
 	}
 }

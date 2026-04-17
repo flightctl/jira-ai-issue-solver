@@ -377,6 +377,108 @@ func TestHasNewActionable_FalseWhenFilteredByLoopPrevention(t *testing.T) {
 	}
 }
 
+// --- AddressedMarker ---
+
+func TestAddressedMarker_Format(t *testing.T) {
+	got := commentfilter.AddressedMarker(12345)
+	want := "<!-- addressed: 12345 -->"
+	if got != want {
+		t.Errorf("AddressedMarker(12345) = %q, want %q", got, want)
+	}
+}
+
+// --- BotRepliedTo ---
+
+func TestBotRepliedTo_ReviewCommentViaInReplyTo(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if !replied[1] {
+		t.Error("expected comment 1 to be in replied set (via InReplyTo)")
+	}
+	if replied[2] {
+		t.Error("comment 2 is the bot's own reply, should not be in set")
+	}
+}
+
+func TestBotRepliedTo_ConversationCommentViaMarker(t *testing.T) {
+	marker := commentfilter.AddressedMarker(100)
+	comments := []models.PRComment{
+		{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Please update docs"},
+		{ID: 200, Author: models.Author{Username: "ai-bot"}, Body: "Updated.\n" + marker},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if !replied[100] {
+		t.Error("expected comment 100 to be in replied set (via marker)")
+	}
+}
+
+func TestBotRepliedTo_IgnoresNonBotMarkers(t *testing.T) {
+	marker := commentfilter.AddressedMarker(100)
+	comments := []models.PRComment{
+		{ID: 50, Author: models.Author{Username: "reviewer"}, Body: "Tricky: " + marker},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if replied[100] {
+		t.Error("marker in non-bot comment should be ignored")
+	}
+}
+
+func TestBotRepliedTo_BothMechanisms(t *testing.T) {
+	marker := commentfilter.AddressedMarker(10)
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Review comment", IsReviewComment: true},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1, IsReviewComment: true},
+		{ID: 10, Author: models.Author{Username: "reviewer"}, Body: "Conversation comment"},
+		{ID: 20, Author: models.Author{Username: "ai-bot"}, Body: "Updated.\n" + marker},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if !replied[1] {
+		t.Error("review comment 1 should be addressed via InReplyTo")
+	}
+	if !replied[10] {
+		t.Error("conversation comment 10 should be addressed via marker")
+	}
+}
+
+// --- HasNewActionable with conversation comments ---
+
+func TestHasNewActionable_FalseWhenConversationCommentAddressedViaMarker(t *testing.T) {
+	marker := commentfilter.AddressedMarker(1)
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Update docs"},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done.\n" + marker},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	if commentfilter.HasNewActionable(comments, cfg) {
+		t.Error("expected false: conversation comment addressed via marker")
+	}
+}
+
+func TestHasNewActionable_TrueWhenConversationCommentNotAddressed(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Update docs"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	if !commentfilter.HasNewActionable(comments, cfg) {
+		t.Error("expected true: conversation comment not addressed")
+	}
+}
+
 // --- helpers ---
 
 func extractIDs(comments []models.PRComment) []int64 {

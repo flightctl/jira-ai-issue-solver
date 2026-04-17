@@ -516,6 +516,36 @@ func TestFeedbackScanner_UsesBranchConvention(t *testing.T) {
 	}
 }
 
+// --- Fork mode ---
+
+func TestFeedbackScanner_ForkMode_UsesOwnerPrefixedHead(t *testing.T) {
+	d := newFeedbackDeps()
+	d.repos.ForkOwnerFunc = func(workItem models.WorkItem) string {
+		if workItem.Key == "PROJ-1" {
+			return "contributor-gh"
+		}
+		return ""
+	}
+
+	var receivedHead string
+	d.prs.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		receivedHead = head
+		return &models.PRDetails{Number: 42, Branch: head}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix"},
+		}, nil
+	}
+
+	s := d.scanner(t)
+	runOneFeedbackScan(t, s)
+
+	if receivedHead != "contributor-gh:ai-bot/PROJ-1" {
+		t.Errorf("head = %q, want contributor-gh:ai-bot/PROJ-1", receivedHead)
+	}
+}
+
 // --- No event when no comments at all ---
 
 func TestFeedbackScanner_NoCommentsNoEvent(t *testing.T) {

@@ -35,19 +35,29 @@ func (s *Stub) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager.Job
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubGitService struct {
+	SyncForkFunc           func(forkOwner, repo, branch string) error
 	CreateBranchFunc       func(dir, name string) error
 	SwitchBranchFunc       func(dir, name string) error
 	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
 	HasChangesFunc         func(dir string) (bool, error)
-	CommitChangesFunc      func(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error)
+	CommitChangesFunc      func(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error)
 	StripRemoteAuthFunc    func(dir string) error
 	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
+	FetchRemoteFunc        func(dir string) error
 	SyncWithRemoteFunc     func(dir, branch string, importExcludes []string) error
 	CreatePRFunc           func(params models.PRParams) (*models.PR, error)
 	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
 	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
+	PostIssueCommentFunc   func(owner, repo string, prNumber int, body string) error
 	CloneImportFunc        func(url, destDir, ref string) error
+}
+
+func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
+	if s.SyncForkFunc != nil {
+		return s.SyncForkFunc(forkOwner, repo, branch)
+	}
+	return nil
 }
 
 func (s *StubGitService) CreateBranch(dir, name string) error {
@@ -78,9 +88,9 @@ func (s *StubGitService) HasChanges(dir string) (bool, error) {
 	return false, nil
 }
 
-func (s *StubGitService) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	if s.CommitChangesFunc != nil {
-		return s.CommitChangesFunc(owner, repo, branch, message, dir, coAuthor, importExcludes)
+		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, coAuthor, importExcludes)
 	}
 	return "", nil
 }
@@ -95,6 +105,13 @@ func (s *StubGitService) StripRemoteAuth(dir string) error {
 func (s *StubGitService) RestoreRemoteAuth(dir, owner, repo string) error {
 	if s.RestoreRemoteAuthFunc != nil {
 		return s.RestoreRemoteAuthFunc(dir, owner, repo)
+	}
+	return nil
+}
+
+func (s *StubGitService) FetchRemote(dir string) error {
+	if s.FetchRemoteFunc != nil {
+		return s.FetchRemoteFunc(dir)
 	}
 	return nil
 }
@@ -130,6 +147,13 @@ func (s *StubGitService) GetPRComments(owner, repo string, number int, since tim
 func (s *StubGitService) ReplyToComment(owner, repo string, prNumber int, commentID int64, body string) error {
 	if s.ReplyToCommentFunc != nil {
 		return s.ReplyToCommentFunc(owner, repo, prNumber, commentID, body)
+	}
+	return nil
+}
+
+func (s *StubGitService) PostIssueComment(owner, repo string, prNumber int, body string) error {
+	if s.PostIssueCommentFunc != nil {
+		return s.PostIssueCommentFunc(owner, repo, prNumber, body)
 	}
 	return nil
 }

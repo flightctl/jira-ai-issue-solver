@@ -120,16 +120,28 @@ func main() {
 		aiAPIKeys["gemini"] = config.Gemini.APIKey
 	}
 
+	var claudeVertex *executor.ClaudeVertexConfig
+	if config.Claude.VertexProjectID != "" {
+		claudeVertex = &executor.ClaudeVertexConfig{
+			ProjectID:       config.Claude.VertexProjectID,
+			Region:          config.Claude.VertexRegion,
+			CredentialsFile: config.Claude.VertexCredentialsFile,
+		}
+	}
+
 	pipeline, err := executor.NewPipeline(
 		executor.Config{
 			BotUsername:        config.GitHub.BotUsername,
 			DefaultProvider:    config.AIProvider,
 			AIAPIKeys:          aiAPIKeys,
+			ClaudeVertex:       claudeVertex,
 			SessionTimeout:     time.Duration(config.Guardrails.MaxContainerRuntimeMinutes) * time.Minute,
 			IgnoredUsernames:   config.GitHub.IgnoredUsernames,
 			KnownBotUsernames:  config.GitHub.KnownBotUsernames,
 			MaxThreadDepth:     config.GitHub.MaxThreadDepth,
+			DefaultClaudeModel: config.Claude.Model,
 			DefaultGeminiModel: config.Gemini.Model,
+			MaxRetries:         config.Guardrails.MaxRetries,
 		},
 		issueTracker,
 		gitService,
@@ -227,11 +239,27 @@ func main() {
 		logger.Fatal("Failed to create feedback scanner", zap.Error(err))
 	}
 
+	cleanupScanner, err := scanner.NewWorkspaceCleanupScanner(
+		wsMgr,
+		issueTracker,
+		scanner.WorkspaceCleanupConfig{
+			PollInterval:   time.Duration(config.Jira.IntervalSeconds) * time.Second,
+			ActiveStatuses: activeStatuses,
+		},
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create workspace cleanup scanner", zap.Error(err))
+	}
+
 	if err := ticketScanner.Start(ctx); err != nil {
 		logger.Fatal("Failed to start work item scanner", zap.Error(err))
 	}
 	if err := feedbackScanner.Start(ctx); err != nil {
 		logger.Fatal("Failed to start feedback scanner", zap.Error(err))
+	}
+	if err := cleanupScanner.Start(ctx); err != nil {
+		logger.Fatal("Failed to start workspace cleanup scanner", zap.Error(err))
 	}
 
 	logger.Info("Scanners started")
@@ -278,6 +306,7 @@ func main() {
 	cancel()
 	ticketScanner.Stop()
 	feedbackScanner.Stop()
+	cleanupScanner.Stop()
 
 	// Drain running jobs.
 	coordinator.Shutdown()

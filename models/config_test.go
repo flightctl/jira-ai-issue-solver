@@ -313,6 +313,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.AIProvider == "claude" {
+				tt.config.Claude.APIKey = "sk-test"
+			}
 			err := tt.config.validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Config.validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -332,6 +335,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -414,6 +419,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -477,6 +484,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -563,6 +572,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -734,6 +745,8 @@ func TestLoadConfig_WithAIConfiguration(t *testing.T) {
 	// Create a temporary config file
 	configContent := fmt.Sprintf(`
 ai_provider: claude
+claude:
+  api_key: sk-test
 jira:
   base_url: https://test.atlassian.net
   username: test-user
@@ -1042,6 +1055,9 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.AIProvider == "claude" {
+				tt.config.Claude.APIKey = "sk-test"
+			}
 			err := tt.config.validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Config.validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -1078,6 +1094,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -1194,6 +1212,7 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 
 			config := &Config{}
 			config.AIProvider = "claude"
+			config.Claude.APIKey = "sk-test"
 			config.Logging.Level = "info"
 			config.Logging.Format = "console"
 			config.Jira.BaseURL = "https://test.atlassian.net"
@@ -1244,6 +1263,142 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 	}
 }
 
+func TestConfig_validateClaudeAuth(t *testing.T) {
+	// validBaseConfig builds a Config that passes all validation except
+	// Claude auth (which is the subject under test). Call it per
+	// subtest so each gets its own temp key file.
+	validBaseConfig := func(t *testing.T) *Config {
+		t.Helper()
+		keyPath := createTempKeyFile(t)
+		t.Cleanup(func() { _ = os.Remove(keyPath) })
+
+		config := &Config{}
+		config.AIProvider = "claude"
+		config.Logging.Level = "info"
+		config.Logging.Format = "console"
+		config.Jira.BaseURL = "https://test.atlassian.net"
+		config.Jira.Username = "test@example.com"
+		config.Jira.APIToken = "test-token"
+		config.Jira.AssigneeToGitHubUsername = map[string]string{
+			"test@example.com": "test-user",
+		}
+		config.Jira.Projects = []ProjectConfig{
+			{
+				ProjectKeys: ProjectKeys{"TEST"},
+				StatusTransitions: TicketTypeStatusTransitions{
+					"Bug": StatusTransitions{
+						Todo:       "To Do",
+						InProgress: "In Progress",
+						InReview:   "In Review",
+					},
+				},
+				Components: ComponentMap{
+					"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+				},
+				Profiles: map[string]Profile{
+					"default": {},
+				},
+			},
+		}
+		config.GitHub.AppID = 123456
+		config.GitHub.PrivateKeyPath = keyPath
+		config.GitHub.BotUsername = "test-bot"
+		config.Workspaces.BaseDir = "/var/lib/workspaces"
+		config.Workspaces.TTLDays = 7
+		config.Guardrails.MaxConcurrentJobs = 10
+		return config
+	}
+
+	t.Run("no claude auth is valid for non-claude provider", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.AIProvider = "gemini"
+		config.Gemini.APIKey = "gemini-key"
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("api_key only is valid", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.APIKey = "sk-ant-test-key"
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("vertex complete config is valid", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.VertexProjectID = "my-project"
+		config.Claude.VertexRegion = "us-east5"
+		config.Claude.VertexCredentialsFile = "/host/path/to/sa-key.json"
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("api_key and vertex are mutually exclusive", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.APIKey = "sk-ant-test-key"
+		config.Claude.VertexProjectID = "my-project"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for mutually exclusive config")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("error = %q, want 'mutually exclusive'", err.Error())
+		}
+	})
+
+	t.Run("claude provider requires auth", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.AIProvider = "claude"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error when ai_provider=claude but no auth configured")
+		}
+		if !strings.Contains(err.Error(), "no authentication configured") {
+			t.Errorf("error = %q, want mention of missing authentication", err.Error())
+		}
+	})
+
+	t.Run("non-claude provider allows no claude auth", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.AIProvider = "gemini"
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error for non-claude provider without claude auth, got: %v", err)
+		}
+	})
+
+	t.Run("incomplete vertex missing region", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.VertexProjectID = "my-project"
+		config.Claude.VertexCredentialsFile = "/host/path/to/sa-key.json"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for incomplete vertex config")
+		}
+		if !strings.Contains(err.Error(), "vertex_region") {
+			t.Errorf("error = %q, should mention vertex_region", err.Error())
+		}
+	})
+
+	t.Run("incomplete vertex missing project and creds", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.VertexRegion = "us-east5"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for incomplete vertex config")
+		}
+		if !strings.Contains(err.Error(), "vertex_project_id") {
+			t.Errorf("error = %q, should mention vertex_project_id", err.Error())
+		}
+		if !strings.Contains(err.Error(), "vertex_credentials_file") {
+			t.Errorf("error = %q, should mention vertex_credentials_file", err.Error())
+		}
+	})
+
+}
+
 func TestConfig_validateContainerConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1284,6 +1439,7 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 
 			config := &Config{}
 			config.AIProvider = "claude"
+			config.Claude.APIKey = "sk-test"
 			config.Logging.Level = "info"
 			config.Logging.Format = "console"
 			config.Jira.BaseURL = "https://test.atlassian.net"

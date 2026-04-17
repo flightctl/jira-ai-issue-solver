@@ -192,7 +192,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	logger.Info("AI provider selected", zap.String("provider", provider))
 
 	// --- Step 10: Build AI command ---
-	sp := buildScriptParams(provider, p.cfg.DefaultGeminiModel, repoCfg)
+	sp := buildScriptParams(provider, p.cfg.DefaultClaudeModel, p.cfg.DefaultGeminiModel, repoCfg)
 	execCommand := buildExecCommand(sp)
 
 	// --- Step 11: Resolve and start container ---
@@ -214,7 +214,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	authStripped := true
 	defer func() {
 		if authStripped {
-			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); restoreErr != nil {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); restoreErr != nil {
 				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
 			}
 		}
@@ -250,7 +250,9 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 12a: Restore remote auth ---
 	// Must happen before SyncWithRemote which needs fetch access.
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.Owner, settings.Repo); err != nil {
+	// In fork mode, origin is set to the fork so that SyncWithRemote
+	// fetches from the fork (where the API commit was created).
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
 		return result, fmt.Errorf("restore remote auth: %w", err)
 	}
 	authStripped = false
@@ -276,7 +278,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: %s", job.TicketKey, workItem.Summary)
 	_, err = p.git.CommitChanges(
-		settings.Owner, settings.Repo, branchName,
+		settings.Owner, settings.CommitOwner(), settings.Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
@@ -307,7 +309,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		Repo:      settings.Repo,
 		Title:     prTitle,
 		Body:      prBody,
-		Head:      branchName,
+		Head:      settings.PRHead(branchName),
 		Base:      settings.BaseBranch,
 		Draft:     draft,
 		Labels:    repoCfg.PR.Labels,
@@ -349,6 +351,15 @@ func (p *Pipeline) startContainer(
 	containerCfg, err := p.containers.ResolveConfig(wsPath, profileOverride)
 	if err != nil {
 		return nil, fmt.Errorf("resolve container config: %w", err)
+	}
+
+	// Mount the GCP credentials file for Vertex AI authentication.
+	if provider == "claude" && p.cfg.ClaudeVertex != nil {
+		containerCfg.ExtraMounts = append(containerCfg.ExtraMounts, container.Mount{
+			Source:  p.cfg.ClaudeVertex.CredentialsFile,
+			Target:  containerCredsMountTarget,
+			Options: "ro",
+		})
 	}
 
 	env := p.buildContainerEnv(provider)
@@ -587,6 +598,10 @@ func (p *Pipeline) resolveProvider(settings *models.ProjectSettings) string {
 	return p.cfg.DefaultProvider
 }
 
+// containerCredsMountTarget is the fixed path inside the container
+// where the GCP service account key is mounted for Vertex AI auth.
+const containerCredsMountTarget = "/run/secrets/gcp-sa-key.json" // #nosec G101 -- mount path, not a credential
+
 func (p *Pipeline) buildContainerEnv(provider string) map[string]string {
 	env := map[string]string{
 		"AI_PROVIDER": provider,
@@ -595,7 +610,12 @@ func (p *Pipeline) buildContainerEnv(provider string) map[string]string {
 
 	switch provider {
 	case "claude":
-		if key, ok := p.cfg.AIAPIKeys["claude"]; ok {
+		if p.cfg.ClaudeVertex != nil {
+			env["CLAUDE_CODE_USE_VERTEX"] = "1"
+			env["ANTHROPIC_VERTEX_PROJECT_ID"] = p.cfg.ClaudeVertex.ProjectID
+			env["CLOUD_ML_REGION"] = p.cfg.ClaudeVertex.Region
+			env["GOOGLE_APPLICATION_CREDENTIALS"] = containerCredsMountTarget
+		} else if key, ok := p.cfg.AIAPIKeys["claude"]; ok {
 			env["ANTHROPIC_API_KEY"] = key
 		}
 	case "gemini":
@@ -653,6 +673,13 @@ func (p *Pipeline) prepareBranch(
 	settings *models.ProjectSettings,
 ) error {
 	if !reused {
+		if forkOwner := settings.ForkOwner(); forkOwner != "" {
+			if err := p.git.SyncFork(forkOwner, settings.Repo, settings.BaseBranch); err != nil {
+				logger.Warn("Failed to sync fork with upstream",
+					zap.String("fork", forkOwner+"/"+settings.Repo),
+					zap.Error(err))
+			}
+		}
 		if err := p.git.CreateBranch(wsPath, branchName); err != nil {
 			return fmt.Errorf("create branch: %w", err)
 		}
@@ -660,7 +687,7 @@ func (p *Pipeline) prepareBranch(
 	}
 
 	remoteExists, err := p.git.RemoteBranchExists(
-		settings.Owner, settings.Repo, branchName)
+		settings.CommitOwner(), settings.Repo, branchName)
 	if err != nil {
 		return fmt.Errorf("check remote branch: %w", err)
 	}
@@ -721,12 +748,21 @@ func buildPRContent(workItem *models.WorkItem, ticketKey, titlePrefix string, ai
 			aiTitle = cut
 		} else if cut, ok := strings.CutPrefix(aiTitle, ticketKey+" "); ok {
 			aiTitle = cut
+		} else if cut, ok := strings.CutPrefix(aiTitle, "["+ticketKey+"]: "); ok {
+			aiTitle = cut
+		} else if cut, ok := strings.CutPrefix(aiTitle, "["+ticketKey+"] "); ok {
+			aiTitle = cut
 		}
 		title = fmt.Sprintf("%s: %s", ticketKey, aiTitle)
 		body = fmt.Sprintf("Resolves %s", ticketKey)
 		if aiPR.Body != "" {
 			body += "\n\n" + aiPR.Body
 		}
+	} else if aiPR != nil && aiPR.Body != "" {
+		// AI wrote a body but no usable title — use Jira summary as
+		// title but keep the AI-generated body.
+		title = fmt.Sprintf("%s: %s", ticketKey, workItem.Summary)
+		body = fmt.Sprintf("Resolves %s\n\n%s", ticketKey, aiPR.Body)
 	} else {
 		title = fmt.Sprintf("%s: %s", ticketKey, workItem.Summary)
 		body = fmt.Sprintf("Resolves %s\n\n## Summary\n%s", ticketKey, workItem.Summary)
@@ -744,11 +780,14 @@ func buildPRContent(workItem *models.WorkItem, ticketKey, titlePrefix string, ai
 
 // buildScriptParams extracts provider-specific script configuration
 // from the repo config, falling back to the pipeline's default model.
-func buildScriptParams(provider, defaultGeminiModel string, repoCfg *repoconfig.Config) scriptParams {
+func buildScriptParams(provider, defaultClaudeModel, defaultGeminiModel string, repoCfg *repoconfig.Config) scriptParams {
 	params := scriptParams{Provider: provider}
 
-	// Apply bot-level default first.
-	if provider == "gemini" {
+	// Apply bot-level defaults first.
+	switch provider {
+	case "claude":
+		params.Model = defaultClaudeModel
+	case "gemini":
 		params.Model = defaultGeminiModel
 	}
 
@@ -759,6 +798,9 @@ func buildScriptParams(provider, defaultGeminiModel string, repoCfg *repoconfig.
 	// Repo-level overrides.
 	if repoCfg.AI.Claude != nil {
 		params.AllowedTools = repoCfg.AI.Claude.AllowedTools
+		if repoCfg.AI.Claude.Model != "" {
+			params.Model = repoCfg.AI.Claude.Model
+		}
 	}
 	if repoCfg.AI.Gemini != nil && repoCfg.AI.Gemini.Model != "" {
 		params.Model = repoCfg.AI.Gemini.Model

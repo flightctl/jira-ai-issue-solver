@@ -15,8 +15,9 @@ type scriptParams struct {
 	// no restriction.
 	AllowedTools string
 
-	// Model is a Gemini-specific model override
-	// (e.g., "gemini-2.5-pro"). Empty means use the default.
+	// Model is a provider-specific model override (e.g.,
+	// "claude-sonnet-4-6", "gemini-2.5-pro"). Empty means
+	// use the provider's default.
 	Model string
 }
 
@@ -28,7 +29,7 @@ func buildExecCommand(params scriptParams) []string {
 
 	switch params.Provider {
 	case "claude":
-		cmd = buildClaudeCommand(params.AllowedTools)
+		cmd = buildClaudeCommand(params.AllowedTools, params.Model)
 	case "gemini":
 		cmd = buildGeminiCommand(params.Model)
 	default:
@@ -54,9 +55,13 @@ exit ${AI_EXIT}
 
 const taskPrompt = "Read /workspace/.ai-bot/task.md and complete the task described there."
 
-func buildClaudeCommand(allowedTools string) string {
+func buildClaudeCommand(allowedTools, model string) string {
 	var parts []string
 	parts = append(parts, "claude", "--dangerously-skip-permissions")
+
+	if model != "" {
+		parts = append(parts, "--model", fmt.Sprintf("%q", model))
+	}
 
 	if allowedTools != "" {
 		parts = append(parts, "--allowedTools", fmt.Sprintf("%q", allowedTools))

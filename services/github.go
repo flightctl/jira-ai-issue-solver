@@ -482,7 +482,7 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 //
 // If coAuthor is non-nil, a Co-authored-by trailer is appended to the
 // commit message using the author's Name and Email.
-func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	// Extract co-author name/email (empty strings when nil).
 	var coAuthorName, coAuthorEmail string
 	if coAuthor != nil {
@@ -512,12 +512,17 @@ func (s *GitHubServiceImpl) CommitChanges(owner, repo, branch, message, dir stri
 	}
 
 	excludes := mergeExcludes(importExcludes)
-	return s.createVerifiedCommitFromLocalHEAD(owner, repo, branch, message, dir, coAuthorName, coAuthorEmail, excludes)
+	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, coAuthorName, coAuthorEmail, excludes)
 }
 
-// createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit
-// Preserves merge commit structure if HEAD is a merge commit
-func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
+// createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit.
+// Preserves merge commit structure if HEAD is a merge commit.
+//
+// upstreamOwner is the GitHub owner of the upstream repository (e.g.,
+// "flightctl"). In non-fork workflows it equals owner. In fork
+// workflows it identifies the repo where the parent commit originated
+// so the tree can be resolved there when the fork API cannot find it.
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
 	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
@@ -536,10 +541,44 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 	// Use first parent as base tree (the branch we're merging into)
 	firstParent := parentSHAs[0]
 
-	// Get the base tree from the first parent on GitHub
+	// Get the base tree from the first parent on GitHub.
+	// The parent may not exist on the remote when the AI created
+	// local commits (rebase, merge, or regular commits that only
+	// exist locally). In that case, fall back to the remote branch
+	// HEAD so we can still create a valid API commit.
 	baseTreeSHA, err := s.getTreeSHAFromCommit(owner, repo, firstParent, token)
 	if err != nil {
-		return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
+		// In fork workflows the parent commit originated from
+		// upstream — try resolving the tree there before falling
+		// back to the (potentially stale) fork branch HEAD.
+		if upstreamOwner != owner {
+			upstreamToken, tokenErr := s.getAuthTokenForRepo(upstreamOwner, repo)
+			if tokenErr == nil {
+				if treeSHA, treeErr := s.getTreeSHAFromCommit(upstreamOwner, repo, firstParent, upstreamToken); treeErr == nil {
+					s.logger.Info("Resolved parent tree from upstream repo",
+						zap.String("upstream", upstreamOwner+"/"+repo),
+						zap.String("parent", firstParent))
+					baseTreeSHA = treeSHA
+					err = nil
+				}
+			}
+		}
+	}
+	if err != nil {
+		remoteSHA, branchExists, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, token)
+		if remoteErr != nil || !branchExists {
+			return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
+		}
+		s.logger.Warn("Local parent not found on remote, falling back to remote branch HEAD",
+			zap.String("localParent", firstParent),
+			zap.String("remoteSHA", remoteSHA),
+			zap.Error(err))
+		firstParent = remoteSHA
+		parentSHAs = []string{remoteSHA}
+		baseTreeSHA, err = s.getTreeSHAFromCommit(owner, repo, firstParent, token)
+		if err != nil {
+			return "", fmt.Errorf("failed to get base tree from remote branch HEAD: %w", err)
+		}
 	}
 
 	// Create blobs for files that changed from the first parent
@@ -551,7 +590,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(owner, repo, branc
 
 	if len(treeEntries) == 0 {
 		s.logger.Info("No changes from first parent; nothing to commit")
-		return "", nil
+		return "", ErrNoChanges
 	}
 
 	// Create a new tree on GitHub
@@ -807,6 +846,8 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 				zap.String("file", filename))
 			treeEntries = append(treeEntries, models.GitHubTreeEntry{
 				Path: filename,
+				Mode: "100644",
+				Type: "blob",
 				SHA:  nil, // nil SHA tells GitHub to delete this file
 			})
 
@@ -830,6 +871,8 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 			if !isExcludedPath(oldPath, excludes) {
 				treeEntries = append(treeEntries, models.GitHubTreeEntry{
 					Path: oldPath,
+					Mode: "100644",
+					Type: "blob",
 					SHA:  nil,
 				})
 			}
@@ -1554,8 +1597,23 @@ func (s *GitHubServiceImpl) RestoreRemoteAuth(directory, owner, repo string) err
 // fetching and hard-resetting to the remote ref. Excluded artifact
 // directories are preserved across the reset because they are filtered
 // from API commits and therefore absent on the remote branch.
-func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExcludes []string) error {
+// FetchRemote fetches all refs from the origin remote. Used in
+// fork-based workflows to make fork branches available in a
+// workspace that was originally cloned from upstream.
+func (s *GitHubServiceImpl) FetchRemote(directory string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
+	fn := zap.String("function", "FetchRemote")
+
+	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
+	if err := fetchCmd.run(); err != nil {
+		return fmt.Errorf("failed to fetch from origin: %w, stderr: %s", err, fetchCmd.getStderr())
+	}
+	s.logger.Debug("git fetch origin", fn, zap.String("stdout", fetchCmd.getStdout()), zap.String("stderr", fetchCmd.getStderr()))
+
+	return nil
+}
+
+func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExcludes []string) error {
 	fn := zap.String("function", "SyncWithRemote")
 
 	// Preserve excluded directories across the hard reset.
@@ -1565,14 +1623,12 @@ func (s *GitHubServiceImpl) SyncWithRemote(directory, branch string, importExclu
 	excludes := mergeExcludes(importExcludes)
 	preserved := s.preserveExcludedDirs(directory, excludes, fn)
 
-	// Fetch the latest state from the remote.
-	fetchCmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
-	if err := fetchCmd.run(); err != nil {
-		return fmt.Errorf("failed to fetch from origin: %w, stderr: %s", err, fetchCmd.getStderr())
+	if err := s.FetchRemote(directory); err != nil {
+		return err
 	}
-	s.logger.Debug("git fetch origin", fn, zap.String("stdout", fetchCmd.getStdout()), zap.String("stderr", fetchCmd.getStderr()))
 
 	// Reset the working tree and index to match the remote branch.
+	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	ref := "origin/" + branch
 	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", ref), directory, debugEnabled, true)
 	if err := resetCmd.run(); err != nil {
@@ -1644,11 +1700,42 @@ func (s *GitHubServiceImpl) ReplyToComment(owner, repo string, prNumber int, com
 		return fmt.Errorf("failed to reply to PR comment: %w", err)
 	}
 
-	s.logger.Debug("Replied to comment",
+	s.logger.Debug("Replied to review comment",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", prNumber),
 		zap.Int64("comment_id", commentID))
+
+	return nil
+}
+
+// PostIssueComment posts a top-level comment on a PR (via the issues
+// endpoint). Used for replying to conversation comments, which do not
+// support threading.
+func (s *GitHubServiceImpl) PostIssueComment(owner, repo string, prNumber int, body string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	comment := &github.IssueComment{Body: github.Ptr(body)}
+	_, _, err = ghClient.Issues.CreateComment(ctx, owner, repo, prNumber, comment)
+	if err != nil {
+		return fmt.Errorf("failed to post issue comment: %w", err)
+	}
+
+	s.logger.Debug("Posted issue comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int("pr_number", prNumber))
 
 	return nil
 }
@@ -1876,20 +1963,37 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 		return nil, fmt.Errorf("failed to get conversation comments: %w", err)
 	}
 
-	// Merge both types of comments
-	allGH := append(reviewComments, conversationComments...)
-
 	s.logger.Debug("Retrieved PR comments",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", number),
 		zap.Int("review_comments", len(reviewComments)),
 		zap.Int("conversation_comments", len(conversationComments)),
-		zap.Int("total_comments", len(allGH)))
+		zap.Int("total_comments", len(reviewComments)+len(conversationComments)))
 
 	// Convert to models.PRComment and apply the since filter.
-	result := make([]models.PRComment, 0, len(allGH))
-	for _, c := range allGH {
+	// Review comments and conversation comments are converted
+	// separately so IsReviewComment is set correctly.
+	result := make([]models.PRComment, 0, len(reviewComments)+len(conversationComments))
+	for _, c := range reviewComments {
+		if !since.IsZero() && !c.CreatedAt.After(since) {
+			continue
+		}
+		result = append(result, models.PRComment{
+			ID: c.ID,
+			Author: models.Author{
+				Name:     c.User.Login,
+				Username: c.User.Login,
+			},
+			Body:            c.Body,
+			FilePath:        c.Path,
+			Line:            c.Line,
+			Timestamp:       c.CreatedAt,
+			InReplyTo:       c.InReplyToID,
+			IsReviewComment: true,
+		})
+	}
+	for _, c := range conversationComments {
 		if !since.IsZero() && !c.CreatedAt.After(since) {
 			continue
 		}
@@ -1900,10 +2004,7 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 				Username: c.User.Login,
 			},
 			Body:      c.Body,
-			FilePath:  c.Path,
-			Line:      c.Line,
 			Timestamp: c.CreatedAt,
-			InReplyTo: c.InReplyToID,
 		})
 	}
 
@@ -2044,10 +2145,16 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 		return nil, fmt.Errorf("list PRs for branch %s: %w", head, err)
 	}
 
-	// The Head filter may include the owner prefix (owner:branch).
-	// Filter results to match the exact branch name.
+	// The head parameter may use "owner:branch" format for cross-repo
+	// (fork) PRs. Extract just the branch name for comparison since
+	// pr.GetHead().GetRef() returns the branch without an owner prefix.
+	refToMatch := head
+	if _, branch, ok := strings.Cut(head, ":"); ok {
+		refToMatch = branch
+	}
+
 	for _, pr := range prs {
-		if pr.GetHead().GetRef() == head {
+		if pr.GetHead().GetRef() == refToMatch {
 			return &models.PRDetails{
 				Number:     pr.GetNumber(),
 				Title:      pr.GetTitle(),
@@ -2105,4 +2212,66 @@ func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool
 	}
 
 	return true, nil
+}
+
+// SyncFork syncs a fork's branch with its upstream parent using the
+// GitHub merge-upstream API. This ensures the fork's default branch
+// is current before creating feature branches, preventing PRs that
+// include hundreds of unrelated commits.
+func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
+	token, err := s.getAuthTokenForRepo(forkOwner, repo)
+	if err != nil {
+		return fmt.Errorf("get auth token for fork %s/%s: %w", forkOwner, repo, err)
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/merge-upstream", forkOwner, repo)
+
+	payload := struct {
+		Branch string `json:"branch"`
+	}{Branch: branch}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal merge-upstream request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return fmt.Errorf("create merge-upstream request: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("merge-upstream request failed: %w", err)
+	}
+	defer func() {
+		if localErr := resp.Body.Close(); localErr != nil {
+			s.logger.Error("Failed to close response body",
+				zap.Error(localErr), zap.String("operation", "SyncFork"))
+		}
+	}()
+
+	if resp.StatusCode == http.StatusOK {
+		s.logger.Info("Fork synced with upstream",
+			zap.String("fork", forkOwner+"/"+repo),
+			zap.String("branch", branch))
+		return nil
+	}
+
+	// 409 means the branch cannot be fast-forwarded (fork has diverged).
+	// This is not fatal — CreateBranch will still work from origin/branch.
+	if resp.StatusCode == http.StatusConflict {
+		s.logger.Warn("Fork has diverged from upstream, cannot fast-forward",
+			zap.String("fork", forkOwner+"/"+repo),
+			zap.String("branch", branch))
+		return nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("merge-upstream failed for %s/%s: %s, status: %d",
+		forkOwner, repo, string(body), resp.StatusCode)
 }
