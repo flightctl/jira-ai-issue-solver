@@ -187,6 +187,12 @@ type Config struct {
 	// into the container environment (e.g., {"claude": "sk-..."}).
 	AIAPIKeys map[string]string
 
+	// ClaudeVertex holds Vertex AI authentication settings for
+	// Claude. When configured, the pipeline injects Vertex-specific
+	// env vars and mounts the credentials file into the container
+	// instead of setting ANTHROPIC_API_KEY.
+	ClaudeVertex *ClaudeVertexConfig
+
 	// SessionTimeout is the maximum duration for an AI session
 	// inside the container. Zero means no explicit timeout (only
 	// the parent context controls cancellation).
@@ -214,4 +220,21 @@ type Config struct {
 	// address" reply on the final attempt instead of failing
 	// silently and looping.
 	MaxRetries int
+}
+
+// ClaudeVertexConfig holds Vertex AI authentication settings for
+// Claude Code. These are injected into the container as environment
+// variables, and the credentials file is mounted read-only.
+type ClaudeVertexConfig struct {
+	// ProjectID is the GCP project ID
+	// (env: ANTHROPIC_VERTEX_PROJECT_ID).
+	ProjectID string
+
+	// Region is the GCP region (env: CLOUD_ML_REGION).
+	Region string
+
+	// CredentialsFile is the host path to the GCP service account
+	// JSON key file. Mounted read-only into the container at
+	// /run/secrets/gcp-sa-key.json.
+	CredentialsFile string
 }

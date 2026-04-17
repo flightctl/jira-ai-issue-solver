@@ -215,12 +215,27 @@ github:
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
 
-# Claude API key — passed to the container as an environment variable.
-# Get from https://console.anthropic.com/settings/keys
+# Claude authentication — passed to the container as environment variables.
+# Two modes are supported (mutually exclusive):
+#
+# Mode 1: Direct Anthropic API key
+#   Get from https://console.anthropic.com/settings/keys
+#
+# Mode 2: Vertex AI (Claude on Google Cloud)
+#   Uses a GCP service account for authentication. All three vertex_*
+#   fields must be set together. The credentials file is mounted
+#   read-only into the container.
+#
 # CLI-level settings (timeout, tool filtering, etc.) are configured per-repo
 # via .ai-bot/config.yaml or container environment, not here.
 claude:
-  api_key: "your-anthropic-api-key-here"  # sk-ant-api03-...
+  # Mode 1: Direct API key
+  # api_key: "sk-ant-api03-..."
+
+  # Mode 2: Vertex AI
+  vertex_project_id: "your-gcp-project-id"
+  vertex_region: "us-east5"
+  vertex_credentials_file: "/path/to/gcp-sa-key.json"
 
 # Gemini configuration — passed to the container as environment variables.
 gemini:

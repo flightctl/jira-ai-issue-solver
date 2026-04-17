@@ -45,3 +45,6 @@ func ParsePRContent(content string) (string, string) {
 func BuildPRContent(workItem *models.WorkItem, ticketKey, titlePrefix string, aiPR *PRDescription) (string, string) {
 	return buildPRContent(workItem, ticketKey, titlePrefix, aiPR)
 }
+
+// ContainerCredsMountTarget exposes the mount path constant for tests.
+const ContainerCredsMountTarget = containerCredsMountTarget

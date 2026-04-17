@@ -931,6 +931,197 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	}
 }
 
+// --- Vertex AI authentication ---
+
+func TestExecuteNewTicket_VertexAI_SetsEnvVars(t *testing.T) {
+	d := newTestDeps(t)
+
+	var envVars map[string]string
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		envVars = env
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	credsFile := createTempCredsFile(t)
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if envVars["ANTHROPIC_VERTEX_PROJECT_ID"] != "my-gcp-project" {
+		t.Errorf("ANTHROPIC_VERTEX_PROJECT_ID = %q, want my-gcp-project", envVars["ANTHROPIC_VERTEX_PROJECT_ID"])
+	}
+	if envVars["CLOUD_ML_REGION"] != "us-east5" {
+		t.Errorf("CLOUD_ML_REGION = %q, want us-east5", envVars["CLOUD_ML_REGION"])
+	}
+	if envVars["GOOGLE_APPLICATION_CREDENTIALS"] != executor.ContainerCredsMountTarget {
+		t.Errorf("GOOGLE_APPLICATION_CREDENTIALS = %q, want %q", envVars["GOOGLE_APPLICATION_CREDENTIALS"], executor.ContainerCredsMountTarget)
+	}
+	if _, ok := envVars["ANTHROPIC_API_KEY"]; ok {
+		t.Error("ANTHROPIC_API_KEY should not be set when using Vertex AI")
+	}
+}
+
+func TestExecuteNewTicket_VertexAI_MountsCredentialsFile(t *testing.T) {
+	d := newTestDeps(t)
+
+	credsFile := createTempCredsFile(t)
+
+	var receivedCfg *container.Config
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		receivedCfg = cfg
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the credentials mount in ExtraMounts.
+	var found bool
+	for _, m := range receivedCfg.ExtraMounts {
+		if m.Target == executor.ContainerCredsMountTarget {
+			found = true
+			if m.Source != credsFile {
+				t.Errorf("mount source = %q, want %q", m.Source, credsFile)
+			}
+			if m.Options != "ro" {
+				t.Errorf("mount options = %q, want ro", m.Options)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected credentials file mount in ExtraMounts")
+	}
+}
+
+func TestExecuteNewTicket_VertexAI_OverridesAPIKey(t *testing.T) {
+	d := newTestDeps(t)
+
+	var envVars map[string]string
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		envVars = env
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	credsFile := createTempCredsFile(t)
+
+	// Both AIAPIKeys and ClaudeVertex set — Vertex should take precedence.
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"claude": "sk-ant-should-not-be-used"},
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := envVars["ANTHROPIC_API_KEY"]; ok {
+		t.Error("ANTHROPIC_API_KEY should not be set when Vertex is configured")
+	}
+	if envVars["ANTHROPIC_VERTEX_PROJECT_ID"] != "my-gcp-project" {
+		t.Errorf("ANTHROPIC_VERTEX_PROJECT_ID = %q, want my-gcp-project", envVars["ANTHROPIC_VERTEX_PROJECT_ID"])
+	}
+}
+
+func TestExecuteNewTicket_VertexAI_NotUsedForGemini(t *testing.T) {
+	d := newTestDeps(t)
+
+	var envVars map[string]string
+	d.containers.StartFunc = func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+		envVars = env
+		return &container.Container{ID: "c1", Name: "test"}, nil
+	}
+
+	var receivedCfg *container.Config
+	origResolve := d.containers.ResolveConfigFunc
+	d.containers.ResolveConfigFunc = func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
+		cfg, err := origResolve(repoDir, projectOverride)
+		if err != nil {
+			return nil, err
+		}
+		receivedCfg = cfg
+		return cfg, nil
+	}
+
+	credsFile := createTempCredsFile(t)
+
+	// Vertex is configured but provider is gemini — vertex should not apply.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Owner:            "org",
+			Repo:             "repo",
+			CloneURL:         "https://github.com/org/repo.git",
+			BaseBranch:       "main",
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			AIProvider:       "gemini",
+		}, nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		AIAPIKeys:       map[string]string{"gemini": "g-key"},
+		ClaudeVertex: &executor.ClaudeVertexConfig{
+			ProjectID:       "my-gcp-project",
+			Region:          "us-east5",
+			CredentialsFile: credsFile,
+		},
+	})
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should use gemini env, not vertex.
+	if envVars["AI_PROVIDER"] != "gemini" {
+		t.Errorf("AI_PROVIDER = %q, want gemini", envVars["AI_PROVIDER"])
+	}
+	if _, ok := envVars["ANTHROPIC_VERTEX_PROJECT_ID"]; ok {
+		t.Error("ANTHROPIC_VERTEX_PROJECT_ID should not be set for gemini provider")
+	}
+	if envVars["GEMINI_API_KEY"] != "g-key" {
+		t.Errorf("GEMINI_API_KEY = %q, want g-key", envVars["GEMINI_API_KEY"])
+	}
+
+	// Credentials file should not be mounted.
+	for _, m := range receivedCfg.ExtraMounts {
+		if m.Target == executor.ContainerCredsMountTarget {
+			t.Error("credentials file should not be mounted for gemini provider")
+		}
+	}
+}
+
 // --- ErrNoChanges handling ---
 
 func TestExecuteNewTicket_ErrNoChanges_ReturnsError(t *testing.T) {
@@ -2691,4 +2882,17 @@ func writeSessionOutput(t *testing.T, wsDir string, output executor.SessionOutpu
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func createTempCredsFile(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "gcp-sa-key-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	return f.Name()
 }

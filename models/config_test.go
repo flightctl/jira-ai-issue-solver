@@ -1244,6 +1244,139 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 	}
 }
 
+func TestConfig_validateClaudeAuth(t *testing.T) {
+	// validBaseConfig builds a Config that passes all validation except
+	// Claude auth (which is the subject under test). Call it per
+	// subtest so each gets its own temp key file.
+	validBaseConfig := func(t *testing.T) *Config {
+		t.Helper()
+		keyPath := createTempKeyFile(t)
+		t.Cleanup(func() { _ = os.Remove(keyPath) })
+
+		config := &Config{}
+		config.AIProvider = "claude"
+		config.Logging.Level = "info"
+		config.Logging.Format = "console"
+		config.Jira.BaseURL = "https://test.atlassian.net"
+		config.Jira.Username = "test@example.com"
+		config.Jira.APIToken = "test-token"
+		config.Jira.AssigneeToGitHubUsername = map[string]string{
+			"test@example.com": "test-user",
+		}
+		config.Jira.Projects = []ProjectConfig{
+			{
+				ProjectKeys: ProjectKeys{"TEST"},
+				StatusTransitions: TicketTypeStatusTransitions{
+					"Bug": StatusTransitions{
+						Todo:       "To Do",
+						InProgress: "In Progress",
+						InReview:   "In Review",
+					},
+				},
+				Components: ComponentMap{
+					"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+				},
+				Profiles: map[string]Profile{
+					"default": {},
+				},
+			},
+		}
+		config.GitHub.AppID = 123456
+		config.GitHub.PrivateKeyPath = keyPath
+		config.GitHub.BotUsername = "test-bot"
+		config.Workspaces.BaseDir = "/var/lib/workspaces"
+		config.Workspaces.TTLDays = 7
+		config.Guardrails.MaxConcurrentJobs = 10
+		return config
+	}
+
+	t.Run("no claude auth is valid", func(t *testing.T) {
+		config := validBaseConfig(t)
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("api_key only is valid", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.APIKey = "sk-ant-test-key"
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("vertex complete config is valid", func(t *testing.T) {
+		config := validBaseConfig(t)
+		credsFile := createTempKeyFile(t)
+		t.Cleanup(func() { _ = os.Remove(credsFile) })
+
+		config.Claude.VertexProjectID = "my-project"
+		config.Claude.VertexRegion = "us-east5"
+		config.Claude.VertexCredentialsFile = credsFile
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("api_key and vertex are mutually exclusive", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.APIKey = "sk-ant-test-key"
+		config.Claude.VertexProjectID = "my-project"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for mutually exclusive config")
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("error = %q, want 'mutually exclusive'", err.Error())
+		}
+	})
+
+	t.Run("incomplete vertex missing region", func(t *testing.T) {
+		config := validBaseConfig(t)
+		credsFile := createTempKeyFile(t)
+		t.Cleanup(func() { _ = os.Remove(credsFile) })
+
+		config.Claude.VertexProjectID = "my-project"
+		config.Claude.VertexCredentialsFile = credsFile
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for incomplete vertex config")
+		}
+		if !strings.Contains(err.Error(), "vertex_region") {
+			t.Errorf("error = %q, should mention vertex_region", err.Error())
+		}
+	})
+
+	t.Run("incomplete vertex missing project and creds", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.VertexRegion = "us-east5"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for incomplete vertex config")
+		}
+		if !strings.Contains(err.Error(), "vertex_project_id") {
+			t.Errorf("error = %q, should mention vertex_project_id", err.Error())
+		}
+		if !strings.Contains(err.Error(), "vertex_credentials_file") {
+			t.Errorf("error = %q, should mention vertex_credentials_file", err.Error())
+		}
+	})
+
+	t.Run("vertex credentials file does not exist", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.Claude.VertexProjectID = "my-project"
+		config.Claude.VertexRegion = "us-east5"
+		config.Claude.VertexCredentialsFile = "/nonexistent/path/sa-key.json"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error for missing credentials file")
+		}
+		if !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("error = %q, should mention 'does not exist'", err.Error())
+		}
+	})
+}
+
 func TestConfig_validateContainerConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string

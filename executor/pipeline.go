@@ -353,6 +353,15 @@ func (p *Pipeline) startContainer(
 		return nil, fmt.Errorf("resolve container config: %w", err)
 	}
 
+	// Mount the GCP credentials file for Vertex AI authentication.
+	if provider == "claude" && p.cfg.ClaudeVertex != nil {
+		containerCfg.ExtraMounts = append(containerCfg.ExtraMounts, container.Mount{
+			Source:  p.cfg.ClaudeVertex.CredentialsFile,
+			Target:  containerCredsMountTarget,
+			Options: "ro",
+		})
+	}
+
 	env := p.buildContainerEnv(provider)
 	return p.containers.Start(ctx, containerCfg, wsPath, ticketKey, env)
 }
@@ -589,6 +598,10 @@ func (p *Pipeline) resolveProvider(settings *models.ProjectSettings) string {
 	return p.cfg.DefaultProvider
 }
 
+// containerCredsMountTarget is the fixed path inside the container
+// where the GCP service account key is mounted for Vertex AI auth.
+const containerCredsMountTarget = "/run/secrets/gcp-sa-key.json" // #nosec G101 -- mount path, not a credential
+
 func (p *Pipeline) buildContainerEnv(provider string) map[string]string {
 	env := map[string]string{
 		"AI_PROVIDER": provider,
@@ -597,7 +610,11 @@ func (p *Pipeline) buildContainerEnv(provider string) map[string]string {
 
 	switch provider {
 	case "claude":
-		if key, ok := p.cfg.AIAPIKeys["claude"]; ok {
+		if p.cfg.ClaudeVertex != nil {
+			env["ANTHROPIC_VERTEX_PROJECT_ID"] = p.cfg.ClaudeVertex.ProjectID
+			env["CLOUD_ML_REGION"] = p.cfg.ClaudeVertex.Region
+			env["GOOGLE_APPLICATION_CREDENTIALS"] = containerCredsMountTarget
+		} else if key, ok := p.cfg.AIAPIKeys["claude"]; ok {
 			env["ANTHROPIC_API_KEY"] = key
 		}
 	case "gemini":
