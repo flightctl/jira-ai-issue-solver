@@ -178,7 +178,7 @@ func TestWorkspaceCleanupScanner_KeepsActiveWorkspaces(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCleanupScanner_RemovesDeletedTickets(t *testing.T) {
+func TestWorkspaceCleanupScanner_KeepsWorkspacesOnTrackerError(t *testing.T) {
 	tracker := &stubTicketChecker{
 		items: map[string]string{
 			"PROJ-1": "In Progress",
@@ -204,8 +204,8 @@ func TestWorkspaceCleanupScanner_RemovesDeletedTickets(t *testing.T) {
 
 	s.scan(context.Background())
 
-	if len(removedKeys) != 1 || removedKeys[0] != "PROJ-2" {
-		t.Errorf("expected [PROJ-2] removed, got %v", removedKeys)
+	if len(removedKeys) != 0 {
+		t.Errorf("expected no removals on tracker error, got %v", removedKeys)
 	}
 }
 

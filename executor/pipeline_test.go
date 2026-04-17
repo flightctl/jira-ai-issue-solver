@@ -2043,6 +2043,21 @@ func TestParsePRContent_GenericHeadingReturnsEmptyTitle(t *testing.T) {
 	}
 }
 
+func TestParsePRContent_LabeledTitleIgnoredAfterHeader(t *testing.T) {
+	// A "Title:" line deep in the body should not be picked up as the PR title.
+	var lines []string
+	for i := range 15 {
+		lines = append(lines, fmt.Sprintf("Line %d of body content", i+1))
+	}
+	lines = append(lines, "Title: This should NOT be the title")
+	content := strings.Join(lines, "\n")
+
+	title, _ := executor.ParsePRContent(content)
+	if title == "This should NOT be the title" {
+		t.Error("Strategy 1 matched a Title: line outside the header region")
+	}
+}
+
 func TestReadPRDescription_GenericHeadingNoTitle(t *testing.T) {
 	dir := t.TempDir()
 	aiBotDir := filepath.Join(dir, ".ai-bot")

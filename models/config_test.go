@@ -313,6 +313,9 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.AIProvider == "claude" {
+				tt.config.Claude.APIKey = "sk-test"
+			}
 			err := tt.config.validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Config.validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -332,6 +335,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -414,6 +419,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -477,6 +484,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -563,6 +572,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -734,6 +745,8 @@ func TestLoadConfig_WithAIConfiguration(t *testing.T) {
 	// Create a temporary config file
 	configContent := fmt.Sprintf(`
 ai_provider: claude
+claude:
+  api_key: sk-test
 jira:
   base_url: https://test.atlassian.net
   username: test-user
@@ -1042,6 +1055,9 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.AIProvider == "claude" {
+				tt.config.Claude.APIKey = "sk-test"
+			}
 			err := tt.config.validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Config.validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -1078,6 +1094,8 @@ logging:
   level: info
   format: console
 ai_provider: "claude"
+claude:
+  api_key: sk-test
 jira:
   base_url: "https://example.com"
   username: "testuser"
@@ -1194,6 +1212,7 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 
 			config := &Config{}
 			config.AIProvider = "claude"
+			config.Claude.APIKey = "sk-test"
 			config.Logging.Level = "info"
 			config.Logging.Format = "console"
 			config.Jira.BaseURL = "https://test.atlassian.net"
@@ -1290,8 +1309,10 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 		return config
 	}
 
-	t.Run("no claude auth is valid", func(t *testing.T) {
+	t.Run("no claude auth is valid for non-claude provider", func(t *testing.T) {
 		config := validBaseConfig(t)
+		config.AIProvider = "gemini"
+		config.Gemini.APIKey = "gemini-key"
 		if err := config.validate(); err != nil {
 			t.Errorf("expected no error, got: %v", err)
 		}
@@ -1325,6 +1346,26 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "mutually exclusive") {
 			t.Errorf("error = %q, want 'mutually exclusive'", err.Error())
+		}
+	})
+
+	t.Run("claude provider requires auth", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.AIProvider = "claude"
+		err := config.validate()
+		if err == nil {
+			t.Fatal("expected error when ai_provider=claude but no auth configured")
+		}
+		if !strings.Contains(err.Error(), "no authentication configured") {
+			t.Errorf("error = %q, want mention of missing authentication", err.Error())
+		}
+	})
+
+	t.Run("non-claude provider allows no claude auth", func(t *testing.T) {
+		config := validBaseConfig(t)
+		config.AIProvider = "gemini"
+		if err := config.validate(); err != nil {
+			t.Errorf("expected no error for non-claude provider without claude auth, got: %v", err)
 		}
 	})
 
@@ -1398,6 +1439,7 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 
 			config := &Config{}
 			config.AIProvider = "claude"
+			config.Claude.APIKey = "sk-test"
 			config.Logging.Level = "info"
 			config.Logging.Format = "console"
 			config.Jira.BaseURL = "https://test.atlassian.net"

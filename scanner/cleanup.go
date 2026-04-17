@@ -82,9 +82,10 @@ func (s *WorkspaceCleanupScanner) Start(ctx context.Context) error {
 		return errors.New("scanner already running")
 	}
 
+	done := make(chan struct{})
 	ctx, s.cancel = context.WithCancel(ctx)
-	s.done = make(chan struct{})
-	go s.run(ctx)
+	s.done = done
+	go s.run(ctx, done)
 	return nil
 }
 
@@ -102,8 +103,8 @@ func (s *WorkspaceCleanupScanner) Stop() {
 	}
 }
 
-func (s *WorkspaceCleanupScanner) run(ctx context.Context) {
-	defer close(s.done)
+func (s *WorkspaceCleanupScanner) run(ctx context.Context, done chan struct{}) {
+	defer close(done)
 
 	s.scan(ctx)
 
@@ -127,10 +128,10 @@ func (s *WorkspaceCleanupScanner) scan(ctx context.Context) {
 		}
 		item, err := s.tracker.GetWorkItem(ticketKey)
 		if err != nil {
-			s.logger.Debug("Workspace ticket not found, marking for removal",
+			s.logger.Warn("Cannot check ticket status, keeping workspace",
 				zap.String("ticket", ticketKey),
 				zap.Error(err))
-			return true
+			return false
 		}
 		return !s.cfg.ActiveStatuses[item.Status]
 	})

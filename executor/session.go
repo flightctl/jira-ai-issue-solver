@@ -82,8 +82,10 @@ func parsePRContent(content string) (title, body string) {
 	lines := strings.Split(content, "\n")
 
 	// Strategy 1: labeled title ("**Title:** ..." or "Title: ...")
-	for i, line := range lines {
-		if t, ok := extractLabeledTitle(line); ok {
+	// Only scan the header region — a "Title:" match deep in the body
+	// would extract the wrong text.
+	for i := range min(len(lines), 10) {
+		if t, ok := extractLabeledTitle(lines[i]); ok {
 			return t, buildBodyExcluding(lines, i)
 		}
 	}

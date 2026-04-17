@@ -1086,5 +1086,9 @@ func (c *Config) validateClaudeAuth() error {
 		return fmt.Errorf("claude: incomplete Vertex AI configuration — missing: %s", strings.Join(missing, ", "))
 	}
 
+	if c.AIProvider == "claude" && !hasAPIKey && !hasAllVertex {
+		return errors.New("claude: ai_provider is \"claude\" but no authentication configured — set api_key or all vertex_* fields")
+	}
+
 	return nil
 }
