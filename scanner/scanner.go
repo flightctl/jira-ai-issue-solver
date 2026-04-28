@@ -74,8 +74,15 @@ type PRFetcher interface {
 // RepoLocator maps work items to their GitHub repository coordinates.
 type RepoLocator interface {
 	// LocateRepo returns the GitHub owner and repo name for the
-	// given work item's component-to-repo mapping.
+	// given work item's component-to-repo mapping. For multi-repo
+	// workspaces, returns the first repo.
 	LocateRepo(workItem models.WorkItem) (owner, repo string, err error)
+
+	// LocateRepos returns all repositories for the given work item.
+	// For single-repo workspaces this returns one entry; for multi-repo
+	// workspaces it returns all repos in the workspace. Each element
+	// has Owner and Repo fields.
+	LocateRepos(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error)
 
 	// ForkOwner returns the GitHub username that owns the fork where
 	// the bot pushes branches. Returns empty string when the assignee

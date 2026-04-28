@@ -129,6 +129,21 @@ func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, e
 	return settings.Repos[0].Owner, settings.Repos[0].Repo, nil
 }
 
+// LocateRepos returns all repositories for the work item's resolved
+// workspace. For single-repo workspaces this returns one entry; for
+// multi-repo workspaces it returns all repos.
+func (r *ConfigResolver) LocateRepos(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+	settings, err := r.ResolveProject(workItem)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]struct{ Owner, Repo string }, len(settings.Repos))
+	for i, rs := range settings.Repos {
+		results[i] = struct{ Owner, Repo string }{Owner: rs.Owner, Repo: rs.Repo}
+	}
+	return results, nil
+}
+
 // ForkOwner returns the GitHub username that owns the assignee's fork.
 // Returns empty string if the work item has no assignee or the
 // assignee is not in the assignee-to-GitHub-username mapping.

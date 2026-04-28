@@ -170,41 +170,25 @@ func (s *FeedbackScanner) scan(ctx context.Context) {
 	}
 }
 
-// checkAndSubmit checks a ticket for actionable PR comments and
-// submits a feedback event if found. Returns true if the scan cycle
-// should stop (circuit breaker open or shutdown).
+// checkAndSubmit checks a ticket for actionable PR comments across all
+// repos in its workspace and submits a feedback event if found. Returns
+// true if the scan cycle should stop (circuit breaker open or shutdown).
 func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 	logger := s.logger.With(zap.String("ticket", item.Key))
 
-	owner, repo, err := s.repos.LocateRepo(item)
+	repos, err := s.repos.LocateRepos(item)
 	if err != nil {
-		logger.Warn("Failed to locate repo, skipping", zap.Error(err))
+		logger.Warn("Failed to locate repos, skipping", zap.Error(err))
 		return false
 	}
 
 	branchName := fmt.Sprintf("%s/%s", s.cfg.BotUsername, item.Key)
-
-	// For fork-based PRs, the GitHub API needs "owner:branch" format
-	// to find cross-repo PRs.
 	head := branchName
 	if forkOwner := s.repos.ForkOwner(item); forkOwner != "" {
 		head = forkOwner + ":" + branchName
 	}
 
-	pr, err := s.prs.GetPRForBranch(owner, repo, head)
-	if err != nil {
-		logger.Warn("No PR found for ticket, skipping", zap.Error(err))
-		return false
-	}
-
-	comments, err := s.prs.GetPRComments(owner, repo, pr.Number, time.Time{})
-	if err != nil {
-		logger.Warn("Failed to fetch PR comments, skipping", zap.Error(err))
-		return false
-	}
-
-	if !commentfilter.HasNewActionable(comments, s.filterConfig()) {
-		logger.Debug("No actionable comments")
+	if !s.hasActionableComments(logger, repos, head) {
 		return false
 	}
 
@@ -237,6 +221,39 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 		logger.Error("Failed to submit feedback event", zap.Error(err))
 	}
 
+	return false
+}
+
+// hasActionableComments checks all repos for PRs with actionable
+// review comments. Returns true as soon as any repo has actionable
+// comments.
+func (s *FeedbackScanner) hasActionableComments(
+	logger *zap.Logger,
+	repos []struct{ Owner, Repo string },
+	head string,
+) bool {
+	for _, r := range repos {
+		pr, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Debug("No PR found for repo, skipping",
+				zap.String("repo", r.Owner+"/"+r.Repo))
+			continue
+		}
+
+		comments, err := s.prs.GetPRComments(r.Owner, r.Repo, pr.Number, time.Time{})
+		if err != nil {
+			logger.Warn("Failed to fetch PR comments",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
+			continue
+		}
+
+		if commentfilter.HasNewActionable(comments, s.filterConfig()) {
+			return true
+		}
+	}
+
+	logger.Debug("No actionable comments")
 	return false
 }
 

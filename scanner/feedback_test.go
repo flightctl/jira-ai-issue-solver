@@ -3,6 +3,7 @@ package scanner_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -261,8 +262,8 @@ func TestFeedbackScanner_PRNotFound_Skipped(t *testing.T) {
 
 func TestFeedbackScanner_RepoLocateFailure_Skipped(t *testing.T) {
 	d := newFeedbackDeps()
-	d.repos.LocateRepoFunc = func(_ models.WorkItem) (string, string, error) {
-		return "", "", errors.New("unknown component")
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+		return nil, errors.New("unknown component")
 	}
 
 	submitCalled := false
@@ -568,6 +569,80 @@ func TestFeedbackScanner_NoCommentsNoEvent(t *testing.T) {
 	}
 }
 
+// --- Multi-repo scanning ---
+
+func TestFeedbackScanner_MultiRepo_CommentsOnSecondRepo(t *testing.T) {
+	d := newFeedbackDeps()
+
+	// Workspace has 3 repos; only svc-b has a PR with comments.
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+		return []struct{ Owner, Repo string }{
+			{Owner: "org", Repo: "svc-a"},
+			{Owner: "org", Repo: "svc-b"},
+			{Owner: "org", Repo: "svc-c"},
+		}, nil
+	}
+
+	d.prs.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		if repo == "svc-b" {
+			return &models.PRDetails{Number: 99, Branch: head}, nil
+		}
+		return nil, fmt.Errorf("no PR for %s/%s", owner, repo)
+	}
+	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		if repo == "svc-b" {
+			return []models.PRComment{
+				{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			}, nil
+		}
+		return []models.PRComment{}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(event jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		if event.Type != jobmanager.JobTypeFeedback {
+			t.Errorf("event type = %q, want feedback", event.Type)
+		}
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneFeedbackScan(t, s)
+
+	if !submitted {
+		t.Error("expected feedback event for comments on svc-b")
+	}
+}
+
+func TestFeedbackScanner_MultiRepo_NoCommentsOnAnyRepo(t *testing.T) {
+	d := newFeedbackDeps()
+
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+		return []struct{ Owner, Repo string }{
+			{Owner: "org", Repo: "svc-a"},
+			{Owner: "org", Repo: "svc-b"},
+		}, nil
+	}
+
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneFeedbackScan(t, s)
+
+	if submitted {
+		t.Error("Submit should not be called when no repo has actionable comments")
+	}
+}
+
 // --- helpers ---
 
 type feedbackDeps struct {
@@ -600,8 +675,8 @@ func newFeedbackDeps() *feedbackDeps {
 			},
 		},
 		repos: &scannertest.StubRepoLocator{
-			LocateRepoFunc: func(_ models.WorkItem) (string, string, error) {
-				return "org", "repo", nil
+			LocateReposFunc: func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+				return []struct{ Owner, Repo string }{{Owner: "org", Repo: "repo"}}, nil
 			},
 		},
 		cfg: scanner.FeedbackScannerConfig{

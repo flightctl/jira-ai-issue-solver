@@ -3,6 +3,7 @@ package executor_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,11 +11,17 @@ import (
 	"time"
 
 	"jira-ai-issue-solver/container"
+	"jira-ai-issue-solver/container/containertest"
 	"jira-ai-issue-solver/executor"
+	"jira-ai-issue-solver/executor/executortest"
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/taskfile"
+	"jira-ai-issue-solver/taskfile/taskfiletest"
+	"jira-ai-issue-solver/tracker/trackertest"
+	"jira-ai-issue-solver/workspace"
+	"jira-ai-issue-solver/workspace/workspacetest"
 )
 
 // --- Happy path ---
@@ -1100,5 +1107,170 @@ func newFeedbackJob(ticketKey string) *jobmanager.Job {
 		TicketKey:  ticketKey,
 		Type:       jobmanager.JobTypeFeedback,
 		AttemptNum: 1,
+	}
+}
+
+// --- Multi-repo feedback ---
+
+func newMultiRepoFeedbackDeps(t *testing.T) *testDeps {
+	t.Helper()
+	wsDir := t.TempDir()
+
+	for _, name := range []string{"svc-a", "svc-b"} {
+		if err := os.MkdirAll(filepath.Join(wsDir, name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return &testDeps{
+		tracker: &trackertest.Stub{
+			GetWorkItemFunc: func(key string) (*models.WorkItem, error) {
+				return &models.WorkItem{
+					Key: key, Summary: "Multi-repo bug", Type: "Bug",
+					Components: []string{}, Labels: []string{},
+				}, nil
+			},
+		},
+		git: &executortest.StubGitService{
+			HasChangesFunc: func(dir string) (bool, error) {
+				return true, nil
+			},
+			CommitChangesFunc: func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+				return "def456", nil
+			},
+			GetPRForBranchFunc: func(owner, repo, head string) (*models.PRDetails, error) {
+				return &models.PRDetails{
+					Number: 10, Title: "Fix", Branch: head,
+					URL: fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+				}, nil
+			},
+			GetPRCommentsFunc: func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+				if repo == "svc-a" {
+					return []models.PRComment{
+						{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Fix A", IsReviewComment: true},
+					}, nil
+				}
+				return []models.PRComment{}, nil
+			},
+		},
+		containers: &containertest.StubManager{
+			ResolveConfigFunc: func(_ string, _ *container.SettingsOverride) (*container.Config, error) {
+				return &container.Config{Image: "test:latest"}, nil
+			},
+			StartFunc: func(_ context.Context, _ *container.Config, _, _ string, _ map[string]string) (*container.Container, error) {
+				return &container.Container{ID: "c1", Name: "test-c1"}, nil
+			},
+		},
+		workspaces: &workspacetest.Stub{
+			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+				return wsDir, true, nil
+			},
+		},
+		taskWriter: &taskfiletest.Stub{},
+		projects: &executortest.StubProjectResolver{
+			ResolveProjectFunc: func(_ models.WorkItem) (*models.ProjectSettings, error) {
+				return &models.ProjectSettings{
+					Repos: []models.RepoSettings{
+						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git"},
+						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git"},
+					},
+					Container:        models.ContainerSettings{Image: "fat:latest"},
+					BaseBranch:       "main",
+					InProgressStatus: "In Progress",
+					InReviewStatus:   "In Review",
+					TodoStatus:       "To Do",
+				}, nil
+			},
+		},
+		wsDir: wsDir,
+	}
+}
+
+func TestMultiRepoFeedback_HappyPath(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	var repliedTo []int64
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
+		repliedTo = append(repliedTo, commentID)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Comment 100 on svc-a should be replied to.
+	if len(repliedTo) != 1 || repliedTo[0] != 100 {
+		t.Errorf("replied to comments %v, want [100]", repliedTo)
+	}
+
+	if result.PRURL == "" {
+		t.Error("result.PRURL should not be empty")
+	}
+}
+
+func TestMultiRepoFeedback_NoNewComments(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// No new comments on any repo.
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.PRURL != "" {
+		t.Errorf("expected empty PRURL when no comments, got %q", result.PRURL)
+	}
+}
+
+func TestMultiRepoFeedback_NoPRsFound(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, fmt.Errorf("not found")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err == nil || !strings.Contains(err.Error(), "no PRs found") {
+		t.Fatalf("expected no-PRs error, got %v", err)
+	}
+}
+
+func TestMultiRepoFeedback_WritesMultiRepoFeedbackTask(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	var taskWritten bool
+	d.taskWriter.WriteMultiRepoFeedbackTaskFunc = func(
+		_ models.PRDetails, newComments, _ []models.PRComment,
+		_ string, repos []taskfile.RepoContext,
+	) error {
+		taskWritten = true
+		if len(repos) != 2 {
+			t.Errorf("repo contexts = %d, want 2", len(repos))
+		}
+		if len(newComments) != 1 {
+			t.Errorf("new comments = %d, want 1", len(newComments))
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !taskWritten {
+		t.Error("WriteMultiRepoFeedbackTask was not called")
 	}
 }

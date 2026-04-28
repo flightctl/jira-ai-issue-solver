@@ -94,10 +94,11 @@ func (s *StubPRFetcher) GetPRComments(owner, repo string, number int, since time
 
 // StubRepoLocator is a test double for [scanner.RepoLocator].
 // Set the corresponding Func field to control each method's behavior.
-// When a Func field is nil, the method returns empty strings.
+// When a Func field is nil, the method returns empty/zero values.
 type StubRepoLocator struct {
-	LocateRepoFunc func(workItem models.WorkItem) (string, string, error)
-	ForkOwnerFunc  func(workItem models.WorkItem) string
+	LocateRepoFunc  func(workItem models.WorkItem) (string, string, error)
+	LocateReposFunc func(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error)
+	ForkOwnerFunc   func(workItem models.WorkItem) string
 }
 
 func (s *StubRepoLocator) LocateRepo(workItem models.WorkItem) (string, string, error) {
@@ -105,6 +106,13 @@ func (s *StubRepoLocator) LocateRepo(workItem models.WorkItem) (string, string, 
 		return s.LocateRepoFunc(workItem)
 	}
 	return "", "", nil
+}
+
+func (s *StubRepoLocator) LocateRepos(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+	if s.LocateReposFunc != nil {
+		return s.LocateReposFunc(workItem)
+	}
+	return []struct{ Owner, Repo string }{}, nil
 }
 
 func (s *StubRepoLocator) ForkOwner(workItem models.WorkItem) string {

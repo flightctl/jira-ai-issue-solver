@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/repoconfig"
 	"jira-ai-issue-solver/services"
+	"jira-ai-issue-solver/taskfile"
+	"jira-ai-issue-solver/workspace"
 )
 
 func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (result jobmanager.JobResult, retErr error) {
@@ -37,6 +40,18 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("resolve project: %w", err)
 	}
 
+	defer func() {
+		// On failure post error comment (but do NOT revert status --
+		// the ticket stays "in review").
+		if retErr != nil {
+			p.handleFeedbackFailure(logger, job.TicketKey, settings, retErr)
+		}
+	}()
+
+	if settings.IsMultiRepo() {
+		return p.executeMultiRepoFeedback(ctx, job, logger, workItem, settings)
+	}
+
 	// Track container for cleanup.
 	var ctr *container.Container
 
@@ -45,11 +60,6 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 			if stopErr := p.containers.Stop(context.Background(), ctr); stopErr != nil {
 				logger.Warn("Failed to stop container", zap.Error(stopErr))
 			}
-		}
-		// On failure post error comment (but do NOT revert status --
-		// the ticket stays "in review").
-		if retErr != nil {
-			p.handleFeedbackFailure(logger, job.TicketKey, settings, retErr)
 		}
 	}()
 
@@ -112,16 +122,10 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	// --- Step 9: Download attachments, write issue and feedback task files ---
-	downloaded, err := p.downloadAttachments(logger, *workItem, wsPath)
-	if err != nil {
-		return result, fmt.Errorf("download attachments: %w", err)
-	}
-	if err := p.taskWriter.WriteIssue(*workItem, wsPath, downloaded); err != nil {
-		return result, fmt.Errorf("write issue file: %w", err)
-	}
-	if err := p.taskWriter.WriteFeedbackTask(
-		*prDetails, newComments, addressedComments, wsPath, settings.Repos[0].Instructions, settings.Repos[0].FeedbackWorkflow); err != nil {
-		return result, fmt.Errorf("write task file: %w", err)
+	if err := p.writeFeedbackFiles(
+		logger, *workItem, *prDetails, newComments, addressedComments, wsPath, settings,
+	); err != nil {
+		return result, err
 	}
 
 	// --- Step 10: Determine AI provider ---
@@ -246,6 +250,487 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		zap.Int("new_comments_addressed", len(newComments)))
 
 	return result, nil
+}
+
+// repoPRInfo groups a repo's PR details and categorized comments for
+// multi-repo feedback processing.
+type repoPRInfo struct {
+	repo     models.RepoSettings
+	pr       *models.PRDetails
+	repoCfg  *repoconfig.Config
+	newCmts  []models.PRComment
+	addrCmts []models.PRComment
+}
+
+// executeMultiRepoFeedback handles feedback for workspaces with
+// multiple repositories. It finds PRs across all repos, aggregates
+// comments, runs one AI session, then fans out commits and replies.
+func (p *Pipeline) executeMultiRepoFeedback(
+	ctx context.Context,
+	job *jobmanager.Job,
+	logger *zap.Logger,
+	workItem *models.WorkItem,
+	settings *models.ProjectSettings,
+) (result jobmanager.JobResult, retErr error) {
+	var ctr *container.Container
+
+	defer func() {
+		if ctr != nil {
+			if stopErr := p.containers.Stop(context.Background(), ctr); stopErr != nil {
+				logger.Warn("Failed to stop container", zap.Error(stopErr))
+			}
+		}
+	}()
+
+	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
+	head := settings.PRHead(branchName)
+
+	// --- Step 3: Find PRs across all repos ---
+	var repoInfos []repoPRInfo
+	for _, repo := range settings.Repos {
+		pr, err := p.git.GetPRForBranch(repo.Owner, repo.Repo, head)
+		if err != nil {
+			logger.Debug("No PR found for repo",
+				zap.String("repo", repo.Name))
+			continue
+		}
+		repoInfos = append(repoInfos, repoPRInfo{repo: repo, pr: pr})
+	}
+	if len(repoInfos) == 0 {
+		return result, fmt.Errorf("no PRs found for branch %s in any repository", branchName)
+	}
+
+	// --- Step 4: Prepare multi-repo workspace ---
+	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
+	for i, r := range settings.Repos {
+		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
+	}
+	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries)
+	if err != nil {
+		return result, fmt.Errorf("prepare workspace: %w", err)
+	}
+	logger.Info("Multi-repo workspace ready",
+		zap.String("path", wsPath),
+		zap.Bool("reused", reused))
+
+	// --- Step 5: Per-repo branch setup ---
+	if err := p.syncMultiRepoBranches(wsPath, branchName, settings); err != nil {
+		return result, err
+	}
+
+	// --- Step 6: Fetch and categorize comments per repo ---
+	allNew, allAddressed, err := p.fetchMultiRepoComments(repoInfos)
+	if err != nil {
+		return result, err
+	}
+	if len(allNew) == 0 {
+		logger.Info("No new comments to address across any repo")
+		return result, nil
+	}
+
+	// --- Step 7: Load repo configs and merge imports ---
+	repoConfigs := make([]*repoconfig.Config, len(settings.Repos))
+	for i, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		cfg, err := repoconfig.Load(repoDir)
+		if err != nil {
+			logger.Warn("Failed to load repo config, using defaults",
+				zap.String("repo", repo.Name), zap.Error(err))
+			cfg = repoconfig.Default()
+		}
+		repoConfigs[i] = cfg
+		// Attach repo config to any matching repoInfo.
+		for j := range repoInfos {
+			if repoInfos[j].repo.Name == repo.Name {
+				repoInfos[j].repoCfg = cfg
+			}
+		}
+	}
+
+	mergedImports := mergeMultiRepoImports(settings, repoConfigs)
+	if err := p.cloneImportEntries(logger, wsPath, mergedImports); err != nil {
+		return result, err
+	}
+
+	// --- Step 8: Write issue and feedback task files ---
+	if err := p.writeMultiRepoFeedbackFiles(
+		logger, *workItem, repoInfos[0].pr, allNew, allAddressed, wsPath, settings,
+	); err != nil {
+		return result, err
+	}
+
+	// --- Step 9: Provider, command, container ---
+	provider := p.resolveProvider(settings)
+	sp := buildScriptParams(provider, p.cfg.DefaultClaudeModel, p.cfg.DefaultGeminiModel, repoConfigs[0])
+	execCommand := buildExecCommand(sp)
+
+	ctr, err = p.startContainer(ctx, wsPath, job.TicketKey, provider, settings)
+	if err != nil {
+		return result, fmt.Errorf("start container: %w", err)
+	}
+
+	if err := p.runImportInstalls(ctx, logger, ctr, mergedImports); err != nil {
+		return result, fmt.Errorf("import install: %w", err)
+	}
+
+	// --- Step 10: Strip remote auth per repo ---
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.git.StripRemoteAuth(repoDir); err != nil {
+			return result, fmt.Errorf("strip remote auth for %s: %w", repo.Name, err)
+		}
+	}
+	authStripped := true
+	defer func() {
+		if authStripped {
+			for _, repo := range settings.Repos {
+				repoDir := filepath.Join(wsPath, repo.Name)
+				if restoreErr := p.git.RestoreRemoteAuth(
+					repoDir, settings.CommitOwnerFor(repo), repo.Repo); restoreErr != nil {
+					logger.Warn("Failed to restore remote auth",
+						zap.String("repo", repo.Name), zap.Error(restoreErr))
+				}
+			}
+		}
+	}()
+
+	// --- Step 11: Execute AI agent ---
+	execCtx := ctx
+	if p.cfg.SessionTimeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, p.cfg.SessionTimeout)
+		defer cancel()
+	}
+
+	_, exitCode, execErr := p.containers.Exec(execCtx, ctr, execCommand)
+	if execErr != nil {
+		if ctx.Err() != nil {
+			return result, fmt.Errorf("job cancelled: %w", ctx.Err())
+		}
+		logger.Warn("AI agent exec failed", zap.Error(execErr))
+	}
+
+	session := readSessionOutput(wsPath)
+	logger.Info("AI session completed",
+		zap.Int("exit_code", exitCode),
+		zap.Float64("cost_usd", session.CostUSD),
+		zap.Any("validation_passed", session.ValidationPassed),
+		zap.String("summary", session.Summary))
+	result.CostUSD = session.CostUSD
+
+	// --- Step 11a: Restore remote auth per repo ---
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.git.RestoreRemoteAuth(
+			repoDir, settings.CommitOwnerFor(repo), repo.Repo); err != nil {
+			return result, fmt.Errorf("restore remote auth for %s: %w", repo.Name, err)
+		}
+	}
+	authStripped = false
+
+	if execErr != nil {
+		if execCtx.Err() != nil {
+			return result, fmt.Errorf("session timeout exceeded: %w", execErr)
+		}
+		return result, fmt.Errorf("AI session failed: %w", execErr)
+	}
+
+	// --- Steps 12-14: Check changes, commit, reply ---
+	importExcludes := collectExcludes(mergedImports)
+	committed, err := p.commitMultiRepoFeedback(logger, commitMultiRepoParams{
+		settings:     settings,
+		workItem:     workItem,
+		wsPath:       wsPath,
+		branchName:   branchName,
+		ticketKey:    job.TicketKey,
+		excludes:     importExcludes,
+		exitCode:     exitCode,
+		finalAttempt: p.isFinalAttempt(job.AttemptNum),
+		repoInfos:    repoInfos,
+	})
+	if err != nil {
+		return result, err
+	}
+	if !committed {
+		return result, nil
+	}
+
+	result.PRURL = repoInfos[0].pr.URL
+	result.PRNumber = repoInfos[0].pr.Number
+	result.ValidationPassed = !shouldCreateDraft(session, exitCode, false)
+
+	logger.Info("Multi-repo feedback processed",
+		zap.Int("repos_with_prs", len(repoInfos)),
+		zap.Int("new_comments_addressed", len(allNew)))
+
+	return result, nil
+}
+
+// syncMultiRepoBranches sets up fork remotes, switches to the branch,
+// and syncs with the remote for each repo in the workspace.
+func (p *Pipeline) syncMultiRepoBranches(
+	wsPath, branchName string,
+	settings *models.ProjectSettings,
+) error {
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.ensureForkRemoteForRepo(repoDir, settings, repo); err != nil {
+			return err
+		}
+		if err := p.git.SwitchBranch(repoDir, branchName); err != nil {
+			return fmt.Errorf("switch to branch in %s: %w", repo.Name, err)
+		}
+		if err := p.git.SyncWithRemote(repoDir, branchName, nil); err != nil {
+			return fmt.Errorf("sync with remote for %s: %w", repo.Name, err)
+		}
+	}
+	return nil
+}
+
+// fetchMultiRepoComments fetches and categorizes PR comments across
+// all repos with PRs. Updates each repoPRInfo with its categorized
+// comments and returns the aggregated new and addressed lists.
+func (p *Pipeline) fetchMultiRepoComments(
+	repoInfos []repoPRInfo,
+) (allNew, allAddressed []models.PRComment, err error) {
+	for i := range repoInfos {
+		ri := &repoInfos[i]
+		comments, err := p.git.GetPRComments(
+			ri.repo.Owner, ri.repo.Repo, ri.pr.Number, time.Time{})
+		if err != nil {
+			return nil, nil, fmt.Errorf("get PR comments for %s: %w", ri.repo.Name, err)
+		}
+		filtered := commentfilter.Filter(comments, p.commentFilterConfig())
+		ri.newCmts, ri.addrCmts = CategorizeComments(filtered, p.cfg.BotUsername)
+		allNew = append(allNew, ri.newCmts...)
+		allAddressed = append(allAddressed, ri.addrCmts...)
+	}
+	return allNew, allAddressed, nil
+}
+
+// writeMultiRepoFeedbackFiles downloads attachments and writes the
+// issue and feedback task files for a multi-repo workspace.
+func (p *Pipeline) writeMultiRepoFeedbackFiles(
+	logger *zap.Logger,
+	workItem models.WorkItem,
+	pr *models.PRDetails,
+	newComments, addressedComments []models.PRComment,
+	wsPath string,
+	settings *models.ProjectSettings,
+) error {
+	downloaded, err := p.downloadAttachments(logger, workItem, wsPath)
+	if err != nil {
+		return fmt.Errorf("download attachments: %w", err)
+	}
+	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded); err != nil {
+		return fmt.Errorf("write issue file: %w", err)
+	}
+
+	repoContexts := make([]taskfile.RepoContext, len(settings.Repos))
+	for i, repo := range settings.Repos {
+		repoContexts[i] = taskfile.RepoContext{
+			Name:                     repo.Name,
+			Dir:                      filepath.Join(wsPath, repo.Name),
+			FallbackInstructions:     repo.Instructions,
+			FallbackFeedbackWorkflow: repo.FeedbackWorkflow,
+		}
+	}
+	if err := p.taskWriter.WriteMultiRepoFeedbackTask(
+		*pr, newComments, addressedComments, wsPath, repoContexts,
+	); err != nil {
+		return fmt.Errorf("write task file: %w", err)
+	}
+	return nil
+}
+
+// writeFeedbackFiles downloads attachments and writes the issue and
+// feedback task files for a single-repo feedback pipeline run.
+func (p *Pipeline) writeFeedbackFiles(
+	logger *zap.Logger,
+	workItem models.WorkItem,
+	prDetails models.PRDetails,
+	newComments, addressedComments []models.PRComment,
+	wsPath string,
+	settings *models.ProjectSettings,
+) error {
+	downloaded, err := p.downloadAttachments(logger, workItem, wsPath)
+	if err != nil {
+		return fmt.Errorf("download attachments: %w", err)
+	}
+	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded); err != nil {
+		return fmt.Errorf("write issue file: %w", err)
+	}
+	if err := p.taskWriter.WriteFeedbackTask(
+		prDetails, newComments, addressedComments, wsPath,
+		settings.Repos[0].Instructions, settings.Repos[0].FeedbackWorkflow,
+	); err != nil {
+		return fmt.Errorf("write task file: %w", err)
+	}
+	return nil
+}
+
+type commitMultiRepoParams struct {
+	settings     *models.ProjectSettings
+	workItem     *models.WorkItem
+	wsPath       string
+	branchName   string
+	ticketKey    string
+	excludes     []string
+	exitCode     int
+	finalAttempt bool
+	repoInfos    []repoPRInfo
+}
+
+// commitMultiRepoFeedback checks for changes across repos, commits
+// them, syncs with remotes, and replies to PR comments. Returns true
+// if commits were made, false if no changes (final-attempt replies
+// are posted and nil error returned in that case).
+func (p *Pipeline) commitMultiRepoFeedback(
+	logger *zap.Logger,
+	params commitMultiRepoParams,
+) (bool, error) {
+	// Check for any changes across repos.
+	anyChanges := false
+	for _, repo := range params.settings.Repos {
+		repoDir := filepath.Join(params.wsPath, repo.Name)
+		has, err := p.git.HasChanges(repoDir)
+		if err != nil {
+			return false, fmt.Errorf("check changes for %s: %w", repo.Name, err)
+		}
+		if has {
+			anyChanges = true
+			break
+		}
+	}
+	if !anyChanges {
+		if params.finalAttempt {
+			logger.Info("Final attempt produced no changes, posting unable-to-address replies")
+			for _, ri := range params.repoInfos {
+				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+					ri.pr, ri.newCmts, "unable")
+			}
+			return false, nil
+		}
+		return false, fmt.Errorf("AI produced no changes (exit code: %d)", params.exitCode)
+	}
+
+	// Commit per repo.
+	commitMsg := fmt.Sprintf("%s: address PR feedback", params.ticketKey)
+	var commitSHA string
+
+	for _, repo := range params.settings.Repos {
+		repoDir := filepath.Join(params.wsPath, repo.Name)
+		has, _ := p.git.HasChanges(repoDir)
+		if !has {
+			continue
+		}
+
+		sha, err := p.git.CommitChanges(
+			repo.Owner, params.settings.CommitOwnerFor(repo), repo.Repo, params.branchName,
+			commitMsg, repoDir, params.workItem.Assignee, params.excludes,
+		)
+		if errors.Is(err, services.ErrNoChanges) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("commit changes for %s: %w", repo.Name, err)
+		}
+		if commitSHA == "" {
+			commitSHA = sha
+		}
+
+		if err := p.git.SyncWithRemote(repoDir, params.branchName, params.excludes); err != nil {
+			return false, fmt.Errorf("sync with remote for %s: %w", repo.Name, err)
+		}
+	}
+
+	if commitSHA == "" {
+		if params.finalAttempt {
+			logger.Info("Final attempt produced no committable changes, posting unable-to-address replies")
+			for _, ri := range params.repoInfos {
+				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+					ri.pr, ri.newCmts, "unable")
+			}
+			return false, nil
+		}
+		return false, fmt.Errorf("AI produced no committable changes (exit code: %d)", params.exitCode)
+	}
+
+	// Reply to comments.
+	aiResponses := readCommentResponses(params.wsPath)
+	shortSHA := commitSHA
+	if len(shortSHA) > 7 {
+		shortSHA = shortSHA[:7]
+	}
+	for _, ri := range params.repoInfos {
+		p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+			ri.pr, ri.newCmts, shortSHA, aiResponses)
+	}
+
+	return true, nil
+}
+
+// ensureForkRemoteForRepo sets a repo's origin to the assignee's fork
+// and fetches its refs. No-op when fork mode is inactive.
+func (p *Pipeline) ensureForkRemoteForRepo(
+	repoDir string,
+	settings *models.ProjectSettings,
+	repo models.RepoSettings,
+) error {
+	if settings.ForkOwner() == "" {
+		return nil
+	}
+	if err := p.git.RestoreRemoteAuth(repoDir, settings.CommitOwnerFor(repo), repo.Repo); err != nil {
+		return fmt.Errorf("set fork remote for %s: %w", repo.Name, err)
+	}
+	if err := p.git.FetchRemote(repoDir); err != nil {
+		return fmt.Errorf("fetch fork for %s: %w", repo.Name, err)
+	}
+	return nil
+}
+
+// replyToCommentsOnRepo posts replies to comments on a specific
+// repo's PR. When sha is "unable", posts unable-to-address replies.
+// When sha is a commit SHA, posts addressed replies with optional AI
+// response summaries.
+func (p *Pipeline) replyToCommentsOnRepo(
+	logger *zap.Logger,
+	owner, repo string,
+	pr *models.PRDetails,
+	comments []models.PRComment,
+	sha string,
+	aiResponses ...map[int64]string,
+) {
+	var responses map[int64]string
+	if len(aiResponses) > 0 {
+		responses = aiResponses[0]
+	}
+
+	for _, c := range comments {
+		var replyBody string
+		if sha == "unable" {
+			replyBody = "I was unable to produce code changes to address this comment after multiple attempts."
+		} else if summary, ok := responses[c.ID]; ok {
+			replyBody = fmt.Sprintf("%s\n\nAddressed in %s.", summary, sha)
+		} else {
+			replyBody = fmt.Sprintf("Addressed in %s.", sha)
+		}
+
+		if c.IsReviewComment {
+			if err := p.git.ReplyToComment(owner, repo, pr.Number, c.ID, replyBody); err != nil {
+				logger.Warn("Failed to reply to review comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
+		} else {
+			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			if err := p.git.PostIssueComment(owner, repo, pr.Number, markedBody); err != nil {
+				logger.Warn("Failed to reply to conversation comment",
+					zap.Int64("comment_id", c.ID),
+					zap.Error(err))
+			}
+		}
+	}
 }
 
 // CategorizeComments separates PR comments into new (requiring action)
