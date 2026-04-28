@@ -13,9 +13,11 @@ var _ taskfile.Writer = (*Stub)(nil)
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns nil.
 type Stub struct {
-	WriteIssueFunc         func(workItem models.WorkItem, dir string, attachmentFiles []string) error
-	WriteNewTicketTaskFunc func(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
-	WriteFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error
+	WriteIssueFunc                  func(workItem models.WorkItem, dir string, attachmentFiles []string) error
+	WriteNewTicketTaskFunc          func(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
+	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error
+	WriteMultiRepoNewTicketTaskFunc func(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error
+	WriteMultiRepoFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, wsDir string, repos []taskfile.RepoContext) error
 }
 
 func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error {
@@ -35,6 +37,20 @@ func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstruc
 func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error {
 	if s.WriteFeedbackTaskFunc != nil {
 		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, fallbackInstructions, fallbackWorkflow)
+	}
+	return nil
+}
+
+func (s *Stub) WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error {
+	if s.WriteMultiRepoNewTicketTaskFunc != nil {
+		return s.WriteMultiRepoNewTicketTaskFunc(workItem, wsDir, repos)
+	}
+	return nil
+}
+
+func (s *Stub) WriteMultiRepoFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, wsDir string, repos []taskfile.RepoContext) error {
+	if s.WriteMultiRepoFeedbackTaskFunc != nil {
+		return s.WriteMultiRepoFeedbackTaskFunc(prDetails, newComments, addressedComments, wsDir, repos)
 	}
 	return nil
 }

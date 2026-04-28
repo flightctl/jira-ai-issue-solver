@@ -102,6 +102,67 @@ func (w *MarkdownWriter) WriteFeedbackTask(
 	return writeTaskFile(dir, b.String())
 }
 
+func (w *MarkdownWriter) WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []RepoContext) error {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "# Task: %s\n\n", workItem.Key)
+	fmt.Fprintf(&b, "## Summary\n%s\n\n", workItem.Summary)
+	fmt.Fprintf(&b, "The full ticket description is in `%s`.\n\n", IssueFilePath)
+
+	writeNewTicketInstructions(&b, workItem.HasSecurityLevel())
+
+	for _, repo := range repos {
+		fmt.Fprintf(&b, "\n## Repository: %s\n", repo.Name)
+		if err := appendInstructions(&b, repo.Dir, repo.FallbackInstructions); err != nil {
+			return err
+		}
+		if err := appendWorkflow(&b, repo.Dir, repo.FallbackNewTicketWorkflow); err != nil {
+			return err
+		}
+	}
+
+	return writeFile(wsDir, TaskFilePath, b.String())
+}
+
+func (w *MarkdownWriter) WriteMultiRepoFeedbackTask(
+	prDetails models.PRDetails,
+	newComments, addressedComments []models.PRComment,
+	wsDir string, repos []RepoContext,
+) error {
+	var b strings.Builder
+
+	b.WriteString("# Task: Address PR Review Feedback\n\n")
+	fmt.Fprintf(&b, "The original ticket is described in `%s`.\n\n", IssueFilePath)
+
+	fmt.Fprintf(&b, "## PR Context\n")
+	fmt.Fprintf(&b, "PR #%d: %s\n", prDetails.Number, prDetails.Title)
+	fmt.Fprintf(&b, "Branch: %s\n\n", prDetails.Branch)
+
+	if len(newComments) > 0 {
+		b.WriteString("## Review Comments\n\n")
+		writeGroupedComments(&b, newComments)
+	}
+
+	if len(addressedComments) > 0 {
+		b.WriteString("## Previously Addressed Comments (Context Only)\n\n")
+		writeGroupedComments(&b, addressedComments)
+	}
+
+	writeFeedbackInstructions(&b)
+
+	for _, repo := range repos {
+		fmt.Fprintf(&b, "\n## Repository: %s\n", repo.Name)
+		if err := appendInstructions(&b, repo.Dir, repo.FallbackInstructions); err != nil {
+			return err
+		}
+		if err := appendFeedbackWorkflow(&b, repo.Dir, repo.FallbackFeedbackWorkflow); err != nil {
+			return err
+		}
+	}
+
+	return writeFile(wsDir, TaskFilePath, b.String())
+}
+
 // writeNewTicketInstructions writes the standard instructions section
 // for a new ticket task file.
 func writeNewTicketInstructions(b *strings.Builder, hasSecurityLevel bool) {

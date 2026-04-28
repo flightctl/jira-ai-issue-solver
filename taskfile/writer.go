@@ -89,6 +89,27 @@ const (
 	CommentResponsesPath = ".ai-bot/comment-responses.json"
 )
 
+// RepoContext describes a repository within a multi-repo workspace.
+// The writer uses Dir to read repo-level .ai-bot/ files and falls back
+// to the Fallback fields (from the repo's profile) when those files
+// don't exist.
+type RepoContext struct {
+	// Name is the display name for this repo in the task file.
+	Name string
+
+	// Dir is the absolute path to the repo within the workspace.
+	Dir string
+
+	// FallbackInstructions is from the repo's profile Instructions field.
+	FallbackInstructions string
+
+	// FallbackNewTicketWorkflow is from the repo's profile NewTicketWorkflow field.
+	FallbackNewTicketWorkflow string
+
+	// FallbackFeedbackWorkflow is from the repo's profile FeedbackWorkflow field.
+	FallbackFeedbackWorkflow string
+}
+
 // Writer generates task files that the AI agent reads to understand
 // what work needs to be done.
 type Writer interface {
@@ -118,4 +139,18 @@ type Writer interface {
 	WriteFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
 		dir, fallbackInstructions, fallbackWorkflow string) error
+
+	// WriteMultiRepoNewTicketTask generates a task file for a multi-repo
+	// workspace. Per-repo instruction and workflow sections are written
+	// using each repo's .ai-bot/ files with profile fallbacks. The task
+	// file is written to <wsDir>/.ai-bot/task.md.
+	WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []RepoContext) error
+
+	// WriteMultiRepoFeedbackTask generates a feedback task file for a
+	// multi-repo workspace. Per-repo instruction and workflow sections
+	// are written using each repo's .ai-bot/ files with profile
+	// fallbacks. The task file is written to <wsDir>/.ai-bot/task.md.
+	WriteMultiRepoFeedbackTask(prDetails models.PRDetails,
+		newComments, addressedComments []models.PRComment,
+		wsDir string, repos []RepoContext) error
 }

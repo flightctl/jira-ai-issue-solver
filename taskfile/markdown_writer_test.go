@@ -1040,6 +1040,164 @@ func writeFeedbackWorkflow(t *testing.T, dir, content string) {
 	}
 }
 
+// --- WriteMultiRepoNewTicketTask ---
+
+func TestWriteMultiRepoNewTicketTask_PerRepoSections(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repo1Dir := filepath.Join(wsDir, "frontend")
+	repo2Dir := filepath.Join(wsDir, "backend")
+	if err := os.MkdirAll(repo1Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo2Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	writeInstructions(t, repo1Dir, "Run npm test")
+	writeInstructions(t, repo2Dir, "Run go test ./...")
+
+	workItem := models.WorkItem{Key: "PROJ-1", Summary: "Multi-repo fix"}
+	repos := []taskfile.RepoContext{
+		{Name: "frontend", Dir: repo1Dir},
+		{Name: "backend", Dir: repo2Dir},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "# Task: PROJ-1")
+	assertContains(t, content, "## Repository: frontend")
+	assertContains(t, content, "Run npm test")
+	assertContains(t, content, "## Repository: backend")
+	assertContains(t, content, "Run go test ./...")
+}
+
+func TestWriteMultiRepoNewTicketTask_FallbackInstructions(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "svc")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	workItem := models.WorkItem{Key: "PROJ-2", Summary: "Profile fallback test"}
+	repos := []taskfile.RepoContext{
+		{Name: "svc", Dir: repoDir, FallbackInstructions: "Profile instructions here"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Repository: svc")
+	assertContains(t, content, "Profile instructions here")
+}
+
+func TestWriteMultiRepoNewTicketTask_RepoFileOverridesProfile(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "api")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeInstructions(t, repoDir, "Repo-level instructions win")
+
+	workItem := models.WorkItem{Key: "PROJ-3", Summary: "Override test"}
+	repos := []taskfile.RepoContext{
+		{Name: "api", Dir: repoDir, FallbackInstructions: "Profile instructions lose"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "Repo-level instructions win")
+	assertNotContains(t, content, "Profile instructions lose")
+}
+
+func TestWriteMultiRepoNewTicketTask_WorkflowFallback(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "core")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	workItem := models.WorkItem{Key: "PROJ-4", Summary: "Workflow test"}
+	repos := []taskfile.RepoContext{
+		{Name: "core", Dir: repoDir, FallbackNewTicketWorkflow: "1. Assess\n2. Fix\n3. Test"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Workflow")
+	assertContains(t, content, "1. Assess")
+}
+
+// --- WriteMultiRepoFeedbackTask ---
+
+func TestWriteMultiRepoFeedbackTask_PerRepoSections(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repo1Dir := filepath.Join(wsDir, "frontend")
+	repo2Dir := filepath.Join(wsDir, "backend")
+	if err := os.MkdirAll(repo1Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo2Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	writeInstructions(t, repo1Dir, "Frontend validation")
+	writeInstructions(t, repo2Dir, "Backend validation")
+
+	prDetails := models.PRDetails{Number: 42, Title: "Fix things", Branch: "ai-bot/PROJ-1"}
+	comments := []models.PRComment{{
+		ID:       1,
+		Body:     "Please fix",
+		Author:   models.Author{Username: "reviewer"},
+		FilePath: "main.go",
+	}}
+
+	repos := []taskfile.RepoContext{
+		{Name: "frontend", Dir: repo1Dir},
+		{Name: "backend", Dir: repo2Dir, FallbackFeedbackWorkflow: "Feedback workflow steps"},
+	}
+
+	if err := writer.WriteMultiRepoFeedbackTask(prDetails, comments, nil, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "# Task: Address PR Review Feedback")
+	assertContains(t, content, "PR #42: Fix things")
+	assertContains(t, content, "## Repository: frontend")
+	assertContains(t, content, "Frontend validation")
+	assertContains(t, content, "## Repository: backend")
+	assertContains(t, content, "Backend validation")
+	assertContains(t, content, "Feedback workflow steps")
+}
+
+// --- helpers ---
+
 func writeWorkflow(t *testing.T, dir, content string) {
 	t.Helper()
 	aiBotDir := filepath.Join(dir, ".ai-bot")
