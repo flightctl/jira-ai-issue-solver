@@ -147,6 +147,10 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		}
 	}()
 
+	if settings.IsMultiRepo() {
+		return p.executeMultiRepoNewTicket(ctx, job, logger, workItem, settings)
+	}
+
 	// --- Step 4: Prepare workspace ---
 	wsPath, reused, err := p.workspaces.FindOrCreate(job.TicketKey, settings.Repos[0].CloneURL)
 	if err != nil {
@@ -176,15 +180,8 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	// --- Step 8: Download attachments, write issue and task files ---
-	downloaded, err := p.downloadAttachments(logger, *workItem, wsPath)
-	if err != nil {
-		return result, fmt.Errorf("download attachments: %w", err)
-	}
-	if err := p.taskWriter.WriteIssue(*workItem, wsPath, downloaded); err != nil {
-		return result, fmt.Errorf("write issue file: %w", err)
-	}
-	if err := p.taskWriter.WriteNewTicketTask(*workItem, wsPath, settings.Repos[0].Instructions, settings.Repos[0].NewTicketWorkflow); err != nil {
-		return result, fmt.Errorf("write task file: %w", err)
+	if err := p.writeNewTicketFiles(logger, *workItem, wsPath, settings); err != nil {
+		return result, err
 	}
 
 	// --- Step 9: Determine AI provider ---
@@ -715,6 +712,436 @@ func assigneesFromSettings(settings *models.ProjectSettings) []string {
 		return nil
 	}
 	return []string{settings.GitHubUsername}
+}
+
+// executeMultiRepoNewTicket handles new-ticket execution for workspaces
+// with multiple repositories. It clones all repos, runs one AI session
+// against the workspace root, then fans out commit/PR creation per repo.
+func (p *Pipeline) executeMultiRepoNewTicket(
+	ctx context.Context,
+	job *jobmanager.Job,
+	logger *zap.Logger,
+	workItem *models.WorkItem,
+	settings *models.ProjectSettings,
+) (result jobmanager.JobResult, retErr error) {
+	var ctr *container.Container
+
+	defer func() {
+		if ctr != nil {
+			if stopErr := p.containers.Stop(context.Background(), ctr); stopErr != nil {
+				logger.Warn("Failed to stop container", zap.Error(stopErr))
+			}
+		}
+	}()
+
+	// --- Step 4: Prepare multi-repo workspace ---
+	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
+	for i, r := range settings.Repos {
+		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
+	}
+	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries)
+	if err != nil {
+		return result, fmt.Errorf("prepare workspace: %w", err)
+	}
+	logger.Info("Multi-repo workspace ready",
+		zap.String("path", wsPath),
+		zap.Bool("reused", reused),
+		zap.Int("repos", len(settings.Repos)))
+
+	// --- Step 5: Create or switch to branch per repo ---
+	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.prepareBranchForRepo(logger, repoDir, branchName, reused, settings, repo); err != nil {
+			return result, err
+		}
+	}
+
+	// --- Step 6: Load repo config per repo ---
+	repoConfigs := make([]*repoconfig.Config, len(settings.Repos))
+	for i, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		cfg, err := repoconfig.Load(repoDir)
+		if err != nil {
+			logger.Warn("Failed to load repo config, using defaults",
+				zap.String("repo", repo.Name), zap.Error(err))
+			cfg = repoconfig.Default()
+		}
+		repoConfigs[i] = cfg
+	}
+
+	// --- Step 7: Clone merged imports ---
+	mergedImports := mergeMultiRepoImports(settings, repoConfigs)
+	if err := p.cloneImportEntries(logger, wsPath, mergedImports); err != nil {
+		return result, err
+	}
+
+	// --- Step 8: Download attachments, write issue and task files ---
+	downloaded, err := p.downloadAttachments(logger, *workItem, wsPath)
+	if err != nil {
+		return result, fmt.Errorf("download attachments: %w", err)
+	}
+	if err := p.taskWriter.WriteIssue(*workItem, wsPath, downloaded); err != nil {
+		return result, fmt.Errorf("write issue file: %w", err)
+	}
+
+	repoContexts := make([]taskfile.RepoContext, len(settings.Repos))
+	for i, repo := range settings.Repos {
+		repoContexts[i] = taskfile.RepoContext{
+			Name:                      repo.Name,
+			Dir:                       filepath.Join(wsPath, repo.Name),
+			FallbackInstructions:      repo.Instructions,
+			FallbackNewTicketWorkflow: repo.NewTicketWorkflow,
+		}
+	}
+	if err := p.taskWriter.WriteMultiRepoNewTicketTask(*workItem, wsPath, repoContexts); err != nil {
+		return result, fmt.Errorf("write task file: %w", err)
+	}
+
+	// --- Step 9: Determine AI provider ---
+	provider := p.resolveProvider(settings)
+	logger.Info("AI provider selected", zap.String("provider", provider))
+
+	// --- Step 10: Build AI command (use first repo's config for AI settings) ---
+	sp := buildScriptParams(provider, p.cfg.DefaultClaudeModel, p.cfg.DefaultGeminiModel, repoConfigs[0])
+	execCommand := buildExecCommand(sp)
+
+	// --- Step 11: Resolve and start container ---
+	ctr, err = p.startContainer(ctx, wsPath, job.TicketKey, provider, settings)
+	if err != nil {
+		return result, fmt.Errorf("start container: %w", err)
+	}
+
+	if err := p.runImportInstalls(ctx, logger, ctr, mergedImports); err != nil {
+		return result, fmt.Errorf("import install: %w", err)
+	}
+
+	// --- Step 11b: Strip remote auth per repo ---
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.git.StripRemoteAuth(repoDir); err != nil {
+			return result, fmt.Errorf("strip remote auth for %s: %w", repo.Name, err)
+		}
+	}
+	authStripped := true
+	defer func() {
+		if authStripped {
+			for _, repo := range settings.Repos {
+				repoDir := filepath.Join(wsPath, repo.Name)
+				if restoreErr := p.git.RestoreRemoteAuth(
+					repoDir, settings.CommitOwnerFor(repo), repo.Repo); restoreErr != nil {
+					logger.Warn("Failed to restore remote auth",
+						zap.String("repo", repo.Name), zap.Error(restoreErr))
+				}
+			}
+		}
+	}()
+
+	// --- Step 12: Execute AI agent ---
+	execCtx := ctx
+	if p.cfg.SessionTimeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, p.cfg.SessionTimeout)
+		defer cancel()
+	}
+
+	_, exitCode, execErr := p.containers.Exec(execCtx, ctr, execCommand)
+	if execErr != nil {
+		if ctx.Err() != nil {
+			return result, fmt.Errorf("job cancelled: %w", ctx.Err())
+		}
+		logger.Warn("AI agent exec failed", zap.Error(execErr))
+	}
+
+	session := readSessionOutput(wsPath)
+	logger.Info("AI session completed",
+		zap.Int("exit_code", exitCode),
+		zap.Float64("cost_usd", session.CostUSD),
+		zap.Any("validation_passed", session.ValidationPassed),
+		zap.String("summary", session.Summary))
+	result.CostUSD = session.CostUSD
+
+	// --- Step 12a: Restore remote auth per repo ---
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.git.RestoreRemoteAuth(
+			repoDir, settings.CommitOwnerFor(repo), repo.Repo); err != nil {
+			return result, fmt.Errorf("restore remote auth for %s: %w", repo.Name, err)
+		}
+	}
+	authStripped = false
+
+	if execErr != nil {
+		if execCtx.Err() != nil {
+			return result, fmt.Errorf("session timeout exceeded: %w", execErr)
+		}
+		return result, fmt.Errorf("AI session failed: %w", execErr)
+	}
+
+	// --- Step 13–16: Per-repo fan-out (changes → commit → PR) ---
+	importExcludes := collectExcludes(mergedImports)
+	aiPR := readPRDescription(wsPath)
+	sessionDraft := shouldCreateDraft(session, exitCode, false)
+
+	prs, err := p.fanOutCommitAndPR(logger, fanOutParams{
+		settings:     settings,
+		workItem:     workItem,
+		wsPath:       wsPath,
+		branchName:   branchName,
+		ticketKey:    job.TicketKey,
+		repoConfigs:  repoConfigs,
+		excludes:     importExcludes,
+		aiPR:         aiPR,
+		sessionDraft: sessionDraft,
+	})
+	if err != nil {
+		return result, err
+	}
+	if len(prs) == 0 {
+		return result, fmt.Errorf("AI produced no changes in any repository (exit code: %d)", exitCode)
+	}
+
+	// --- Step 17: Update ticket with all PR URLs ---
+	for _, pr := range prs {
+		p.setPRURL(logger, job.TicketKey, settings, pr.url)
+	}
+
+	result.PRURL = prs[0].url
+	result.PRNumber = prs[0].number
+	result.Draft = sessionDraft
+	result.ValidationPassed = !sessionDraft
+
+	if !sessionDraft {
+		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
+			logger.Warn("Failed to transition to in-review", zap.Error(err))
+		}
+	}
+
+	return result, nil
+}
+
+// writeNewTicketFiles downloads attachments and writes the issue and
+// task files for a single-repo new-ticket pipeline run.
+func (p *Pipeline) writeNewTicketFiles(
+	logger *zap.Logger,
+	workItem models.WorkItem,
+	wsPath string,
+	settings *models.ProjectSettings,
+) error {
+	downloaded, err := p.downloadAttachments(logger, workItem, wsPath)
+	if err != nil {
+		return fmt.Errorf("download attachments: %w", err)
+	}
+	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded); err != nil {
+		return fmt.Errorf("write issue file: %w", err)
+	}
+	if err := p.taskWriter.WriteNewTicketTask(
+		workItem, wsPath, settings.Repos[0].Instructions, settings.Repos[0].NewTicketWorkflow,
+	); err != nil {
+		return fmt.Errorf("write task file: %w", err)
+	}
+	return nil
+}
+
+type fanOutParams struct {
+	settings     *models.ProjectSettings
+	workItem     *models.WorkItem
+	wsPath       string
+	branchName   string
+	ticketKey    string
+	repoConfigs  []*repoconfig.Config
+	excludes     []string
+	aiPR         *PRDescription
+	sessionDraft bool
+}
+
+type repoPR struct {
+	url    string
+	number int
+	draft  bool
+}
+
+// fanOutCommitAndPR iterates each repo, commits changes via the GitHub
+// API, syncs the workspace, and creates a PR. Repos without changes are
+// skipped. Returns the list of created PRs (may be empty).
+func (p *Pipeline) fanOutCommitAndPR(
+	logger *zap.Logger,
+	params fanOutParams,
+) ([]repoPR, error) {
+	var prs []repoPR
+
+	for i, repo := range params.settings.Repos {
+		repoDir := filepath.Join(params.wsPath, repo.Name)
+
+		hasChanges, err := p.git.HasChanges(repoDir)
+		if err != nil {
+			return nil, fmt.Errorf("check changes for %s: %w", repo.Name, err)
+		}
+		if !hasChanges {
+			logger.Info("No changes in repo, skipping", zap.String("repo", repo.Name))
+			continue
+		}
+
+		commitMsg := fmt.Sprintf("%s: %s", params.ticketKey, params.workItem.Summary)
+		_, err = p.git.CommitChanges(
+			repo.Owner, params.settings.CommitOwnerFor(repo), repo.Repo, params.branchName,
+			commitMsg, repoDir, params.workItem.Assignee, params.excludes,
+		)
+		if errors.Is(err, services.ErrNoChanges) {
+			logger.Info("No committable changes in repo", zap.String("repo", repo.Name))
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("commit changes for %s: %w", repo.Name, err)
+		}
+
+		if err := p.git.SyncWithRemote(repoDir, params.branchName, params.excludes); err != nil {
+			return nil, fmt.Errorf("sync with remote for %s: %w", repo.Name, err)
+		}
+
+		repoDraft := params.sessionDraft || params.repoConfigs[i].PR.Draft
+		prTitle, prBody := buildPRContent(
+			params.workItem, params.ticketKey, params.repoConfigs[i].PR.TitlePrefix, params.aiPR)
+
+		pr, err := p.git.CreatePR(models.PRParams{
+			Owner:     repo.Owner,
+			Repo:      repo.Repo,
+			Title:     prTitle,
+			Body:      prBody,
+			Head:      params.settings.PRHead(params.branchName),
+			Base:      params.settings.BaseBranch,
+			Draft:     repoDraft,
+			Labels:    params.repoConfigs[i].PR.Labels,
+			Assignees: assigneesFromSettings(params.settings),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create PR for %s: %w", repo.Name, err)
+		}
+
+		prs = append(prs, repoPR{url: pr.URL, number: pr.Number, draft: repoDraft})
+		logger.Info("PR created",
+			zap.String("repo", repo.Name),
+			zap.String("url", pr.URL),
+			zap.Int("number", pr.Number),
+			zap.Bool("draft", repoDraft))
+	}
+
+	return prs, nil
+}
+
+// prepareBranchForRepo sets up the working branch for a single repo
+// within a multi-repo workspace. Same logic as prepareBranch but
+// operates on the specific repo's directory and owner.
+func (p *Pipeline) prepareBranchForRepo(
+	logger *zap.Logger,
+	repoDir, branchName string,
+	reused bool,
+	settings *models.ProjectSettings,
+	repo models.RepoSettings,
+) error {
+	commitOwner := settings.CommitOwnerFor(repo)
+
+	if !reused {
+		if forkOwner := settings.ForkOwner(); forkOwner != "" {
+			if err := p.git.SyncFork(forkOwner, repo.Repo, settings.BaseBranch); err != nil {
+				logger.Warn("Failed to sync fork with upstream",
+					zap.String("fork", forkOwner+"/"+repo.Repo),
+					zap.Error(err))
+			}
+		}
+		if err := p.git.CreateBranch(repoDir, branchName); err != nil {
+			return fmt.Errorf("create branch in %s: %w", repo.Name, err)
+		}
+		return nil
+	}
+
+	remoteExists, err := p.git.RemoteBranchExists(commitOwner, repo.Repo, branchName)
+	if err != nil {
+		return fmt.Errorf("check remote branch for %s: %w", repo.Name, err)
+	}
+
+	if remoteExists {
+		if err := p.git.SwitchBranch(repoDir, branchName); err != nil {
+			return fmt.Errorf("switch to branch in %s: %w", repo.Name, err)
+		}
+		return nil
+	}
+
+	logger.Info("Remote branch deleted, recreating from target branch",
+		zap.String("repo", repo.Name),
+		zap.String("branch", branchName))
+	if err := p.git.CreateBranch(repoDir, branchName); err != nil {
+		return fmt.Errorf("recreate branch in %s: %w", repo.Name, err)
+	}
+	return nil
+}
+
+// cloneImportEntries clones the given imports into the workspace,
+// skipping directories that already exist (workspace reuse).
+func (p *Pipeline) cloneImportEntries(
+	logger *zap.Logger,
+	wsPath string,
+	imports []importEntry,
+) error {
+	for _, imp := range imports {
+		destDir := filepath.Join(wsPath, imp.Path)
+
+		if _, err := os.Stat(destDir); err == nil {
+			logger.Debug("Import already exists, skipping",
+				zap.String("path", imp.Path))
+			continue
+		}
+
+		logger.Info("Cloning import",
+			zap.String("repo", imp.Repo),
+			zap.String("path", imp.Path),
+			zap.String("ref", imp.Ref))
+
+		if err := p.git.CloneImport(imp.Repo, destDir, imp.Ref); err != nil {
+			return fmt.Errorf("clone import %s into %s: %w", imp.Repo, imp.Path, err)
+		}
+	}
+	return nil
+}
+
+// mergeMultiRepoImports combines imports from all repos' profiles and
+// repo-level configs. Within each repo, repo-level imports override
+// profile imports on path conflict. Across repos, later repos override
+// earlier repos on path conflict. Result is sorted by path.
+func mergeMultiRepoImports(
+	settings *models.ProjectSettings,
+	repoConfigs []*repoconfig.Config,
+) []importEntry {
+	byPath := make(map[string]importEntry)
+
+	for i, repo := range settings.Repos {
+		for _, imp := range repo.Imports {
+			p := filepath.Clean(imp.Path)
+			byPath[p] = importEntry{
+				Repo: imp.Repo, Path: p, Ref: imp.Ref,
+				Install: imp.Install, Excludes: imp.Excludes,
+			}
+		}
+
+		if i < len(repoConfigs) && repoConfigs[i] != nil {
+			for _, imp := range repoConfigs[i].Imports {
+				p := filepath.Clean(imp.Path)
+				byPath[p] = importEntry{
+					Repo: imp.Repo, Path: p, Ref: imp.Ref,
+					Install: imp.Install, Excludes: imp.Excludes,
+				}
+			}
+		}
+	}
+
+	result := make([]importEntry, 0, len(byPath))
+	for _, e := range byPath {
+		result = append(result, e)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Path < result[j].Path
+	})
+	return result
 }
 
 // shouldCreateDraft determines whether the PR should be created as a

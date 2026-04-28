@@ -54,6 +54,37 @@ func TestProjectSettings_CommitOwner(t *testing.T) {
 	}
 }
 
+func TestProjectSettings_CommitOwnerFor(t *testing.T) {
+	tests := []struct {
+		name     string
+		repoOwn  string
+		username string
+		want     string
+	}{
+		{
+			name:     "fork mode uses GitHub username",
+			repoOwn:  "upstream-org",
+			username: "alice",
+			want:     "alice",
+		},
+		{
+			name:     "no fork uses repo owner",
+			repoOwn:  "upstream-org",
+			username: "",
+			want:     "upstream-org",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &ProjectSettings{GitHubUsername: tt.username}
+			repo := RepoSettings{Owner: tt.repoOwn}
+			if got := s.CommitOwnerFor(repo); got != tt.want {
+				t.Errorf("CommitOwnerFor() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectSettings_PRHead(t *testing.T) {
 	tests := []struct {
 		name     string

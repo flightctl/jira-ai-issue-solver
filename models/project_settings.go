@@ -118,9 +118,8 @@ func (s *ProjectSettings) ForkOwner() string {
 // CommitOwner returns the repo owner to target for commits and
 // branch operations. When a fork owner is configured, commits go
 // to the fork; otherwise they go directly to the upstream repo.
-// For multi-repo workspaces the caller should pass the specific
-// repo's owner; this method uses Repos[0] as a convenience for
-// single-repo callers.
+// For multi-repo workspaces use CommitOwnerFor instead; this
+// method uses Repos[0] as a convenience for single-repo callers.
 func (s *ProjectSettings) CommitOwner() string {
 	if s.GitHubUsername != "" {
 		return s.GitHubUsername
@@ -129,6 +128,16 @@ func (s *ProjectSettings) CommitOwner() string {
 		return s.Repos[0].Owner
 	}
 	return ""
+}
+
+// CommitOwnerFor returns the owner to target for commits on the
+// given repo. Fork mode overrides the repo's owner with the
+// assignee's GitHub username.
+func (s *ProjectSettings) CommitOwnerFor(repo RepoSettings) string {
+	if s.GitHubUsername != "" {
+		return s.GitHubUsername
+	}
+	return repo.Owner
 }
 
 // PRHead returns the head ref for PR creation. For fork-based PRs

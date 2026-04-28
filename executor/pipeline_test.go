@@ -21,8 +21,10 @@ import (
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/repoconfig"
 	"jira-ai-issue-solver/services"
+	"jira-ai-issue-solver/taskfile"
 	"jira-ai-issue-solver/taskfile/taskfiletest"
 	"jira-ai-issue-solver/tracker/trackertest"
+	"jira-ai-issue-solver/workspace"
 	"jira-ai-issue-solver/workspace/workspacetest"
 )
 
@@ -2938,6 +2940,378 @@ func TestFeedbackPipeline_NonForkMode_SkipsFetchRemote(t *testing.T) {
 
 	if fetchCalled {
 		t.Error("FetchRemote should NOT be called in non-fork mode")
+	}
+}
+
+// --- Multi-repo new ticket pipeline ---
+
+func newMultiRepoTestDeps(t *testing.T) *testDeps {
+	t.Helper()
+	wsDir := t.TempDir()
+
+	// Create repo subdirectories so HasChanges can stat them.
+	for _, name := range []string{"svc-a", "svc-b", "svc-c"} {
+		if err := os.MkdirAll(filepath.Join(wsDir, name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return &testDeps{
+		tracker: &trackertest.Stub{
+			GetWorkItemFunc: func(key string) (*models.WorkItem, error) {
+				return &models.WorkItem{
+					Key:        key,
+					Summary:    "Multi-repo task",
+					Type:       "Story",
+					Components: []string{},
+					Labels:     []string{},
+				}, nil
+			},
+		},
+		git: &executortest.StubGitService{
+			HasChangesFunc: func(dir string) (bool, error) {
+				return true, nil
+			},
+			CommitChangesFunc: func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+				return "abc123", nil
+			},
+			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {
+				return &models.PR{
+					Number: 1,
+					URL:    fmt.Sprintf("https://github.com/%s/%s/pull/1", params.Owner, params.Repo),
+				}, nil
+			},
+		},
+		containers: &containertest.StubManager{
+			ResolveConfigFunc: func(repoDir string, projectOverride *container.SettingsOverride) (*container.Config, error) {
+				return &container.Config{Image: "fat-container:latest"}, nil
+			},
+			StartFunc: func(ctx context.Context, cfg *container.Config, wsDir, ticketKey string, env map[string]string) (*container.Container, error) {
+				return &container.Container{ID: "c1", Name: "test-c1"}, nil
+			},
+		},
+		workspaces: &workspacetest.Stub{
+			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+				return wsDir, false, nil
+			},
+		},
+		taskWriter: &taskfiletest.Stub{},
+		projects: &executortest.StubProjectResolver{
+			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+				return &models.ProjectSettings{
+					Repos: []models.RepoSettings{
+						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git"},
+						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git"},
+						{Name: "svc-c", Owner: "org", Repo: "svc-c", CloneURL: "https://github.com/org/svc-c.git"},
+					},
+					Container:        models.ContainerSettings{Image: "fat-container:latest"},
+					BaseBranch:       "main",
+					InProgressStatus: "In Progress",
+					InReviewStatus:   "In Review",
+					TodoStatus:       "To Do",
+				}, nil
+			},
+		},
+		wsDir: wsDir,
+	}
+}
+
+func TestMultiRepoNewTicket_HappyPath(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	var transitions []string
+	d.tracker.TransitionStatusFunc = func(key, status string) error {
+		transitions = append(transitions, status)
+		return nil
+	}
+
+	var prRepos []string
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prRepos = append(prRepos, params.Repo)
+		return &models.PR{
+			Number: len(prRepos),
+			URL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", params.Owner, params.Repo, len(prRepos)),
+		}, nil
+	}
+
+	var comments []string
+	d.tracker.AddCommentFunc = func(key, body string) error {
+		comments = append(comments, body)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 3 repos with changes → 3 PRs.
+	if len(prRepos) != 3 {
+		t.Fatalf("PRs created = %d, want 3", len(prRepos))
+	}
+	if !equalSlice(prRepos, []string{"svc-a", "svc-b", "svc-c"}) {
+		t.Errorf("PR repos = %v, want [svc-a svc-b svc-c]", prRepos)
+	}
+
+	// 3 PR URL comments posted.
+	if len(comments) != 3 {
+		t.Fatalf("comments = %d, want 3", len(comments))
+	}
+	for i, c := range comments {
+		if !strings.Contains(c, "[AI-BOT-PR]") {
+			t.Errorf("comment[%d] = %q, want [AI-BOT-PR] marker", i, c)
+		}
+	}
+
+	// Status transitions: in-progress, then in-review.
+	if len(transitions) != 2 {
+		t.Fatalf("transitions = %v, want 2", transitions)
+	}
+	if transitions[0] != "In Progress" {
+		t.Errorf("first transition = %q, want In Progress", transitions[0])
+	}
+	if transitions[1] != "In Review" {
+		t.Errorf("second transition = %q, want In Review", transitions[1])
+	}
+
+	// Result uses first PR.
+	if result.PRURL == "" {
+		t.Error("result.PRURL should not be empty")
+	}
+	if result.Draft {
+		t.Error("expected non-draft")
+	}
+}
+
+func TestMultiRepoNewTicket_PartialChanges(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	// Only svc-b has changes.
+	d.git.HasChangesFunc = func(dir string) (bool, error) {
+		return strings.Contains(dir, "svc-b"), nil
+	}
+
+	var prRepos []string
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prRepos = append(prRepos, params.Repo)
+		return &models.PR{Number: 1, URL: "https://github.com/org/svc-b/pull/1"}, nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(prRepos) != 1 || prRepos[0] != "svc-b" {
+		t.Errorf("PR repos = %v, want [svc-b]", prRepos)
+	}
+
+	if result.PRURL != "https://github.com/org/svc-b/pull/1" {
+		t.Errorf("result.PRURL = %q, want svc-b URL", result.PRURL)
+	}
+}
+
+func TestMultiRepoNewTicket_NoChangesInAnyRepo(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	d.git.HasChangesFunc = func(dir string) (bool, error) {
+		return false, nil
+	}
+
+	var reverted bool
+	d.tracker.TransitionStatusFunc = func(key, status string) error {
+		if status == "To Do" {
+			reverted = true
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err == nil || !strings.Contains(err.Error(), "no changes in any repository") {
+		t.Fatalf("expected no-changes error, got %v", err)
+	}
+	if !reverted {
+		t.Error("expected status reverted to todo")
+	}
+}
+
+func TestMultiRepoNewTicket_UsesWorkspaceLevelContainer(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	var resolvedOverride *container.SettingsOverride
+	d.containers.ResolveConfigFunc = func(repoDir string, override *container.SettingsOverride) (*container.Config, error) {
+		resolvedOverride = override
+		return &container.Config{Image: "fat-container:latest"}, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resolvedOverride == nil {
+		t.Fatal("expected non-nil settings override")
+	}
+	if resolvedOverride.Image != "fat-container:latest" {
+		t.Errorf("override image = %q, want fat-container:latest", resolvedOverride.Image)
+	}
+}
+
+func TestMultiRepoNewTicket_BranchCreatedPerRepo(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	var branchDirs []string
+	d.git.CreateBranchFunc = func(dir, name string) error {
+		branchDirs = append(branchDirs, filepath.Base(dir))
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(branchDirs) != 3 {
+		t.Fatalf("branches created = %d, want 3 (one per repo)", len(branchDirs))
+	}
+
+	want := []string{"svc-a", "svc-b", "svc-c"}
+	if !equalSlice(branchDirs, want) {
+		t.Errorf("branch dirs = %v, want %v", branchDirs, want)
+	}
+}
+
+func TestMultiRepoNewTicket_WritesMultiRepoTaskFile(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	var taskWritten bool
+	d.taskWriter.WriteMultiRepoNewTicketTaskFunc = func(
+		workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext,
+	) error {
+		taskWritten = true
+		if len(repos) != 3 {
+			t.Errorf("repo contexts = %d, want 3", len(repos))
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !taskWritten {
+		t.Error("WriteMultiRepoNewTicketTask was not called")
+	}
+}
+
+func TestMultiRepoNewTicket_StripsAndRestoresAuthPerRepo(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	var stripped, restored []string
+	d.git.StripRemoteAuthFunc = func(dir string) error {
+		stripped = append(stripped, filepath.Base(dir))
+		return nil
+	}
+	d.git.RestoreRemoteAuthFunc = func(dir, owner, repo string) error {
+		restored = append(restored, filepath.Base(dir))
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"svc-a", "svc-b", "svc-c"}
+	if !equalSlice(stripped, want) {
+		t.Errorf("stripped = %v, want %v", stripped, want)
+	}
+
+	// Restored should have all 3 repos (explicit restore after AI).
+	if len(restored) < 3 {
+		t.Errorf("restored = %v, want at least 3 entries", restored)
+	}
+}
+
+func TestMultiRepoNewTicket_CommitPerRepoWithChanges(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	// svc-a and svc-c have changes; svc-b does not.
+	d.git.HasChangesFunc = func(dir string) (bool, error) {
+		base := filepath.Base(dir)
+		return base == "svc-a" || base == "svc-c", nil
+	}
+
+	var commitRepos []string
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, branch, msg, dir string, author *models.Author, excludes []string) (string, error) {
+		commitRepos = append(commitRepos, repo)
+		return "abc123", nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"svc-a", "svc-c"}
+	if !equalSlice(commitRepos, want) {
+		t.Errorf("committed repos = %v, want %v", commitRepos, want)
+	}
+}
+
+func TestMultiRepoNewTicket_DraftWhenValidationFails(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	writeSessionOutput(t, d.wsDir, executor.SessionOutput{
+		ValidationPassed: boolPtr(false),
+	})
+
+	var prDrafts []bool
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prDrafts = append(prDrafts, params.Draft)
+		return &models.PR{
+			Number: len(prDrafts),
+			URL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", params.Owner, params.Repo, len(prDrafts)),
+		}, nil
+	}
+
+	// Don't expect in-review transition for draft PRs.
+	var transitions []string
+	d.tracker.TransitionStatusFunc = func(key, status string) error {
+		transitions = append(transitions, status)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for i, draft := range prDrafts {
+		if !draft {
+			t.Errorf("PR[%d].Draft = false, want true", i)
+		}
+	}
+	if !result.Draft {
+		t.Error("result.Draft should be true")
+	}
+
+	// Only in-progress transition, no in-review for drafts.
+	if len(transitions) != 1 || transitions[0] != "In Progress" {
+		t.Errorf("transitions = %v, want [In Progress] only", transitions)
 	}
 }
 
