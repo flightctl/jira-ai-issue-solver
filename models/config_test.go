@@ -90,7 +90,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -143,7 +146,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -174,7 +180,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -205,7 +214,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -230,7 +242,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 							ProjectKeys:       ProjectKeys{"PROJ1"},
 							StatusTransitions: TicketTypeStatusTransitions{},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -261,7 +276,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -297,7 +315,10 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -351,10 +372,15 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: https://github.com/test/repo.git
+              profile: default
       components:
         test:
-          repo: https://github.com/test/repo.git
-          profile: default
+          workspace: default
       profiles:
         default: {}
 github:
@@ -435,10 +461,15 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: https://github.com/test/repo.git
+              profile: default
       components:
         test:
-          repo: https://github.com/test/repo.git
-          profile: default
+          workspace: default
       profiles:
         default: {}
 github:
@@ -473,7 +504,7 @@ workspaces:
 	}
 }
 
-func TestLoadConfig_ComponentToRepoCaseSensitivity(t *testing.T) {
+func TestLoadConfig_ComponentToWorkspaceCaseSensitivity(t *testing.T) {
 	// Create a temporary private key file
 	tmpKeyPath := createTempKeyFile(t)
 	defer func() { _ = os.Remove(tmpKeyPath) }()
@@ -500,19 +531,22 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
+      workspaces:
+        flightctl:
+          repos:
+            - name: flightctl
+              url: https://github.com/your-org/flightctl.git
+              profile: default
+        backend-ws:
+          repos:
+            - name: backend
+              url: https://github.com/your-org/backend.git
+              profile: default
       components:
         FlightCtl:
-          repo: https://github.com/your-org/flightctl.git
-          profile: default
-        flightctl:
-          repo: https://github.com/your-org/flightctl-lowercase.git
-          profile: default
+          workspace: flightctl
         Backend:
-          repo: https://github.com/your-org/backend.git
-          profile: default
-        backend:
-          repo: https://github.com/your-org/backend-lowercase.git
-          profile: default
+          workspace: backend-ws
       profiles:
         default: {}
 github:
@@ -549,16 +583,13 @@ workspaces:
 		return
 	}
 
-	// Verify component mappings (keys converted to lowercase by Viper)
-	if projectConfig.Components["flightctl"].Repo != "https://github.com/your-org/flightctl.git" {
-		t.Errorf("Expected flightctl to map to flightctl.git, got '%s'", projectConfig.Components["flightctl"].Repo)
+	// Viper lowercases YAML map keys, so component names are lowercased
+	if projectConfig.Components["flightctl"].Workspace != "flightctl" {
+		t.Errorf("Expected flightctl component to map to workspace 'flightctl', got '%s'", projectConfig.Components["flightctl"].Workspace)
 	}
-	if projectConfig.Components["backend"].Repo != "https://github.com/your-org/backend.git" {
-		t.Errorf("Expected backend to map to backend.git, got '%s'", projectConfig.Components["backend"].Repo)
+	if projectConfig.Components["backend"].Workspace != "backend-ws" {
+		t.Errorf("Expected backend component to map to workspace 'backend-ws', got '%s'", projectConfig.Components["backend"].Workspace)
 	}
-
-	// The test was originally designed to test case sensitivity, but Viper converts keys to lowercase
-	// So we verify that the mappings exist with lowercase keys
 }
 
 func TestLoadConfig_WithTicketTypeSpecificStatusTransitions(t *testing.T) {
@@ -592,10 +623,15 @@ jira:
           todo: "Backlog"
           in_progress: "Development"
           in_review: "Testing"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: https://github.com/test/repo.git
+              profile: default
       components:
         test:
-          repo: https://github.com/test/repo.git
-          profile: default
+          workspace: default
       profiles:
         default: {}
 github:
@@ -761,10 +797,15 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: "https://github.com/test/repo"
+              profile: default
       components:
         "test-component":
-          repo: "https://github.com/test/repo"
-          profile: default
+          workspace: default
       profiles:
         default: {}
 github:
@@ -852,7 +893,10 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -912,7 +956,10 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -968,7 +1015,10 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -1023,7 +1073,10 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 								},
 							},
 							Components: ComponentMap{
-								"test": ComponentConfig{Repo: "https://github.com/test/repo.git", Profile: "default"},
+								"test": ComponentConfig{Workspace: "default"},
+							},
+							Workspaces: map[string]WorkspaceConfig{
+								"default": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/test/repo.git", Profile: "default"}}},
 							},
 							Profiles: map[string]Profile{
 								"default": {},
@@ -1112,10 +1165,15 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: https://github.com/test/repo.git
+              profile: default
       components:
         test:
-          repo: https://github.com/test/repo.git
-          profile: default
+          workspace: default
       profiles:
         default: {}
 github:
@@ -1232,7 +1290,10 @@ func TestConfig_validateWorkspacesConfiguration(t *testing.T) {
 						},
 					},
 					Components: ComponentMap{
-						"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+						"component1": ComponentConfig{Workspace: "default"},
+					},
+					Workspaces: map[string]WorkspaceConfig{
+						"default": {Repos: []RepoEntry{{Name: "repo1", URL: "https://github.com/test/repo1.git", Profile: "default"}}},
 					},
 					Profiles: map[string]Profile{
 						"default": {},
@@ -1293,7 +1354,10 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 					},
 				},
 				Components: ComponentMap{
-					"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+					"component1": ComponentConfig{Workspace: "default"},
+				},
+				Workspaces: map[string]WorkspaceConfig{
+					"default": {Repos: []RepoEntry{{Name: "repo1", URL: "https://github.com/test/repo1.git", Profile: "default"}}},
 				},
 				Profiles: map[string]Profile{
 					"default": {},
@@ -1459,7 +1523,10 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 						},
 					},
 					Components: ComponentMap{
-						"component1": ComponentConfig{Repo: "https://github.com/test/repo1.git", Profile: "default"},
+						"component1": ComponentConfig{Workspace: "default"},
+					},
+					Workspaces: map[string]WorkspaceConfig{
+						"default": {Repos: []RepoEntry{{Name: "repo1", URL: "https://github.com/test/repo1.git", Profile: "default"}}},
 					},
 					Profiles: map[string]Profile{
 						"default": {},
@@ -1473,6 +1540,230 @@ func TestConfig_validateContainerConfiguration(t *testing.T) {
 			config.Workspaces.TTLDays = 7
 			config.Container.Runtime = tt.runtime
 			config.Guardrails.MaxConcurrentJobs = 10
+
+			err := config.validate()
+
+			if tt.expectedError == "" {
+				if err != nil {
+					t.Errorf("expected no error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.expectedError)
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
+					t.Errorf("expected error containing %q, got: %v", tt.expectedError, err)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_validateWorkspaceConfiguration(t *testing.T) {
+	keyPath := createTempKeyFile(t)
+	t.Cleanup(func() { _ = os.Remove(keyPath) })
+
+	validBase := func() *Config {
+		config := &Config{}
+		config.Logging.Level = "info"
+		config.Logging.Format = "console"
+		config.AIProvider = "claude"
+		config.Claude.APIKey = "sk-test"
+		config.Jira.BaseURL = "https://test.atlassian.net"
+		config.Jira.Username = "test@example.com"
+		config.Jira.APIToken = "test-token"
+		config.Jira.AssigneeToGitHubUsername = map[string]string{
+			"test@example.com": "test-user",
+		}
+		config.GitHub.AppID = 123456
+		config.GitHub.PrivateKeyPath = keyPath
+		config.GitHub.BotUsername = "test-bot"
+		config.Workspaces.BaseDir = "/var/lib/workspaces"
+		config.Workspaces.TTLDays = 7
+		config.Guardrails.MaxConcurrentJobs = 10
+		return config
+	}
+
+	baseProject := func() ProjectConfig {
+		return ProjectConfig{
+			ProjectKeys: ProjectKeys{"PROJ"},
+			StatusTransitions: TicketTypeStatusTransitions{
+				"Story": {Todo: "To Do", InProgress: "In Progress", InReview: "In Review"},
+			},
+			Profiles: map[string]Profile{"default": {}},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		setup         func(*Config)
+		expectedError string
+	}{
+		{
+			name: "valid single-repo workspace with component",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Profiles = map[string]Profile{"go": {}}
+				p.Workspaces = map[string]WorkspaceConfig{
+					"backend": {
+						Repos: []RepoEntry{{Name: "api", URL: "https://github.com/org/api", Profile: "go"}},
+					},
+				}
+				p.Components = ComponentMap{"backend-api": {Workspace: "backend"}}
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+		},
+		{
+			name: "valid multi-repo workspace",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Profiles = map[string]Profile{"node": {}, "go": {}}
+				p.Workspaces = map[string]WorkspaceConfig{
+					"full-stack": {
+						Repos: []RepoEntry{
+							{Name: "frontend", URL: "https://github.com/org/frontend", Profile: "node"},
+							{Name: "backend", URL: "https://github.com/org/backend", Profile: "go"},
+						},
+					},
+				}
+				p.DefaultWorkspace = "full-stack"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+		},
+		{
+			name: "valid with default_workspace and no components",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"main": {
+						Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo", Profile: "default"}},
+					},
+				}
+				p.DefaultWorkspace = "main"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+		},
+		{
+			name: "no workspaces configured",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Components = ComponentMap{"comp1": {Workspace: "backend"}}
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "at least one workspace must be configured",
+		},
+		{
+			name: "workspace with no repos",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"empty": {Repos: []RepoEntry{}},
+				}
+				p.DefaultWorkspace = "empty"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "at least one repo is required",
+		},
+		{
+			name: "repo missing name",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{URL: "https://github.com/org/repo"}}},
+				}
+				p.DefaultWorkspace = "ws"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "name is required",
+		},
+		{
+			name: "repo missing url",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo"}}},
+				}
+				p.DefaultWorkspace = "ws"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "url is required",
+		},
+		{
+			name: "repo references nonexistent profile",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo", Profile: "nonexistent"}}},
+				}
+				p.DefaultWorkspace = "ws"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "profile \"nonexistent\" does not exist",
+		},
+		{
+			name: "component references nonexistent workspace",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo", Profile: "default"}}},
+				}
+				p.Components = ComponentMap{"comp1": {Workspace: "nonexistent"}}
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "workspace \"nonexistent\" does not exist",
+		},
+		{
+			name: "component missing workspace field",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo", Profile: "default"}}},
+				}
+				p.Components = ComponentMap{"comp1": {}}
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "workspace is required",
+		},
+		{
+			name: "default_workspace references nonexistent workspace",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo", Profile: "default"}}},
+				}
+				p.Components = ComponentMap{"comp1": {Workspace: "ws"}}
+				p.DefaultWorkspace = "nonexistent"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "workspace \"nonexistent\" does not exist",
+		},
+		{
+			name: "neither components nor default_workspace",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo", Profile: "default"}}},
+				}
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "either components or default_workspace must be configured",
+		},
+		{
+			name: "repo with empty profile is valid",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {Repos: []RepoEntry{{Name: "repo", URL: "https://github.com/org/repo"}}},
+				}
+				p.DefaultWorkspace = "ws"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validBase()
+			tt.setup(config)
 
 			err := config.validate()
 

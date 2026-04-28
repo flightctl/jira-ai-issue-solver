@@ -55,11 +55,46 @@ jira:
           in_progress: "In Progress"
           in_review: "Review"
 
+      # Workspaces group one or more repositories into a working
+      # environment for AI sessions. A single-repo project is just a
+      # workspace with one entry — no special casing.
+      workspaces:
+        # Single-repo workspace: the common case
+        backend:
+          repos:
+            - name: backend
+              url: https://github.com/your-org/backend.git
+              profile: go-dev
+        frontend:
+          repos:
+            - name: frontend
+              url: https://github.com/your-org/frontend.git
+              profile: go-dev
+        api:
+          repos:
+            - name: api
+              url: https://github.com/your-org/api.git
+              profile: go-dev
+
+        # Multi-repo workspace: all repos cloned into subdirectories
+        # of the workspace and mounted into a single container.
+        # Requires a workspace-level container with all toolchains.
+        # full-stack:
+        #   container:
+        #     image: "your-org/full-stack-dev:latest"
+        #   repos:
+        #     - name: backend
+        #       url: https://github.com/your-org/backend.git
+        #       profile: go-dev
+        #     - name: frontend
+        #       url: https://github.com/your-org/frontend.git
+        #       profile: node-dev
+
       # Profiles bundle container, imports, instructions, and workflow
-      # settings. Multiple components can reference the same profile
-      # to avoid duplication. Operator-defined profile settings take
-      # precedence over repo-level config (.ai-bot/container.json)
-      # on conflicts.
+      # settings. Repos within workspaces reference profiles by name.
+      # Multiple repos can reference the same profile to avoid
+      # duplication. Operator-defined profile settings take precedence
+      # over repo-level config (.ai-bot/container.json) on conflicts.
       profiles:
         # Profile for Go projects
         go-dev:
@@ -133,20 +168,18 @@ jira:
         #   instructions: |
         #     Run `cargo test` before committing.
 
-      # Components map Jira component names to their repository URL
-      # and profile. Component names are matched case-insensitively.
+      # Components map Jira component names to workspaces.
+      # Component names are matched case-insensitively.
       components:
         frontend:
-          repo: https://github.com/your-org/frontend.git
-          profile: go-dev
+          workspace: frontend
         backend:
-          repo: https://github.com/your-org/backend.git
-          profile: go-dev
+          workspace: backend
         api:
-          repo: https://github.com/your-org/api.git
-          profile: go-dev
+          workspace: api
 
-    # Example project 2 - using PR URLs in comments instead of git field
+    # Example project 2 - single-repo project with default_workspace
+    # (no component mapping needed)
     - project_keys:
         - "PROJ3"
       # No git_pull_request_field_name specified - PR URLs will be looked for in comments
@@ -156,14 +189,20 @@ jira:
           todo: "NEW"
           in_progress: "ASSIGNED"
           in_review: "POST"
+      # default_workspace is used when tickets have no component or no
+      # matching component. Projects with a single workspace can use
+      # this instead of (or alongside) component mappings.
+      default_workspace: main
+      workspaces:
+        main:
+          repos:
+            - name: mobile
+              url: https://github.com/your-org/mobile.git
+              profile: default
       profiles:
         default:
           container:
             image: "your-org/mobile-dev:latest"
-      components:
-        mobile:
-          repo: https://github.com/your-org/mobile.git
-          profile: default
 
 # GitHub Configuration - GitHub App Authentication (Required)
 github:

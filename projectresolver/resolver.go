@@ -34,16 +34,20 @@ func NewConfigResolver(config *models.Config) (*ConfigResolver, error) {
 }
 
 // ResolveProject returns project-specific settings for the work item.
-// It locates the project configuration, resolves the component to a
-// repository and profile, and maps status transitions for the work
-// item's type.
+// It locates the project configuration, resolves the component (or
+// default workspace) to a workspace, and maps status transitions for
+// the work item's type.
+//
+// Temporary bridge: extracts the first repo from the workspace and
+// populates the old-shape ProjectSettings. Task 2 will reshape
+// ProjectSettings to carry all repos.
 func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.ProjectSettings, error) {
 	pc, err := r.findProjectConfig(workItem)
 	if err != nil {
 		return nil, err
 	}
 
-	repoURL, profile, err := r.resolveComponent(workItem, pc)
+	repoURL, profile, err := r.resolveWorkspace(workItem, pc)
 	if err != nil {
 		return nil, err
 	}
@@ -87,13 +91,15 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 }
 
 // LocateRepo returns the GitHub owner and repo for the work item.
+// For multi-repo workspaces, returns the first repo (temporary;
+// Task 2 introduces LocateRepos).
 func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, error) {
 	pc, err := r.findProjectConfig(workItem)
 	if err != nil {
 		return "", "", err
 	}
 
-	repoURL, _, err := r.resolveComponent(workItem, pc)
+	repoURL, _, err := r.resolveWorkspace(workItem, pc)
 	if err != nil {
 		return "", "", err
 	}
@@ -126,64 +132,95 @@ func (r *ConfigResolver) findProjectConfig(workItem models.WorkItem) (*models.Pr
 	return pc, nil
 }
 
-// resolveComponent finds the first work item component that has a
-// mapping in the project's Components, then looks up the referenced
-// profile. Returns the repo URL and profile. Returns an error if
-// the work item has no components, none match, or the referenced
-// profile does not exist.
+// resolveWorkspace finds the workspace for a work item by matching
+// its Jira components against the project's component-to-workspace
+// mappings, falling back to DefaultWorkspace when no component
+// matches. Returns the first repo's URL and its resolved profile.
 //
-// Matching is case-insensitive because viper lowercases YAML map keys
-// internally, so configured keys like "FlightCtl" become "flightctl"
-// in the loaded config regardless of the original YAML casing.
-func (r *ConfigResolver) resolveComponent(workItem models.WorkItem, pc *models.ProjectConfig) (string, *models.Profile, error) {
-	if len(workItem.Components) == 0 {
-		return "", nil, fmt.Errorf("work item %s has no components; cannot resolve repository", workItem.Key)
+// Component matching is case-insensitive because viper lowercases
+// YAML map keys internally.
+func (r *ConfigResolver) resolveWorkspace(workItem models.WorkItem, pc *models.ProjectConfig) (string, *models.Profile, error) {
+	wsName, err := r.findWorkspaceName(workItem, pc)
+	if err != nil {
+		return "", nil, err
 	}
 
-	var comp *models.ComponentConfig
-	for _, component := range workItem.Components {
-		// Try exact match first.
-		if c, ok := pc.Components[component]; ok {
-			comp = &c
-			break
-		}
-		// Fall back to case-insensitive match (viper lowercases map keys).
-		lower := strings.ToLower(component)
-		for key, c := range pc.Components {
-			if strings.ToLower(key) == lower {
-				cc := c
-				comp = &cc
-				break
-			}
-		}
-		if comp != nil {
-			break
-		}
-	}
-
-	if comp == nil {
-		return "", nil, fmt.Errorf(
-			"no component mapping found for %s; components %v do not match any configured mapping",
-			workItem.Key, workItem.Components)
-	}
-
-	// Look up profile (case-insensitive).
-	profile, ok := pc.Profiles[comp.Profile]
+	ws, ok := lookupWorkspace(pc.Workspaces, wsName)
 	if !ok {
-		lower := strings.ToLower(comp.Profile)
-		for key, p := range pc.Profiles {
-			if strings.ToLower(key) == lower {
-				profile = p
-				ok = true
-				break
+		return "", nil, fmt.Errorf("workspace %q does not exist in project config for %s", wsName, workItem.Key)
+	}
+
+	// Use first repo (temporary bridge until Task 2 reshapes ProjectSettings).
+	repo := ws.Repos[0]
+
+	profile, ok := lookupProfile(pc.Profiles, repo.Profile)
+	if !ok {
+		return "", nil, fmt.Errorf("profile %q referenced by repo %q does not exist in project config for %s", repo.Profile, repo.Name, workItem.Key)
+	}
+
+	return repo.URL, &profile, nil
+}
+
+// findWorkspaceName returns the workspace name for a work item by
+// checking component mappings first, then falling back to
+// DefaultWorkspace.
+func (r *ConfigResolver) findWorkspaceName(workItem models.WorkItem, pc *models.ProjectConfig) (string, error) {
+	// Try component matching if the work item has components.
+	if len(workItem.Components) > 0 {
+		for _, component := range workItem.Components {
+			// Exact match first.
+			if comp, ok := pc.Components[component]; ok {
+				return comp.Workspace, nil
 			}
-		}
-		if !ok {
-			return "", nil, fmt.Errorf("profile %q referenced by component does not exist in project config for %s", comp.Profile, workItem.Key)
+			// Case-insensitive fallback.
+			lower := strings.ToLower(component)
+			for key, comp := range pc.Components {
+				if strings.ToLower(key) == lower {
+					return comp.Workspace, nil
+				}
+			}
 		}
 	}
 
-	return comp.Repo, &profile, nil
+	// Fall back to default workspace.
+	if pc.DefaultWorkspace != "" {
+		return pc.DefaultWorkspace, nil
+	}
+
+	if len(workItem.Components) == 0 {
+		return "", fmt.Errorf("work item %s has no components and no default_workspace is configured", workItem.Key)
+	}
+	return "", fmt.Errorf(
+		"no component mapping found for %s; components %v do not match any configured mapping and no default_workspace is configured",
+		workItem.Key, workItem.Components)
+}
+
+// lookupWorkspace finds a workspace by name with case-insensitive fallback.
+func lookupWorkspace(workspaces map[string]models.WorkspaceConfig, name string) (models.WorkspaceConfig, bool) {
+	if ws, ok := workspaces[name]; ok {
+		return ws, true
+	}
+	lower := strings.ToLower(name)
+	for key, ws := range workspaces {
+		if strings.ToLower(key) == lower {
+			return ws, true
+		}
+	}
+	return models.WorkspaceConfig{}, false
+}
+
+// lookupProfile finds a profile by name with case-insensitive fallback.
+func lookupProfile(profiles map[string]models.Profile, name string) (models.Profile, bool) {
+	if p, ok := profiles[name]; ok {
+		return p, true
+	}
+	lower := strings.ToLower(name)
+	for key, p := range profiles {
+		if strings.ToLower(key) == lower {
+			return p, true
+		}
+	}
+	return models.Profile{}, false
 }
 
 // parseRepoURL extracts the owner and repository name from a GitHub
