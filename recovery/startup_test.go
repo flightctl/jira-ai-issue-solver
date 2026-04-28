@@ -924,6 +924,130 @@ func TestRun_PassesInProgressCriteria(t *testing.T) {
 	}
 }
 
+// --- Multi-repo recovery ---
+
+func TestRun_MultiRepo_PRsExistInSomeRepos_CompletesTransition(t *testing.T) {
+	d := newDeps()
+	d.tracker.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
+		return []models.WorkItem{{Key: "PROJ-1", Type: "Bug", Components: []string{}, Labels: []string{}}}, nil
+	}
+	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b"},
+			},
+			BaseBranch:     "main",
+			InReviewStatus: "In Review",
+			TodoStatus:     "To Do",
+		}, nil
+	}
+
+	// svc-a has a PR, svc-b does not and has no commits.
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		if repo == "svc-a" {
+			return &models.PRDetails{Number: 1, URL: "https://github.com/org/svc-a/pull/1"}, nil
+		}
+		return nil, errors.New("no PR")
+	}
+	d.git.BranchHasCommitsFunc = func(_, _, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	var transitioned bool
+	d.tracker.TransitionStatusFunc = func(key, status string) error {
+		if status == "In Review" {
+			transitioned = true
+		}
+		return nil
+	}
+
+	r := d.runner(t)
+	_ = r.Run(context.Background())
+
+	if !transitioned {
+		t.Error("expected transition to In Review")
+	}
+}
+
+func TestRun_MultiRepo_CommitsNoPR_CreatesPR(t *testing.T) {
+	d := newDeps()
+	d.tracker.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
+		return []models.WorkItem{{Key: "PROJ-1", Summary: "Fix", Type: "Bug", Components: []string{}, Labels: []string{}}}, nil
+	}
+	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b"},
+			},
+			BaseBranch:     "main",
+			InReviewStatus: "In Review",
+			TodoStatus:     "To Do",
+		}, nil
+	}
+
+	// No PRs, svc-b has commits.
+	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, errors.New("no PR")
+	}
+	d.git.BranchHasCommitsFunc = func(_, repo, _, _ string) (bool, error) {
+		return repo == "svc-b", nil
+	}
+
+	var prRepos []string
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prRepos = append(prRepos, params.Repo)
+		return &models.PR{Number: 1, URL: "https://github.com/org/" + params.Repo + "/pull/1"}, nil
+	}
+
+	r := d.runner(t)
+	_ = r.Run(context.Background())
+
+	if len(prRepos) != 1 || prRepos[0] != "svc-b" {
+		t.Errorf("PRs created for %v, want [svc-b]", prRepos)
+	}
+}
+
+func TestRun_MultiRepo_NoPRsNoCommits_Reverts(t *testing.T) {
+	d := newDeps()
+	d.tracker.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
+		return []models.WorkItem{{Key: "PROJ-1", Type: "Bug", Components: []string{}, Labels: []string{}}}, nil
+	}
+	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b"},
+			},
+			BaseBranch:     "main",
+			InReviewStatus: "In Review",
+			TodoStatus:     "To Do",
+		}, nil
+	}
+	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, errors.New("no PR")
+	}
+	d.git.BranchHasCommitsFunc = func(_, _, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	var reverted bool
+	d.tracker.TransitionStatusFunc = func(key, status string) error {
+		if status == "To Do" {
+			reverted = true
+		}
+		return nil
+	}
+
+	r := d.runner(t)
+	_ = r.Run(context.Background())
+
+	if !reverted {
+		t.Error("expected revert to To Do")
+	}
+}
+
 // --- helpers ---
 
 type deps struct {
