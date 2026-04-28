@@ -148,7 +148,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}()
 
 	// --- Step 4: Prepare workspace ---
-	wsPath, reused, err := p.workspaces.FindOrCreate(job.TicketKey, settings.CloneURL)
+	wsPath, reused, err := p.workspaces.FindOrCreate(job.TicketKey, settings.Repos[0].CloneURL)
 	if err != nil {
 		return result, fmt.Errorf("prepare workspace: %w", err)
 	}
@@ -183,7 +183,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	if err := p.taskWriter.WriteIssue(*workItem, wsPath, downloaded); err != nil {
 		return result, fmt.Errorf("write issue file: %w", err)
 	}
-	if err := p.taskWriter.WriteNewTicketTask(*workItem, wsPath, settings.Instructions, settings.NewTicketWorkflow); err != nil {
+	if err := p.taskWriter.WriteNewTicketTask(*workItem, wsPath, settings.Repos[0].Instructions, settings.Repos[0].NewTicketWorkflow); err != nil {
 		return result, fmt.Errorf("write task file: %w", err)
 	}
 
@@ -214,7 +214,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	authStripped := true
 	defer func() {
 		if authStripped {
-			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); restoreErr != nil {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repos[0].Repo); restoreErr != nil {
 				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
 			}
 		}
@@ -252,7 +252,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	// Must happen before SyncWithRemote which needs fetch access.
 	// In fork mode, origin is set to the fork so that SyncWithRemote
 	// fetches from the fork (where the API commit was created).
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repos[0].Repo); err != nil {
 		return result, fmt.Errorf("restore remote auth: %w", err)
 	}
 	authStripped = false
@@ -278,7 +278,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: %s", job.TicketKey, workItem.Summary)
 	_, err = p.git.CommitChanges(
-		settings.Owner, settings.CommitOwner(), settings.Repo, branchName,
+		settings.Repos[0].Owner, settings.CommitOwner(), settings.Repos[0].Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
@@ -305,8 +305,8 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	prTitle, prBody := buildPRContent(workItem, job.TicketKey, repoCfg.PR.TitlePrefix, aiPR)
 
 	pr, err := p.git.CreatePR(models.PRParams{
-		Owner:     settings.Owner,
-		Repo:      settings.Repo,
+		Owner:     settings.Repos[0].Owner,
+		Repo:      settings.Repos[0].Repo,
 		Title:     prTitle,
 		Body:      prBody,
 		Head:      settings.PRHead(branchName),
@@ -370,7 +370,7 @@ func (p *Pipeline) startContainer(
 // container package's override type. Returns nil if no container
 // settings are configured (zero-value ContainerSettings).
 func toSettingsOverride(settings *models.ProjectSettings) *container.SettingsOverride {
-	cs := settings.Container
+	cs := settings.ResolvedContainer()
 	if cs.Image == "" && cs.ResourceLimits.Memory == "" && cs.ResourceLimits.CPUs == "" &&
 		len(cs.Env) == 0 && len(cs.Tmpfs) == 0 && len(cs.ExtraMounts) == 0 {
 		return nil
@@ -490,8 +490,8 @@ func mergeImports(
 ) []importEntry {
 	byPath := make(map[string]importEntry)
 
-	// Project-level imports go in first.
-	for _, imp := range settings.Imports {
+	// Profile-level imports go in first.
+	for _, imp := range settings.Repos[0].Imports {
 		p := filepath.Clean(imp.Path)
 		byPath[p] = importEntry{Repo: imp.Repo, Path: p, Ref: imp.Ref, Install: imp.Install, Excludes: imp.Excludes}
 	}
@@ -674,9 +674,9 @@ func (p *Pipeline) prepareBranch(
 ) error {
 	if !reused {
 		if forkOwner := settings.ForkOwner(); forkOwner != "" {
-			if err := p.git.SyncFork(forkOwner, settings.Repo, settings.BaseBranch); err != nil {
+			if err := p.git.SyncFork(forkOwner, settings.Repos[0].Repo, settings.BaseBranch); err != nil {
 				logger.Warn("Failed to sync fork with upstream",
-					zap.String("fork", forkOwner+"/"+settings.Repo),
+					zap.String("fork", forkOwner+"/"+settings.Repos[0].Repo),
 					zap.Error(err))
 			}
 		}
@@ -687,7 +687,7 @@ func (p *Pipeline) prepareBranch(
 	}
 
 	remoteExists, err := p.git.RemoteBranchExists(
-		settings.CommitOwner(), settings.Repo, branchName)
+		settings.CommitOwner(), settings.Repos[0].Repo, branchName)
 	if err != nil {
 		return fmt.Errorf("check remote branch: %w", err)
 	}

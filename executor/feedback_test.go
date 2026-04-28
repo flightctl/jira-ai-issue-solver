@@ -357,9 +357,7 @@ func TestExecuteFeedback_ErrorCommentsDisabled(t *testing.T) {
 	}
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:                "org",
-			Repo:                 "repo",
-			CloneURL:             "https://github.com/org/repo.git",
+			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:           "main",
 			InProgressStatus:     "In Progress",
 			InReviewStatus:       "In Review",

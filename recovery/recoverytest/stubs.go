@@ -159,5 +159,5 @@ func (s *StubProjectResolver) ResolveProject(workItem models.WorkItem) (*models.
 	if s.ResolveProjectFunc != nil {
 		return s.ResolveProjectFunc(workItem)
 	}
-	return &models.ProjectSettings{}, nil
+	return &models.ProjectSettings{Repos: []models.RepoSettings{{}}}, nil
 }

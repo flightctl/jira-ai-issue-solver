@@ -36,44 +36,38 @@ func NewConfigResolver(config *models.Config) (*ConfigResolver, error) {
 // ResolveProject returns project-specific settings for the work item.
 // It locates the project configuration, resolves the component (or
 // default workspace) to a workspace, and maps status transitions for
-// the work item's type.
-//
-// Temporary bridge: extracts the first repo from the workspace and
-// populates the old-shape ProjectSettings. Task 2 will reshape
-// ProjectSettings to carry all repos.
+// the work item's type. Each repo in the workspace gets its own
+// RepoSettings entry populated from its profile.
 func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.ProjectSettings, error) {
 	pc, err := r.findProjectConfig(workItem)
 	if err != nil {
 		return nil, err
 	}
 
-	repoURL, profile, err := r.resolveWorkspace(workItem, pc)
+	wsName, err := r.findWorkspaceName(workItem, pc)
 	if err != nil {
 		return nil, err
 	}
 
-	owner, repo, err := parseRepoURL(repoURL)
+	ws, ok := lookupWorkspace(pc.Workspaces, wsName)
+	if !ok {
+		return nil, fmt.Errorf("workspace %q does not exist in project config for %s", wsName, workItem.Key)
+	}
+
+	repos, err := r.buildRepoSettings(workItem, pc, ws)
 	if err != nil {
-		return nil, fmt.Errorf("parsing repo URL %q for %s: %w", repoURL, workItem.Key, err)
+		return nil, err
 	}
 
 	transitions := pc.StatusTransitions.GetStatusTransitions(workItem.Type)
 
-	imports := profile.Imports
-	if imports == nil {
-		imports = []models.ImportConfig{}
-	}
-
-	// Resolve the assignee's GitHub username from the config mapping.
 	var ghUsername string
 	if workItem.Assignee != nil {
 		ghUsername = r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
 	}
 
 	return &models.ProjectSettings{
-		Owner:                owner,
-		Repo:                 repo,
-		CloneURL:             repoURL,
+		Repos:                repos,
 		BaseBranch:           r.config.GitHub.TargetBranch,
 		InProgressStatus:     transitions.InProgress,
 		InReviewStatus:       transitions.InReview,
@@ -81,35 +75,58 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		PRURLFieldName:       pc.GitPullRequestFieldName,
 		DisableErrorComments: pc.DisableErrorComments,
 		AIProvider:           r.config.AIProvider,
-		Container:            profile.Container,
-		Imports:              imports,
-		Instructions:         profile.Instructions,
-		NewTicketWorkflow:    profile.NewTicketWorkflow,
-		FeedbackWorkflow:     profile.FeedbackWorkflow,
+		Container:            ws.Container,
 		GitHubUsername:       ghUsername,
 	}, nil
 }
 
+// buildRepoSettings constructs a RepoSettings entry for each repo
+// in the workspace, resolving the profile for each.
+func (r *ConfigResolver) buildRepoSettings(workItem models.WorkItem, pc *models.ProjectConfig, ws models.WorkspaceConfig) ([]models.RepoSettings, error) {
+	repos := make([]models.RepoSettings, 0, len(ws.Repos))
+	for _, entry := range ws.Repos {
+		owner, repo, err := parseRepoURL(entry.URL)
+		if err != nil {
+			return nil, fmt.Errorf("parsing repo URL %q for %s: %w", entry.URL, workItem.Key, err)
+		}
+
+		rs := models.RepoSettings{
+			Name:     entry.Name,
+			Owner:    owner,
+			Repo:     repo,
+			CloneURL: entry.URL,
+		}
+
+		if entry.Profile != "" {
+			profile, ok := lookupProfile(pc.Profiles, entry.Profile)
+			if !ok {
+				return nil, fmt.Errorf("profile %q referenced by repo %q does not exist in project config for %s", entry.Profile, entry.Name, workItem.Key)
+			}
+			rs.Container = profile.Container
+			rs.Imports = profile.Imports
+			if rs.Imports == nil {
+				rs.Imports = []models.ImportConfig{}
+			}
+			rs.Instructions = profile.Instructions
+			rs.NewTicketWorkflow = profile.NewTicketWorkflow
+			rs.FeedbackWorkflow = profile.FeedbackWorkflow
+		} else {
+			rs.Imports = []models.ImportConfig{}
+		}
+
+		repos = append(repos, rs)
+	}
+	return repos, nil
+}
+
 // LocateRepo returns the GitHub owner and repo for the work item.
-// For multi-repo workspaces, returns the first repo (temporary;
-// Task 2 introduces LocateRepos).
+// For multi-repo workspaces, returns the first repo.
 func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, error) {
-	pc, err := r.findProjectConfig(workItem)
+	settings, err := r.ResolveProject(workItem)
 	if err != nil {
 		return "", "", err
 	}
-
-	repoURL, _, err := r.resolveWorkspace(workItem, pc)
-	if err != nil {
-		return "", "", err
-	}
-
-	owner, repo, err := parseRepoURL(repoURL)
-	if err != nil {
-		return "", "", fmt.Errorf("parsing repo URL %q for %s: %w", repoURL, workItem.Key, err)
-	}
-
-	return owner, repo, nil
+	return settings.Repos[0].Owner, settings.Repos[0].Repo, nil
 }
 
 // ForkOwner returns the GitHub username that owns the assignee's fork.
@@ -130,35 +147,6 @@ func (r *ConfigResolver) findProjectConfig(workItem models.WorkItem) (*models.Pr
 		return nil, fmt.Errorf("no project configuration found for %s", workItem.Key)
 	}
 	return pc, nil
-}
-
-// resolveWorkspace finds the workspace for a work item by matching
-// its Jira components against the project's component-to-workspace
-// mappings, falling back to DefaultWorkspace when no component
-// matches. Returns the first repo's URL and its resolved profile.
-//
-// Component matching is case-insensitive because viper lowercases
-// YAML map keys internally.
-func (r *ConfigResolver) resolveWorkspace(workItem models.WorkItem, pc *models.ProjectConfig) (string, *models.Profile, error) {
-	wsName, err := r.findWorkspaceName(workItem, pc)
-	if err != nil {
-		return "", nil, err
-	}
-
-	ws, ok := lookupWorkspace(pc.Workspaces, wsName)
-	if !ok {
-		return "", nil, fmt.Errorf("workspace %q does not exist in project config for %s", wsName, workItem.Key)
-	}
-
-	// Use first repo (temporary bridge until Task 2 reshapes ProjectSettings).
-	repo := ws.Repos[0]
-
-	profile, ok := lookupProfile(pc.Profiles, repo.Profile)
-	if !ok {
-		return "", nil, fmt.Errorf("profile %q referenced by repo %q does not exist in project config for %s", repo.Profile, repo.Name, workItem.Key)
-	}
-
-	return repo.URL, &profile, nil
 }
 
 // findWorkspaceName returns the workspace name for a work item by

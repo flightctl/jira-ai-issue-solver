@@ -55,13 +55,13 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 3: Find PR by branch ---
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	prDetails, err := p.git.GetPRForBranch(settings.Owner, settings.Repo, settings.PRHead(branchName))
+	prDetails, err := p.git.GetPRForBranch(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
 	if err != nil {
 		return result, fmt.Errorf("find PR for branch %s: %w", branchName, err)
 	}
 
 	// --- Step 4: Find or create workspace (self-healing) ---
-	wsPath, reused, err := p.workspaces.FindOrCreate(job.TicketKey, settings.CloneURL)
+	wsPath, reused, err := p.workspaces.FindOrCreate(job.TicketKey, settings.Repos[0].CloneURL)
 	if err != nil {
 		return result, fmt.Errorf("prepare workspace: %w", err)
 	}
@@ -84,7 +84,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 6: Fetch and categorize comments ---
 	allComments, err := p.git.GetPRComments(
-		settings.Owner, settings.Repo, prDetails.Number, time.Time{})
+		settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, time.Time{})
 	if err != nil {
 		return result, fmt.Errorf("get PR comments: %w", err)
 	}
@@ -120,7 +120,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("write issue file: %w", err)
 	}
 	if err := p.taskWriter.WriteFeedbackTask(
-		*prDetails, newComments, addressedComments, wsPath, settings.Instructions, settings.FeedbackWorkflow); err != nil {
+		*prDetails, newComments, addressedComments, wsPath, settings.Repos[0].Instructions, settings.Repos[0].FeedbackWorkflow); err != nil {
 		return result, fmt.Errorf("write task file: %w", err)
 	}
 
@@ -150,7 +150,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	authStripped := true
 	defer func() {
 		if authStripped {
-			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); restoreErr != nil {
+			if restoreErr := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repos[0].Repo); restoreErr != nil {
 				logger.Warn("Failed to restore remote auth", zap.Error(restoreErr))
 			}
 		}
@@ -185,7 +185,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	// --- Step 13a: Restore remote auth ---
 	// In fork mode, origin is set to the fork so that SyncWithRemote
 	// fetches from the fork (where the API commit was created).
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repos[0].Repo); err != nil {
 		return result, fmt.Errorf("restore remote auth: %w", err)
 	}
 	authStripped = false
@@ -210,7 +210,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	importExcludes := collectExcludes(mergedImports)
 	commitMsg := fmt.Sprintf("%s: address PR feedback", job.TicketKey)
 	sha, err := p.git.CommitChanges(
-		settings.Owner, settings.CommitOwner(), settings.Repo, branchName,
+		settings.Repos[0].Owner, settings.CommitOwner(), settings.Repos[0].Repo, branchName,
 		commitMsg, wsPath, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
@@ -301,7 +301,7 @@ func (p *Pipeline) ensureForkRemote(wsPath string, settings *models.ProjectSetti
 	if settings.ForkOwner() == "" {
 		return nil
 	}
-	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repo); err != nil {
+	if err := p.git.RestoreRemoteAuth(wsPath, settings.CommitOwner(), settings.Repos[0].Repo); err != nil {
 		return fmt.Errorf("set fork remote: %w", err)
 	}
 	if err := p.git.FetchRemote(wsPath); err != nil {
@@ -362,7 +362,7 @@ func (p *Pipeline) replyToComments(
 
 		if c.IsReviewComment {
 			if err := p.git.ReplyToComment(
-				settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
+				settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, c.ID, replyBody); err != nil {
 				logger.Warn("Failed to reply to review comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
@@ -373,7 +373,7 @@ func (p *Pipeline) replyToComments(
 			// detect addressed comments.
 			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
 			if err := p.git.PostIssueComment(
-				settings.Owner, settings.Repo, prDetails.Number, markedBody); err != nil {
+				settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, markedBody); err != nil {
 				logger.Warn("Failed to reply to conversation comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
@@ -405,7 +405,7 @@ func (p *Pipeline) replyUnableToAddress(
 
 		if c.IsReviewComment {
 			if err := p.git.ReplyToComment(
-				settings.Owner, settings.Repo, prDetails.Number, c.ID, replyBody); err != nil {
+				settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, c.ID, replyBody); err != nil {
 				logger.Warn("Failed to reply to review comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
@@ -413,7 +413,7 @@ func (p *Pipeline) replyUnableToAddress(
 		} else {
 			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
 			if err := p.git.PostIssueComment(
-				settings.Owner, settings.Repo, prDetails.Number, markedBody); err != nil {
+				settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, markedBody); err != nil {
 				logger.Warn("Failed to reply to conversation comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))

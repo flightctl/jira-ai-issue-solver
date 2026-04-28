@@ -224,8 +224,7 @@ func TestRun_StuckTicketWithPR_PRURLViaField(t *testing.T) {
 	}
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:          "org",
-			Repo:           "repo",
+			Repos:          []models.RepoSettings{{Owner: "org", Repo: "repo"}},
 			BaseBranch:     "main",
 			InReviewStatus: "In Review",
 			TodoStatus:     "To Do",
@@ -843,8 +842,7 @@ func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
 	// Return settings with GitHubUsername set.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "upstream-org",
-			Repo:             "repo",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo"}},
 			BaseBranch:       "main",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -947,8 +945,7 @@ func newDeps() *deps {
 		projects: &recoverytest.StubProjectResolver{
 			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 				return &models.ProjectSettings{
-					Owner:          "org",
-					Repo:           "repo",
+					Repos:          []models.RepoSettings{{Owner: "org", Repo: "repo"}},
 					BaseBranch:     "main",
 					InReviewStatus: "In Review",
 					TodoStatus:     "To Do",

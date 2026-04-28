@@ -630,9 +630,7 @@ func TestExecuteNewTicket_ErrorCommentsDisabled(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:                "org",
-			Repo:                 "repo",
-			CloneURL:             "https://github.com/org/repo.git",
+			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:           "main",
 			InProgressStatus:     "In Progress",
 			InReviewStatus:       "In Review",
@@ -742,9 +740,7 @@ func TestExecuteNewTicket_PRURLViaField(t *testing.T) {
 	d := newTestDeps(t)
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -897,9 +893,7 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	d := newTestDeps(t)
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -1080,9 +1074,7 @@ func TestExecuteNewTicket_VertexAI_NotUsedForGemini(t *testing.T) {
 	// Vertex is configured but provider is gemini — vertex should not apply.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -1230,9 +1222,7 @@ func TestExecuteNewTicket_ContainerSettingsPassedToResolve(t *testing.T) {
 	d := newTestDeps(t)
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -1295,9 +1285,11 @@ func TestExecuteNewTicket_EmptyContainerSettingsNoOverride(t *testing.T) {
 
 func TestMergeImports_ProjectOnly(t *testing.T) {
 	settings := &models.ProjectSettings{
-		Imports: []models.ImportConfig{
-			{Repo: "https://github.com/org/workflows", Path: ".workflows", Ref: "main"},
-		},
+		Repos: []models.RepoSettings{{
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/workflows", Path: ".workflows", Ref: "main"},
+			},
+		}},
 	}
 	repoCfg := repoconfig.Default()
 
@@ -1315,7 +1307,7 @@ func TestMergeImports_ProjectOnly(t *testing.T) {
 }
 
 func TestMergeImports_RepoOnly(t *testing.T) {
-	settings := &models.ProjectSettings{}
+	settings := &models.ProjectSettings{Repos: []models.RepoSettings{{}}}
 	repoCfg := &repoconfig.Config{
 		ValidationCommands: []string{},
 		Imports: []repoconfig.Import{
@@ -1336,9 +1328,11 @@ func TestMergeImports_RepoOnly(t *testing.T) {
 
 func TestMergeImports_RepoOverridesProjectOnPathConflict(t *testing.T) {
 	settings := &models.ProjectSettings{
-		Imports: []models.ImportConfig{
-			{Repo: "https://github.com/org/workflows-v1", Path: ".workflows", Ref: "v1"},
-		},
+		Repos: []models.RepoSettings{{
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/workflows-v1", Path: ".workflows", Ref: "v1"},
+			},
+		}},
 	}
 	repoCfg := &repoconfig.Config{
 		ValidationCommands: []string{},
@@ -1364,9 +1358,11 @@ func TestMergeImports_RepoOverridesProjectOnPathConflict(t *testing.T) {
 
 func TestMergeImports_BothSourcesDifferentPaths(t *testing.T) {
 	settings := &models.ProjectSettings{
-		Imports: []models.ImportConfig{
-			{Repo: "https://github.com/org/alpha", Path: ".alpha"},
-		},
+		Repos: []models.RepoSettings{{
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/alpha", Path: ".alpha"},
+			},
+		}},
 	}
 	repoCfg := &repoconfig.Config{
 		ValidationCommands: []string{},
@@ -1391,7 +1387,7 @@ func TestMergeImports_BothSourcesDifferentPaths(t *testing.T) {
 }
 
 func TestMergeImports_Empty(t *testing.T) {
-	settings := &models.ProjectSettings{}
+	settings := &models.ProjectSettings{Repos: []models.RepoSettings{{}}}
 	repoCfg := repoconfig.Default()
 
 	result := executor.MergeImports(settings, repoCfg)
@@ -1403,9 +1399,11 @@ func TestMergeImports_Empty(t *testing.T) {
 
 func TestMergeImports_PathNormalized(t *testing.T) {
 	settings := &models.ProjectSettings{
-		Imports: []models.ImportConfig{
-			{Repo: "https://github.com/org/a", Path: ".workflows/"},
-		},
+		Repos: []models.RepoSettings{{
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/a", Path: ".workflows/"},
+			},
+		}},
 	}
 	repoCfg := &repoconfig.Config{
 		ValidationCommands: []string{},
@@ -1435,16 +1433,16 @@ func TestExecuteNewTicket_ClonesImports(t *testing.T) {
 	// Configure project-level imports.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos: []models.RepoSettings{{
+				Owner:    "org",
+				Repo:     "repo",
+				CloneURL: "https://github.com/org/repo.git",
+				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"}},
+			}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
-			Imports: []models.ImportConfig{
-				{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"},
-			},
 		}, nil
 	}
 
@@ -1485,16 +1483,16 @@ func TestExecuteNewTicket_SkipsExistingImportDir(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos: []models.RepoSettings{{
+				Owner:    "org",
+				Repo:     "repo",
+				CloneURL: "https://github.com/org/repo.git",
+				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/workflows", Path: ".ai-workflows"}},
+			}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
-			Imports: []models.ImportConfig{
-				{Repo: "https://github.com/org/workflows", Path: ".ai-workflows"},
-			},
 		}, nil
 	}
 
@@ -1520,16 +1518,16 @@ func TestExecuteNewTicket_ImportCloneFailure(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos: []models.RepoSettings{{
+				Owner:    "org",
+				Repo:     "repo",
+				CloneURL: "https://github.com/org/repo.git",
+				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/broken", Path: ".broken"}},
+			}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
-			Imports: []models.ImportConfig{
-				{Repo: "https://github.com/org/broken", Path: ".broken"},
-			},
 		}, nil
 	}
 
@@ -1688,9 +1686,11 @@ func TestRunImportInstalls_NilImports(t *testing.T) {
 
 func TestMergeImports_InstallFieldPropagated(t *testing.T) {
 	settings := &models.ProjectSettings{
-		Imports: []models.ImportConfig{
-			{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main", Install: "proj-install.sh"},
-		},
+		Repos: []models.RepoSettings{{
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main", Install: "proj-install.sh"},
+			},
+		}},
 	}
 	repoCfg := &repoconfig.Config{
 		Imports: []repoconfig.Import{
@@ -1714,9 +1714,11 @@ func TestMergeImports_InstallFieldPropagated(t *testing.T) {
 
 func TestMergeImports_RepoOverridesInstall(t *testing.T) {
 	settings := &models.ProjectSettings{
-		Imports: []models.ImportConfig{
-			{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Install: "old-install.sh"},
-		},
+		Repos: []models.RepoSettings{{
+			Imports: []models.ImportConfig{
+				{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Install: "old-install.sh"},
+			},
+		}},
 	}
 	repoCfg := &repoconfig.Config{
 		Imports: []repoconfig.Import{
@@ -1738,16 +1740,16 @@ func TestExecuteNewTicket_RunsImportInstallAfterContainerStart(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos: []models.RepoSettings{{
+				Owner:    "org",
+				Repo:     "repo",
+				CloneURL: "https://github.com/org/repo.git",
+				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Ref: "main", Install: ".ai-workflows/install.sh"}},
+			}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
-			Imports: []models.ImportConfig{
-				{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Ref: "main", Install: ".ai-workflows/install.sh"},
-			},
 		}, nil
 	}
 
@@ -1794,16 +1796,16 @@ func TestExecuteNewTicket_ImportInstallFailure_StopsContainer(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos: []models.RepoSettings{{
+				Owner:    "org",
+				Repo:     "repo",
+				CloneURL: "https://github.com/org/repo.git",
+				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Install: "install.sh"}},
+			}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
-			Imports: []models.ImportConfig{
-				{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Install: "install.sh"},
-			},
 		}, nil
 	}
 
@@ -2445,9 +2447,7 @@ func TestNewTicketPipeline_ForkMode(t *testing.T) {
 	// Configure fork mode via GitHubUsername.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "upstream-org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/upstream-org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -2532,9 +2532,7 @@ func TestPrepareBranch_ForkMode(t *testing.T) {
 	// Configure fork mode.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "upstream-org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/upstream-org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -2576,9 +2574,7 @@ func TestPrepareBranch_ForkMode_SyncsForkBeforeCreateBranch(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "upstream-org",
-			Repo:             "backend",
-			CloneURL:         "https://github.com/upstream-org/backend.git",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "backend", CloneURL: "https://github.com/upstream-org/backend.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -2629,9 +2625,7 @@ func TestPrepareBranch_NoFork_SkipsSyncFork(t *testing.T) {
 	// No GitHubUsername = no fork mode.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -2657,9 +2651,7 @@ func TestPrepareBranch_ForkMode_SyncForkErrorIsNonFatal(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "upstream-org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/upstream-org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -2686,9 +2678,7 @@ func TestFeedbackPipeline_ForkMode(t *testing.T) {
 	// Configure fork mode.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "upstream-org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/upstream-org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -2906,9 +2896,7 @@ func TestFeedbackPipeline_NonForkMode_SkipsFetchRemote(t *testing.T) {
 	// No GitHubUsername set (non-fork mode).
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:            "org",
-			Repo:             "repo",
-			CloneURL:         "https://github.com/org/repo.git",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
@@ -3021,9 +3009,7 @@ func newTestDeps(t *testing.T) *testDeps {
 		projects: &executortest.StubProjectResolver{
 			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 				return &models.ProjectSettings{
-					Owner:            "org",
-					Repo:             "repo",
-					CloneURL:         "https://github.com/org/repo.git",
+					Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
 					BaseBranch:       "main",
 					InProgressStatus: "In Progress",
 					InReviewStatus:   "In Review",

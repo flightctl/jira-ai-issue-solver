@@ -48,14 +48,14 @@ func TestResolveProject_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" {
-		t.Errorf("owner = %q, want %q", ps.Owner, "my-org")
+	if ps.Repos[0].Owner != "my-org" {
+		t.Errorf("owner = %q, want %q", ps.Repos[0].Owner, "my-org")
 	}
-	if ps.Repo != "backend" {
-		t.Errorf("repo = %q, want %q", ps.Repo, "backend")
+	if ps.Repos[0].Repo != "backend" {
+		t.Errorf("repo = %q, want %q", ps.Repos[0].Repo, "backend")
 	}
-	if ps.CloneURL != "https://github.com/my-org/backend.git" {
-		t.Errorf("clone URL = %q, want %q", ps.CloneURL, "https://github.com/my-org/backend.git")
+	if ps.Repos[0].CloneURL != "https://github.com/my-org/backend.git" {
+		t.Errorf("clone URL = %q, want %q", ps.Repos[0].CloneURL, "https://github.com/my-org/backend.git")
 	}
 	if ps.BaseBranch != "main" {
 		t.Errorf("base branch = %q, want %q", ps.BaseBranch, "main")
@@ -104,8 +104,8 @@ func TestResolveProject_MultipleComponents_FirstMatchUsed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -133,8 +133,8 @@ func TestResolveProject_MultipleComponents_SecondMatches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "frontend" {
-		t.Errorf("expected my-org/frontend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "frontend" {
+		t.Errorf("expected my-org/frontend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -178,8 +178,8 @@ func TestResolveProject_NoComponents_UsesDefaultWorkspace(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend from default workspace, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend from default workspace, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -203,8 +203,8 @@ func TestResolveProject_UnmatchedComponents_UsesDefaultWorkspace(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend from default workspace, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend from default workspace, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -271,8 +271,8 @@ func TestResolveProject_FallbackProject(t *testing.T) {
 	}
 
 	// Falls back to the first (and only) project config.
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend from fallback, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend from fallback, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -294,8 +294,8 @@ func TestResolveProject_URLWithGitSuffix(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "backend" {
-		t.Errorf("repo = %q, want %q (should strip .git)", ps.Repo, "backend")
+	if ps.Repos[0].Repo != "backend" {
+		t.Errorf("repo = %q, want %q (should strip .git)", ps.Repos[0].Repo, "backend")
 	}
 }
 
@@ -321,8 +321,8 @@ func TestResolveProject_URLWithoutGitSuffix(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -348,8 +348,8 @@ func TestResolveProject_URLWithTrailingSlash(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -588,8 +588,8 @@ func TestResolveProject_ComponentMatchingCaseInsensitive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "flightctl" {
-		t.Errorf("repo = %q, want %q", ps.Repo, "flightctl")
+	if ps.Repos[0].Repo != "flightctl" {
+		t.Errorf("repo = %q, want %q", ps.Repos[0].Repo, "flightctl")
 	}
 }
 
@@ -619,8 +619,8 @@ func TestResolveProject_ComponentMatchingExactTakesPriority(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "exact" {
-		t.Errorf("repo = %q, want %q (exact match should take priority)", ps.Repo, "exact")
+	if ps.Repos[0].Repo != "exact" {
+		t.Errorf("repo = %q, want %q (exact match should take priority)", ps.Repos[0].Repo, "exact")
 	}
 }
 
@@ -643,8 +643,8 @@ func TestResolveProject_ComponentMatchingUppercase(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "backend" {
-		t.Errorf("repo = %q, want %q", ps.Repo, "backend")
+	if ps.Repos[0].Repo != "backend" {
+		t.Errorf("repo = %q, want %q", ps.Repos[0].Repo, "backend")
 	}
 }
 
@@ -678,14 +678,14 @@ func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Container.Image != "custom-image:latest" {
-		t.Errorf("container image = %q, want %q", ps.Container.Image, "custom-image:latest")
+	if ps.Repos[0].Container.Image != "custom-image:latest" {
+		t.Errorf("container image = %q, want %q", ps.Repos[0].Container.Image, "custom-image:latest")
 	}
-	if ps.Container.ResourceLimits.Memory != "16g" {
-		t.Errorf("container memory = %q, want %q", ps.Container.ResourceLimits.Memory, "16g")
+	if ps.Repos[0].Container.ResourceLimits.Memory != "16g" {
+		t.Errorf("container memory = %q, want %q", ps.Repos[0].Container.ResourceLimits.Memory, "16g")
 	}
-	if ps.Container.ResourceLimits.CPUs != "8" {
-		t.Errorf("container cpus = %q, want %q", ps.Container.ResourceLimits.CPUs, "8")
+	if ps.Repos[0].Container.ResourceLimits.CPUs != "8" {
+		t.Errorf("container cpus = %q, want %q", ps.Repos[0].Container.ResourceLimits.CPUs, "8")
 	}
 }
 
@@ -776,17 +776,17 @@ func TestResolveProject_PropagatesImports(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(settings.Imports) != 2 {
-		t.Fatalf("len(Imports) = %d, want 2", len(settings.Imports))
+	if len(settings.Repos[0].Imports) != 2 {
+		t.Fatalf("len(Imports) = %d, want 2", len(settings.Repos[0].Imports))
 	}
-	if settings.Imports[0].Repo != "https://github.com/org/workflows" {
-		t.Errorf("Imports[0].Repo = %q, want workflows URL", settings.Imports[0].Repo)
+	if settings.Repos[0].Imports[0].Repo != "https://github.com/org/workflows" {
+		t.Errorf("Imports[0].Repo = %q, want workflows URL", settings.Repos[0].Imports[0].Repo)
 	}
-	if settings.Imports[0].Ref != "main" {
-		t.Errorf("Imports[0].Ref = %q, want %q", settings.Imports[0].Ref, "main")
+	if settings.Repos[0].Imports[0].Ref != "main" {
+		t.Errorf("Imports[0].Ref = %q, want %q", settings.Repos[0].Imports[0].Ref, "main")
 	}
-	if settings.Imports[1].Path != ".tools" {
-		t.Errorf("Imports[1].Path = %q, want %q", settings.Imports[1].Path, ".tools")
+	if settings.Repos[0].Imports[1].Path != ".tools" {
+		t.Errorf("Imports[1].Path = %q, want %q", settings.Repos[0].Imports[1].Path, ".tools")
 	}
 }
 
@@ -808,11 +808,11 @@ func TestResolveProject_NoImports_EmptySlice(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if settings.Imports == nil {
+	if settings.Repos[0].Imports == nil {
 		t.Error("Imports should be non-nil empty slice")
 	}
-	if len(settings.Imports) != 0 {
-		t.Errorf("len(Imports) = %d, want 0", len(settings.Imports))
+	if len(settings.Repos[0].Imports) != 0 {
+		t.Errorf("len(Imports) = %d, want 0", len(settings.Repos[0].Imports))
 	}
 }
 
