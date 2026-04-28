@@ -360,12 +360,21 @@ jira:
             - `make build`
             - `make test`
 
+      # Workspaces define named groups of repositories.
+      # Multiple components can share a workspace.
+      workspaces:
+        default:
+          repos:
+            - name: your-repo
+              url: https://github.com/your-org/your-repo.git
+              profile: default
+              # target_branch: main  # defaults to "main" if omitted
+
       # Component names match the Jira Components field (case-insensitive).
-      # Each component maps to a GitHub repo URL and a profile.
+      # Each component maps to a workspace name.
       components:
         backend:                                 # Jira component name from Step 4b
-          repo: https://github.com/your-org/your-repo.git
-          profile: default
+          workspace: default
 ```
 
 ### 6d: GitHub App Credentials
@@ -378,7 +387,6 @@ github:
   app_id: 2591456                                # App ID from Step 2
   private_key_path: /etc/bot/key.pem             # Path INSIDE the bot's container
   bot_username: my-org-ai-bot                    # App name from Step 2, no [bot] suffix
-  target_branch: main
   pr_label: ai-pr
   max_thread_depth: 5
   known_bot_usernames:                           # Other bots whose PR comments to ignore
@@ -449,7 +457,7 @@ Before moving on, verify these cross-references:
 | `github.private_key_path` | The container mount path for the `.pem` file | [Step 7](#step-7-build-and-run-the-bot) (volume mount) |
 | `claude.api_key` or `gemini.api_key` | Your AI provider API key | [Step 3](#step-3-get-an-ai-provider-api-key) |
 | `status_transitions` values | Exact Jira workflow status names (case-sensitive) | [Step 4a](#4a-know-your-workflow-statuses) |
-| `components` keys | Jira component names (case-insensitive) | [Step 4b](#4b-ensure-the-components-field-exists) |
+| `components` keys | Jira component names mapped to workspace names (case-insensitive) | [Step 4b](#4b-ensure-the-components-field-exists) |
 | `git_pull_request_field_name` | Your Jira PR URL field name | [Step 4c](#4c-set-up-a-pr-url-field) |
 | `assignee_to_github_username` | Jira email → GitHub username pairs | [Step 4d](#4d-map-assignees-to-github-usernames) |
 | Profile `container.image` | The dev container image you built | [Step 5](#step-5-build-a-dev-container-image) |
@@ -725,7 +733,7 @@ configuration resolution, and the full file contract between bot and AI, see
   section in [config.example.yaml](../config.example.yaml).
 
 - **Add more projects** — add entries to the `jira.projects` list. Each
-  project can have its own status transitions, components, and profiles.
+  project can have its own status transitions, workspaces, and profiles.
 
 - **Review the architecture** at [architecture.md](architecture.md) to
   understand the full system design, crash recovery, and bot-loop prevention.

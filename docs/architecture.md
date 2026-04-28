@@ -103,7 +103,7 @@ flowchart TB
 | `workspace/` | Per-ticket workspace lifecycle: clone, branch, TTL-based cleanup, self-healing re-clone. |
 | `container/` | Container runtime detection, image resolution from repo config, container lifecycle with resource limits. |
 | `taskfile/` | Generates markdown task files. Appends universal instructions (all tasks) and workflow (new tickets only) from repo files or project-config fallback. |
-| `projectresolver/` | Maps ticket keys to project settings (component-to-repo, status transitions, imports). |
+| `projectresolver/` | Maps ticket keys to project settings (component-to-workspace, status transitions, imports). |
 | `costtracker/` | Tracks daily AI session costs with file-based persistence and budget enforcement. |
 | `commentfilter/` | Shared bot-loop prevention: ignored users, known bots, thread depth limits. |
 | `recovery/` | Startup crash recovery: orphan container cleanup, stuck ticket reset, workspace TTL enforcement. |
@@ -360,7 +360,7 @@ On startup, `StartupRunner` recovers from prior crashes:
 flowchart TB
     Start["Bot starts"] --> Orphans["Clean up orphan containers<br/>(prefix-based filter)"]
     Orphans --> Stuck["Query Jira for tickets<br/>stuck in 'In Progress'"]
-    Stuck --> Reset["Reset stuck tickets<br/>to 'Todo' status"]
+    Stuck --> Reset["Recover stuck tickets<br/>(complete transition, create PR,<br/>or revert to Todo)"]
     Reset --> TTL["Remove expired workspaces<br/>(older than ttl_days)"]
     TTL --> Ready["Ready to start scanners"]
 ```
@@ -395,7 +395,10 @@ Safety mechanisms to prevent runaway costs and cascading failures:
 ## Configuration
 
 The bot uses a multi-project configuration model. Each project can have its
-own status transitions, component-to-repo mappings, and PR field settings.
+own status transitions, workspaces (grouping one or more repos), profiles
+(container/instructions/workflow settings), component-to-workspace mappings,
+and PR field settings. Multi-repo workspaces run one AI session against all
+repos and produce per-repo PRs.
 
 See:
 - [`config.example.yaml`](../config.example.yaml) for the complete
