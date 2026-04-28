@@ -42,12 +42,28 @@ type Cloner interface {
 	CloneRepository(repoURL, directory string) error
 }
 
+// RepoEntry identifies a repository to clone into a multi-repo workspace.
+type RepoEntry struct {
+	// Name is the directory name for this repo within the workspace.
+	Name string
+
+	// URL is the clone URL for the repository.
+	URL string
+}
+
 // Manager manages the lifecycle of ticket-scoped workspace directories.
 type Manager interface {
 	// Create clones a repository into a new workspace directory for the
 	// given ticket. Returns the workspace path. Returns an error if a
 	// workspace already exists for this ticket.
 	Create(ticketKey, repoURL string) (string, error)
+
+	// CreateMultiRepo clones multiple repositories into subdirectories
+	// of a new workspace for the given ticket. Each repo is cloned into
+	// wsPath/repo.Name. Returns the workspace root path. Returns an
+	// error if a workspace already exists or if any clone fails (partial
+	// clones are cleaned up).
+	CreateMultiRepo(ticketKey string, repos []RepoEntry) (string, error)
 
 	// Find returns the workspace path for the given ticket and true if
 	// the workspace exists, or empty string and false if it does not.
@@ -57,6 +73,12 @@ type Manager interface {
 	// The bool return value indicates whether an existing workspace was
 	// reused (true) or a new one was created (false).
 	FindOrCreate(ticketKey, repoURL string) (string, bool, error)
+
+	// FindOrCreateMultiRepo returns an existing workspace or creates a
+	// new multi-repo workspace. The bool return value indicates whether
+	// an existing workspace was reused (true) or a new one was created
+	// (false).
+	FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry) (string, bool, error)
 
 	// Cleanup removes the workspace directory for the given ticket.
 	// Returns nil if the workspace does not exist.
