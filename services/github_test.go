@@ -634,7 +634,6 @@ func TestGetBranchBaseCommit_BranchExists(t *testing.T) {
 
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
-	config.GitHub.TargetBranch = "main"
 
 	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
 		mockClient.Transport,
@@ -652,7 +651,7 @@ func TestGetBranchBaseCommit_BranchExists(t *testing.T) {
 		logger:       zap.NewNop(),
 	}
 
-	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "existing-branch", "fake-token")
+	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "existing-branch", "main", "fake-token")
 
 	if err != nil {
 		t.Fatalf("Expected no error but got: %v", err)
@@ -698,7 +697,6 @@ func TestGetBranchBaseCommit_BranchDoesNotExist(t *testing.T) {
 
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
-	config.GitHub.TargetBranch = "main"
 
 	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
 		mockClient.Transport,
@@ -716,7 +714,7 @@ func TestGetBranchBaseCommit_BranchDoesNotExist(t *testing.T) {
 		logger:       zap.NewNop(),
 	}
 
-	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "new-branch", "fake-token")
+	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "new-branch", "main", "fake-token")
 
 	if err != nil {
 		t.Fatalf("Expected no error but got: %v", err)
@@ -788,7 +786,7 @@ func TestGitHubService_HasChanges_NoChanges(t *testing.T) {
 	githubService := NewGitHubService(config, zap.NewNop())
 
 	// Test HasChanges - should return false (no changes)
-	hasChanges, err := githubService.HasChanges(tempDir)
+	hasChanges, err := githubService.HasChanges(tempDir, "main")
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}
@@ -860,7 +858,7 @@ func TestGitHubService_HasChanges_WorkingTreeChanges(t *testing.T) {
 	githubService := NewGitHubService(config, zap.NewNop())
 
 	// Test HasChanges - should return true (working tree changes)
-	hasChanges, err := githubService.HasChanges(tempDir)
+	hasChanges, err := githubService.HasChanges(tempDir, "main")
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}
@@ -970,12 +968,11 @@ func TestGitHubService_HasChanges_NewBranch(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
 	config.GitHub.PrivateKeyPath = keyPath
-	config.GitHub.TargetBranch = defaultBranch
 	githubService := NewGitHubService(config, zap.NewNop())
 
 	// A new branch with no working tree changes and no local commits
 	// relative to origin/<targetBranch> has nothing to commit.
-	hasChanges, err := githubService.HasChanges(tempDir)
+	hasChanges, err := githubService.HasChanges(tempDir, defaultBranch)
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}

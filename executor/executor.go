@@ -92,8 +92,9 @@ type GitService interface {
 	SyncFork(forkOwner, repo, branch string) error
 
 	// CreateBranch creates a new git branch in the workspace and
-	// switches to it.
-	CreateBranch(dir, name string) error
+	// switches to it. baseBranch is the branch to fork from (e.g.,
+	// "main").
+	CreateBranch(dir, name, baseBranch string) error
 
 	// SwitchBranch switches to an existing branch. Used when a
 	// workspace is reused on retry or when checking out a PR branch
@@ -107,7 +108,9 @@ type GitService interface {
 
 	// HasChanges reports whether the workspace has uncommitted
 	// changes (modified, added, or deleted tracked files).
-	HasChanges(dir string) (bool, error)
+	// baseBranch is used as a comparison ref when the remote
+	// branch does not exist.
+	HasChanges(dir, baseBranch string) (bool, error)
 
 	// CommitChanges creates a verified commit via the GitHub API
 	// from local workspace changes. Returns the commit SHA.
@@ -121,7 +124,7 @@ type GitService interface {
 	// importExcludes lists additional directories (from import
 	// config) to exclude from commits beyond the built-in .ai-bot/
 	// exclusion.
-	CommitChanges(upstreamOwner, owner, repo, branch, message, dir string,
+	CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string,
 		coAuthor *models.Author, importExcludes []string) (string, error)
 
 	// StripRemoteAuth removes authentication credentials from the

@@ -65,6 +65,7 @@ jira:
             - name: backend
               url: https://github.com/your-org/backend.git
               profile: go-dev
+              # target_branch: main  # PR base branch (default: "main")
         frontend:
           repos:
             - name: frontend
@@ -75,6 +76,7 @@ jira:
             - name: api
               url: https://github.com/your-org/api.git
               profile: go-dev
+              target_branch: master  # older repos may use "master"
 
         # Multi-repo workspace: all repos cloned into subdirectories
         # of the workspace and mounted into a single container.
@@ -218,7 +220,6 @@ github:
   # Note: bot_email is automatically constructed from app_id and bot_username
   bot_username: your-github-app-name
 
-  target_branch: main
   pr_label: ai-pr
 
   # Optional: Path to SSH private key for commit signing

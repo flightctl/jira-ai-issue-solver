@@ -132,6 +132,10 @@ type RepoEntry struct {
 	// map. The profile provides fallback container, imports,
 	// instructions, and workflow settings for this repo.
 	Profile string `yaml:"profile" mapstructure:"profile"`
+
+	// TargetBranch is the base branch for pull requests (e.g.,
+	// "main", "master"). Defaults to "main" when empty.
+	TargetBranch string `yaml:"target_branch" mapstructure:"target_branch"`
 }
 
 // ComponentConfig maps a Jira component to a workspace.
@@ -383,7 +387,6 @@ type Config struct {
 		// Common fields
 		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"` // Optional: auto-constructed for GitHub App mode
-		TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
@@ -641,7 +644,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.private_key_path")
 	bindEnv("github.bot_username")
 	bindEnv("github.bot_email")
-	bindEnv("github.target_branch")
 	bindEnv("github.pr_label")
 	bindEnv("github.ssh_key_path")
 	bindEnv("github.max_thread_depth")
@@ -875,7 +877,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jira.disable_error_comments", false)
 
 	// GitHub defaults
-	v.SetDefault("github.target_branch", "main")
 	v.SetDefault("github.pr_label", "ai-pr")
 	v.SetDefault("github.max_thread_depth", 5)
 	v.SetDefault("github.known_bot_usernames", []string{

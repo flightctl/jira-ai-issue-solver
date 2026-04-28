@@ -39,6 +39,10 @@ type RepoSettings struct {
 	// the profile. Used as a fallback when the repo does not have
 	// .ai-bot/feedback-workflow.md.
 	FeedbackWorkflow string
+
+	// BaseBranch is the target branch for pull requests (e.g.,
+	// "main", "master"). Defaults to "main".
+	BaseBranch string
 }
 
 // ProjectSettings contains the resolved per-project settings needed
@@ -50,9 +54,6 @@ type ProjectSettings struct {
 	// resolved workspace. Single-repo workspaces have exactly one
 	// entry; multi-repo workspaces have multiple.
 	Repos []RepoSettings
-
-	// BaseBranch is the target branch for pull requests (e.g., "main").
-	BaseBranch string
 
 	// InProgressStatus is the tracker status name for "in progress".
 	InProgressStatus string

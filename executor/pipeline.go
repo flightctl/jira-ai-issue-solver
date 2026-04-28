@@ -263,7 +263,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	// --- Step 13: Check for changes ---
-	hasChanges, err := p.git.HasChanges(wsPath)
+	hasChanges, err := p.git.HasChanges(wsPath, settings.Repos[0].BaseBranch)
 	if err != nil {
 		return result, fmt.Errorf("check changes: %w", err)
 	}
@@ -276,7 +276,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	commitMsg := fmt.Sprintf("%s: %s", job.TicketKey, workItem.Summary)
 	_, err = p.git.CommitChanges(
 		settings.Repos[0].Owner, settings.CommitOwner(), settings.Repos[0].Repo, branchName,
-		commitMsg, wsPath, workItem.Assignee, importExcludes,
+		commitMsg, wsPath, settings.Repos[0].BaseBranch, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
 		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
@@ -307,7 +307,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		Title:     prTitle,
 		Body:      prBody,
 		Head:      settings.PRHead(branchName),
-		Base:      settings.BaseBranch,
+		Base:      settings.Repos[0].BaseBranch,
 		Draft:     draft,
 		Labels:    repoCfg.PR.Labels,
 		Assignees: assigneesFromSettings(settings),
@@ -671,13 +671,13 @@ func (p *Pipeline) prepareBranch(
 ) error {
 	if !reused {
 		if forkOwner := settings.ForkOwner(); forkOwner != "" {
-			if err := p.git.SyncFork(forkOwner, settings.Repos[0].Repo, settings.BaseBranch); err != nil {
+			if err := p.git.SyncFork(forkOwner, settings.Repos[0].Repo, settings.Repos[0].BaseBranch); err != nil {
 				logger.Warn("Failed to sync fork with upstream",
 					zap.String("fork", forkOwner+"/"+settings.Repos[0].Repo),
 					zap.Error(err))
 			}
 		}
-		if err := p.git.CreateBranch(wsPath, branchName); err != nil {
+		if err := p.git.CreateBranch(wsPath, branchName, settings.Repos[0].BaseBranch); err != nil {
 			return fmt.Errorf("create branch: %w", err)
 		}
 		return nil
@@ -699,7 +699,7 @@ func (p *Pipeline) prepareBranch(
 	// Remote branch was deleted — start fresh from the target branch.
 	logger.Info("Remote branch deleted, recreating from target branch",
 		zap.String("branch", branchName))
-	if err := p.git.CreateBranch(wsPath, branchName); err != nil {
+	if err := p.git.CreateBranch(wsPath, branchName, settings.Repos[0].BaseBranch); err != nil {
 		return fmt.Errorf("recreate branch: %w", err)
 	}
 	return nil
@@ -973,7 +973,7 @@ func (p *Pipeline) fanOutCommitAndPR(
 	for i, repo := range params.settings.Repos {
 		repoDir := filepath.Join(params.wsPath, repo.Name)
 
-		hasChanges, err := p.git.HasChanges(repoDir)
+		hasChanges, err := p.git.HasChanges(repoDir, repo.BaseBranch)
 		if err != nil {
 			return nil, fmt.Errorf("check changes for %s: %w", repo.Name, err)
 		}
@@ -985,7 +985,7 @@ func (p *Pipeline) fanOutCommitAndPR(
 		commitMsg := fmt.Sprintf("%s: %s", params.ticketKey, params.workItem.Summary)
 		_, err = p.git.CommitChanges(
 			repo.Owner, params.settings.CommitOwnerFor(repo), repo.Repo, params.branchName,
-			commitMsg, repoDir, params.workItem.Assignee, params.excludes,
+			commitMsg, repoDir, repo.BaseBranch, params.workItem.Assignee, params.excludes,
 		)
 		if errors.Is(err, services.ErrNoChanges) {
 			logger.Info("No committable changes in repo", zap.String("repo", repo.Name))
@@ -1009,7 +1009,7 @@ func (p *Pipeline) fanOutCommitAndPR(
 			Title:     prTitle,
 			Body:      prBody,
 			Head:      params.settings.PRHead(params.branchName),
-			Base:      params.settings.BaseBranch,
+			Base:      repo.BaseBranch,
 			Draft:     repoDraft,
 			Labels:    params.repoConfigs[i].PR.Labels,
 			Assignees: assigneesFromSettings(params.settings),
@@ -1043,13 +1043,13 @@ func (p *Pipeline) prepareBranchForRepo(
 
 	if !reused {
 		if forkOwner := settings.ForkOwner(); forkOwner != "" {
-			if err := p.git.SyncFork(forkOwner, repo.Repo, settings.BaseBranch); err != nil {
+			if err := p.git.SyncFork(forkOwner, repo.Repo, repo.BaseBranch); err != nil {
 				logger.Warn("Failed to sync fork with upstream",
 					zap.String("fork", forkOwner+"/"+repo.Repo),
 					zap.Error(err))
 			}
 		}
-		if err := p.git.CreateBranch(repoDir, branchName); err != nil {
+		if err := p.git.CreateBranch(repoDir, branchName, repo.BaseBranch); err != nil {
 			return fmt.Errorf("create branch in %s: %w", repo.Name, err)
 		}
 		return nil
@@ -1070,7 +1070,7 @@ func (p *Pipeline) prepareBranchForRepo(
 	logger.Info("Remote branch deleted, recreating from target branch",
 		zap.String("repo", repo.Name),
 		zap.String("branch", branchName))
-	if err := p.git.CreateBranch(repoDir, branchName); err != nil {
+	if err := p.git.CreateBranch(repoDir, branchName, repo.BaseBranch); err != nil {
 		return fmt.Errorf("recreate branch in %s: %w", repo.Name, err)
 	}
 	return nil

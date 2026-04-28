@@ -68,7 +68,6 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 
 	return &models.ProjectSettings{
 		Repos:                repos,
-		BaseBranch:           r.config.GitHub.TargetBranch,
 		InProgressStatus:     transitions.InProgress,
 		InReviewStatus:       transitions.InReview,
 		TodoStatus:           transitions.Todo,
@@ -90,11 +89,17 @@ func (r *ConfigResolver) buildRepoSettings(workItem models.WorkItem, pc *models.
 			return nil, fmt.Errorf("parsing repo URL %q for %s: %w", entry.URL, workItem.Key, err)
 		}
 
+		baseBranch := entry.TargetBranch
+		if baseBranch == "" {
+			baseBranch = "main"
+		}
+
 		rs := models.RepoSettings{
-			Name:     entry.Name,
-			Owner:    owner,
-			Repo:     repo,
-			CloneURL: entry.URL,
+			Name:       entry.Name,
+			Owner:      owner,
+			Repo:       repo,
+			CloneURL:   entry.URL,
+			BaseBranch: baseBranch,
 		}
 
 		if entry.Profile != "" {

@@ -25,7 +25,6 @@ func getValidGitHubConfig() struct {
 	PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 	BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 	BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-	TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 	PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 	SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 	MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
@@ -37,7 +36,6 @@ func getValidGitHubConfig() struct {
 		PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-		TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
@@ -106,7 +104,6 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
@@ -387,7 +384,6 @@ github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
-  target_branch: "develop"
 workspaces:
   base_dir: /tmp/test-workspaces
   ttl_days: 7
@@ -426,81 +422,6 @@ workspaces:
 	}
 	if bugTransitions.InReview != "In Review" {
 		t.Errorf("Expected in_review status 'In Review', got '%s'", bugTransitions.InReview)
-	}
-
-	// Verify target branch
-	if config.GitHub.TargetBranch != "develop" {
-		t.Errorf("Expected target branch 'develop', got '%s'", config.GitHub.TargetBranch)
-	}
-}
-
-func TestLoadConfig_WithDefaultTargetBranch(t *testing.T) {
-	// Create a temporary private key file
-	tmpKeyPath := createTempKeyFile(t)
-	defer func() { _ = os.Remove(tmpKeyPath) }()
-
-	// Create a temporary config file without target_branch (should default to "main")
-	configContent := fmt.Sprintf(`
-logging:
-  level: info
-  format: console
-ai_provider: "claude"
-claude:
-  api_key: sk-test
-jira:
-  base_url: "https://example.com"
-  username: "testuser"
-  api_token: "testtoken"
-  assignee_to_github_username:
-    alice@example.com: alice
-  projects:
-    - project_keys:
-        - "PROJ1"
-      status_transitions:
-        bug:
-          todo: "To Do"
-          in_progress: "In Progress"
-          in_review: "In Review"
-      workspaces:
-        default:
-          repos:
-            - name: repo
-              url: https://github.com/test/repo.git
-              profile: default
-      components:
-        test:
-          workspace: default
-      profiles:
-        default: {}
-github:
-  app_id: 123456
-  private_key_path: "%s"
-  bot_username: "test-bot"
-workspaces:
-  base_dir: /tmp/test-workspaces
-`, tmpKeyPath)
-	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Remove(tmpfile.Name()) }()
-
-	if _, err := tmpfile.Write([]byte(configContent)); err != nil {
-		t.Fatal(err)
-	}
-	if err := tmpfile.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Load the config
-	config, err := LoadConfig(tmpfile.Name())
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Verify target branch defaults to "main"
-	if config.GitHub.TargetBranch != "main" {
-		t.Errorf("Expected default target branch 'main', got '%s'", config.GitHub.TargetBranch)
 	}
 }
 
@@ -638,7 +559,6 @@ github:
   app_id: 123456
   private_key_path: "%s"
   bot_username: "test-bot"
-  target_branch: "develop"
 workspaces:
   base_dir: /tmp/test-workspaces
   ttl_days: 7
@@ -909,7 +829,6 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
@@ -972,7 +891,6 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
@@ -1031,7 +949,6 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
@@ -1089,7 +1006,6 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					PrivateKeyPath    string   `yaml:"private_key_path" mapstructure:"private_key_path"`
 					BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 					BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"`
-					TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 					PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 					SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`

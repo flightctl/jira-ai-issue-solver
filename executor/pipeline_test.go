@@ -248,7 +248,7 @@ func TestExecuteNewTicket_HappyPath(t *testing.T) {
 
 func TestExecuteNewTicket_NoChanges(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil
 	}
 
@@ -359,7 +359,7 @@ func TestExecuteNewTicket_ContainerStartFails(t *testing.T) {
 
 func TestExecuteNewTicket_CommitFails(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -580,7 +580,7 @@ func TestExecuteNewTicket_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -606,7 +606,7 @@ func TestExecuteNewTicket_NoAssignee_NilCoAuthor(t *testing.T) {
 	d := newTestDeps(t)
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -626,14 +626,13 @@ func TestExecuteNewTicket_NoAssignee_NilCoAuthor(t *testing.T) {
 
 func TestExecuteNewTicket_ErrorCommentsDisabled(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:           "main",
+			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus:     "In Progress",
 			InReviewStatus:       "In Review",
 			TodoStatus:           "To Do",
@@ -679,7 +678,7 @@ func TestExecuteNewTicket_WorkspaceReused_SwitchesBranch(t *testing.T) {
 	}
 
 	branchCreated := false
-	d.git.CreateBranchFunc = func(dir, name string) error {
+	d.git.CreateBranchFunc = func(dir, name, baseBranch string) error {
 		branchCreated = true
 		return nil
 	}
@@ -714,7 +713,7 @@ func TestExecuteNewTicket_WorkspaceReused_RemoteBranchDeleted_RecreatesBranch(t 
 	}
 
 	branchCreated := false
-	d.git.CreateBranchFunc = func(dir, name string) error {
+	d.git.CreateBranchFunc = func(dir, name, baseBranch string) error {
 		branchCreated = true
 		if !strings.Contains(name, "PROJ-1") {
 			t.Errorf("branch name = %q, should contain ticket key", name)
@@ -742,8 +741,7 @@ func TestExecuteNewTicket_PRURLViaField(t *testing.T) {
 	d := newTestDeps(t)
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -794,7 +792,7 @@ func TestExecuteNewTicket_ContainerStoppedOnSuccess(t *testing.T) {
 
 func TestExecuteNewTicket_ContainerStoppedOnFailure(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 
@@ -842,7 +840,7 @@ func TestExecuteNewTicket_BranchNameFormat(t *testing.T) {
 	d := newTestDeps(t)
 
 	var branchName string
-	d.git.CreateBranchFunc = func(dir, name string) error {
+	d.git.CreateBranchFunc = func(dir, name, baseBranch string) error {
 		branchName = name
 		return nil
 	}
@@ -895,8 +893,7 @@ func TestExecuteNewTicket_ProjectOverridesDefaultProvider(t *testing.T) {
 	d := newTestDeps(t)
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1076,8 +1073,7 @@ func TestExecuteNewTicket_VertexAI_NotUsedForGemini(t *testing.T) {
 	// Vertex is configured but provider is gemini — vertex should not apply.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1124,7 +1120,7 @@ func TestExecuteNewTicket_VertexAI_NotUsedForGemini(t *testing.T) {
 
 func TestExecuteNewTicket_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -1224,8 +1220,7 @@ func TestExecuteNewTicket_ContainerSettingsPassedToResolve(t *testing.T) {
 	d := newTestDeps(t)
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1436,12 +1431,12 @@ func TestExecuteNewTicket_ClonesImports(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{{
-				Owner:    "org",
-				Repo:     "repo",
-				CloneURL: "https://github.com/org/repo.git",
-				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"}},
+				Owner:      "org",
+				Repo:       "repo",
+				CloneURL:   "https://github.com/org/repo.git",
+				Imports:    []models.ImportConfig{{Repo: "https://github.com/org/workflows", Path: ".ai-workflows", Ref: "main"}},
+				BaseBranch: "main",
 			}},
-			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1486,12 +1481,12 @@ func TestExecuteNewTicket_SkipsExistingImportDir(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{{
-				Owner:    "org",
-				Repo:     "repo",
-				CloneURL: "https://github.com/org/repo.git",
-				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/workflows", Path: ".ai-workflows"}},
+				Owner:      "org",
+				Repo:       "repo",
+				CloneURL:   "https://github.com/org/repo.git",
+				Imports:    []models.ImportConfig{{Repo: "https://github.com/org/workflows", Path: ".ai-workflows"}},
+				BaseBranch: "main",
 			}},
-			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1521,12 +1516,12 @@ func TestExecuteNewTicket_ImportCloneFailure(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{{
-				Owner:    "org",
-				Repo:     "repo",
-				CloneURL: "https://github.com/org/repo.git",
-				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/broken", Path: ".broken"}},
+				Owner:      "org",
+				Repo:       "repo",
+				CloneURL:   "https://github.com/org/repo.git",
+				Imports:    []models.ImportConfig{{Repo: "https://github.com/org/broken", Path: ".broken"}},
+				BaseBranch: "main",
 			}},
-			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1743,12 +1738,12 @@ func TestExecuteNewTicket_RunsImportInstallAfterContainerStart(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{{
-				Owner:    "org",
-				Repo:     "repo",
-				CloneURL: "https://github.com/org/repo.git",
-				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Ref: "main", Install: ".ai-workflows/install.sh"}},
+				Owner:      "org",
+				Repo:       "repo",
+				CloneURL:   "https://github.com/org/repo.git",
+				Imports:    []models.ImportConfig{{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Ref: "main", Install: ".ai-workflows/install.sh"}},
+				BaseBranch: "main",
 			}},
-			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -1799,12 +1794,12 @@ func TestExecuteNewTicket_ImportInstallFailure_StopsContainer(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{{
-				Owner:    "org",
-				Repo:     "repo",
-				CloneURL: "https://github.com/org/repo.git",
-				Imports:  []models.ImportConfig{{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Install: "install.sh"}},
+				Owner:      "org",
+				Repo:       "repo",
+				CloneURL:   "https://github.com/org/repo.git",
+				Imports:    []models.ImportConfig{{Repo: "https://github.com/org/wf", Path: ".ai-workflows", Install: "install.sh"}},
+				BaseBranch: "main",
 			}},
-			BaseBranch:       "main",
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2449,8 +2444,7 @@ func TestNewTicketPipeline_ForkMode(t *testing.T) {
 	// Configure fork mode via GitHubUsername.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2460,7 +2454,7 @@ func TestNewTicketPipeline_ForkMode(t *testing.T) {
 
 	// Capture arguments to verify fork owner and upstream owner.
 	var commitUpstreamOwner, commitOwner, commitRepo string
-	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		commitUpstreamOwner = upstreamOwner
 		commitOwner = owner
 		commitRepo = repo
@@ -2534,8 +2528,7 @@ func TestPrepareBranch_ForkMode(t *testing.T) {
 	// Configure fork mode.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2576,8 +2569,7 @@ func TestPrepareBranch_ForkMode_SyncsForkBeforeCreateBranch(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "backend", CloneURL: "https://github.com/upstream-org/backend.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "backend", CloneURL: "https://github.com/upstream-org/backend.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2627,8 +2619,7 @@ func TestPrepareBranch_NoFork_SkipsSyncFork(t *testing.T) {
 	// No GitHubUsername = no fork mode.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2653,8 +2644,7 @@ func TestPrepareBranch_ForkMode_SyncForkErrorIsNonFatal(t *testing.T) {
 
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2680,8 +2670,7 @@ func TestFeedbackPipeline_ForkMode(t *testing.T) {
 	// Configure fork mode.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2726,7 +2715,7 @@ func TestFeedbackPipeline_ForkMode(t *testing.T) {
 
 	// Track CommitChanges owner.
 	var commitUpstreamOwner, commitOwner, commitRepo string
-	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		commitUpstreamOwner = upstreamOwner
 		commitOwner = owner
 		commitRepo = repo
@@ -2792,7 +2781,7 @@ func TestFeedbackPipeline_ErrNoChanges_NonFinalAttempt_ReturnsError(t *testing.T
 			{ID: 10, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -2839,7 +2828,7 @@ func TestFeedbackPipeline_ErrNoChanges_FinalAttempt_PostsUnableToAddress(t *test
 	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{reviewComment, conversationComment}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -2898,8 +2887,7 @@ func TestFeedbackPipeline_NonForkMode_SkipsFetchRemote(t *testing.T) {
 	// No GitHubUsername set (non-fork mode).
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
@@ -2969,10 +2957,10 @@ func newMultiRepoTestDeps(t *testing.T) *testDeps {
 			},
 		},
 		git: &executortest.StubGitService{
-			HasChangesFunc: func(dir string) (bool, error) {
+			HasChangesFunc: func(dir, baseBranch string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 				return "abc123", nil
 			},
 			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {
@@ -3000,12 +2988,11 @@ func newMultiRepoTestDeps(t *testing.T) *testDeps {
 			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 				return &models.ProjectSettings{
 					Repos: []models.RepoSettings{
-						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git"},
-						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git"},
-						{Name: "svc-c", Owner: "org", Repo: "svc-c", CloneURL: "https://github.com/org/svc-c.git"},
+						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
+						{Name: "svc-c", Owner: "org", Repo: "svc-c", CloneURL: "https://github.com/org/svc-c.git", BaseBranch: "main"},
 					},
 					Container:        models.ContainerSettings{Image: "fat-container:latest"},
-					BaseBranch:       "main",
 					InProgressStatus: "In Progress",
 					InReviewStatus:   "In Review",
 					TodoStatus:       "To Do",
@@ -3089,7 +3076,7 @@ func TestMultiRepoNewTicket_PartialChanges(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 
 	// Only svc-b has changes.
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return strings.Contains(dir, "svc-b"), nil
 	}
 
@@ -3118,7 +3105,7 @@ func TestMultiRepoNewTicket_PartialChanges(t *testing.T) {
 func TestMultiRepoNewTicket_NoChangesInAnyRepo(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil
 	}
 
@@ -3168,7 +3155,7 @@ func TestMultiRepoNewTicket_BranchCreatedPerRepo(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 
 	var branchDirs []string
-	d.git.CreateBranchFunc = func(dir, name string) error {
+	d.git.CreateBranchFunc = func(dir, name, baseBranch string) error {
 		branchDirs = append(branchDirs, filepath.Base(dir))
 		return nil
 	}
@@ -3248,13 +3235,13 @@ func TestMultiRepoNewTicket_CommitPerRepoWithChanges(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 
 	// svc-a and svc-c have changes; svc-b does not.
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		base := filepath.Base(dir)
 		return base == "svc-a" || base == "svc-c", nil
 	}
 
 	var commitRepos []string
-	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, branch, msg, dir string, author *models.Author, excludes []string) (string, error) {
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, branch, msg, dir, baseBranch string, author *models.Author, excludes []string) (string, error) {
 		commitRepos = append(commitRepos, repo)
 		return "abc123", nil
 	}
@@ -3356,10 +3343,10 @@ func newTestDeps(t *testing.T) *testDeps {
 			},
 		},
 		git: &executortest.StubGitService{
-			HasChangesFunc: func(dir string) (bool, error) {
+			HasChangesFunc: func(dir, baseBranch string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 				return "abc123", nil
 			},
 			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {
@@ -3383,8 +3370,7 @@ func newTestDeps(t *testing.T) *testDeps {
 		projects: &executortest.StubProjectResolver{
 			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 				return &models.ProjectSettings{
-					Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-					BaseBranch:       "main",
+					Repos:            []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 					InProgressStatus: "In Progress",
 					InReviewStatus:   "In Review",
 					TodoStatus:       "To Do",

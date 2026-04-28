@@ -202,7 +202,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	// --- Step 14: Check for changes ---
-	hasChanges, err := p.git.HasChanges(wsPath)
+	hasChanges, err := p.git.HasChanges(wsPath, settings.Repos[0].BaseBranch)
 	if err != nil {
 		return result, fmt.Errorf("check changes: %w", err)
 	}
@@ -215,7 +215,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	commitMsg := fmt.Sprintf("%s: address PR feedback", job.TicketKey)
 	sha, err := p.git.CommitChanges(
 		settings.Repos[0].Owner, settings.CommitOwner(), settings.Repos[0].Repo, branchName,
-		commitMsg, wsPath, workItem.Assignee, importExcludes,
+		commitMsg, wsPath, settings.Repos[0].BaseBranch, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
 		if p.isFinalAttempt(job.AttemptNum) {
@@ -593,7 +593,7 @@ func (p *Pipeline) commitMultiRepoFeedback(
 	anyChanges := false
 	for _, repo := range params.settings.Repos {
 		repoDir := filepath.Join(params.wsPath, repo.Name)
-		has, err := p.git.HasChanges(repoDir)
+		has, err := p.git.HasChanges(repoDir, repo.BaseBranch)
 		if err != nil {
 			return false, fmt.Errorf("check changes for %s: %w", repo.Name, err)
 		}
@@ -620,14 +620,14 @@ func (p *Pipeline) commitMultiRepoFeedback(
 
 	for _, repo := range params.settings.Repos {
 		repoDir := filepath.Join(params.wsPath, repo.Name)
-		has, _ := p.git.HasChanges(repoDir)
+		has, _ := p.git.HasChanges(repoDir, repo.BaseBranch)
 		if !has {
 			continue
 		}
 
 		sha, err := p.git.CommitChanges(
 			repo.Owner, params.settings.CommitOwnerFor(repo), repo.Repo, params.branchName,
-			commitMsg, repoDir, params.workItem.Assignee, params.excludes,
+			commitMsg, repoDir, repo.BaseBranch, params.workItem.Assignee, params.excludes,
 		)
 		if errors.Is(err, services.ErrNoChanges) {
 			continue

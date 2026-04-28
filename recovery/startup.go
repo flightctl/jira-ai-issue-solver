@@ -183,7 +183,7 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 
 	// No PR found. Check if the branch has commits beyond base.
 	hasCommits, err := r.git.BranchHasCommits(
-		settings.CommitOwner(), settings.Repos[0].Repo, branchName, settings.BaseBranch)
+		settings.CommitOwner(), settings.Repos[0].Repo, branchName, settings.Repos[0].BaseBranch)
 	if err != nil {
 		logger.Warn("Failed to check branch commits, reverting to todo",
 			zap.Error(err))
@@ -230,7 +230,7 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 
 		// Check for branch commits without a PR.
 		hasCommits, err := r.git.BranchHasCommits(
-			settings.CommitOwnerFor(repo), repo.Repo, branchName, settings.BaseBranch)
+			settings.CommitOwnerFor(repo), repo.Repo, branchName, repo.BaseBranch)
 		if err != nil {
 			logger.Warn("Failed to check branch commits for repo",
 				zap.String("repo", repo.Name), zap.Error(err))
@@ -251,7 +251,7 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 		created, createErr := r.git.CreatePR(models.PRParams{
 			Owner: repo.Owner, Repo: repo.Repo,
 			Title: title, Body: body,
-			Head: head, Base: settings.BaseBranch,
+			Head: head, Base: repo.BaseBranch,
 			Assignees: assignees,
 		})
 		if createErr != nil {
@@ -324,7 +324,7 @@ func (r *StartupRunner) createPRFromCommits(
 		Title:     title,
 		Body:      body,
 		Head:      settings.PRHead(branchName),
-		Base:      settings.BaseBranch,
+		Base:      settings.Repos[0].BaseBranch,
 		Assignees: assignees,
 	})
 	if err != nil {

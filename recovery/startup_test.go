@@ -224,8 +224,7 @@ func TestRun_StuckTicketWithPR_PRURLViaField(t *testing.T) {
 	}
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:          []models.RepoSettings{{Owner: "org", Repo: "repo"}},
-			BaseBranch:     "main",
+			Repos:          []models.RepoSettings{{Owner: "org", Repo: "repo", BaseBranch: "main"}},
 			InReviewStatus: "In Review",
 			TodoStatus:     "To Do",
 			PRURLFieldName: "Git Pull Request",
@@ -842,8 +841,7 @@ func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
 	// Return settings with GitHubUsername set.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo"}},
-			BaseBranch:       "main",
+			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", BaseBranch: "main"}},
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
 			InProgressStatus: "In Progress",
@@ -934,10 +932,9 @@ func TestRun_MultiRepo_PRsExistInSomeRepos_CompletesTransition(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{
-				{Name: "svc-a", Owner: "org", Repo: "svc-a"},
-				{Name: "svc-b", Owner: "org", Repo: "svc-b"},
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", BaseBranch: "main"},
 			},
-			BaseBranch:     "main",
 			InReviewStatus: "In Review",
 			TodoStatus:     "To Do",
 		}, nil
@@ -978,10 +975,9 @@ func TestRun_MultiRepo_CommitsNoPR_CreatesPR(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{
-				{Name: "svc-a", Owner: "org", Repo: "svc-a"},
-				{Name: "svc-b", Owner: "org", Repo: "svc-b"},
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", BaseBranch: "main"},
 			},
-			BaseBranch:     "main",
 			InReviewStatus: "In Review",
 			TodoStatus:     "To Do",
 		}, nil
@@ -1017,10 +1013,9 @@ func TestRun_MultiRepo_NoPRsNoCommits_Reverts(t *testing.T) {
 	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos: []models.RepoSettings{
-				{Name: "svc-a", Owner: "org", Repo: "svc-a"},
-				{Name: "svc-b", Owner: "org", Repo: "svc-b"},
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", BaseBranch: "main"},
 			},
-			BaseBranch:     "main",
 			InReviewStatus: "In Review",
 			TodoStatus:     "To Do",
 		}, nil
@@ -1069,8 +1064,7 @@ func newDeps() *deps {
 		projects: &recoverytest.StubProjectResolver{
 			ResolveProjectFunc: func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 				return &models.ProjectSettings{
-					Repos:          []models.RepoSettings{{Owner: "org", Repo: "repo"}},
-					BaseBranch:     "main",
+					Repos:          []models.RepoSettings{{Owner: "org", Repo: "repo", BaseBranch: "main"}},
 					InReviewStatus: "In Review",
 					TodoStatus:     "To Do",
 				}, nil

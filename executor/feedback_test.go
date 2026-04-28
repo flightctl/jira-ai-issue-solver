@@ -30,7 +30,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 	d := newFeedbackDeps(t)
 
 	var commitBranch string
-	d.git.CommitChangesFunc = func(_, _, _, branch, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, branch, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		commitBranch = branch
 		return "abc1234567890", nil
 	}
@@ -82,7 +82,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 	d := newFeedbackDeps(t)
 
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -120,7 +120,7 @@ func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 func TestExecuteFeedback_FallbackWhenNoResponsesFile(t *testing.T) {
 	d := newFeedbackDeps(t)
 
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "def5678901234", nil
 	}
 
@@ -207,7 +207,7 @@ func TestExecuteFeedback_SyncCalledBeforeAI(t *testing.T) {
 
 func TestExecuteFeedback_NoChanges(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil
 	}
 
@@ -312,7 +312,7 @@ func TestExecuteFeedback_NoNewComments(t *testing.T) {
 
 func TestExecuteFeedback_CommitFails(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -337,7 +337,7 @@ func TestExecuteFeedback_CommitFails(t *testing.T) {
 
 func TestExecuteFeedback_StatusNotRevertedOnFailure(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 
@@ -359,13 +359,12 @@ func TestExecuteFeedback_StatusNotRevertedOnFailure(t *testing.T) {
 
 func TestExecuteFeedback_ErrorCommentsDisabled(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git"}},
-			BaseBranch:           "main",
+			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus:     "In Progress",
 			InReviewStatus:       "In Review",
 			TodoStatus:           "To Do",
@@ -411,7 +410,7 @@ func TestExecuteFeedback_ContainerStoppedOnSuccess(t *testing.T) {
 
 func TestExecuteFeedback_ContainerStoppedOnFailure(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 
@@ -471,7 +470,7 @@ func TestExecuteFeedback_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -556,7 +555,7 @@ func TestExecuteFeedback_ConversationCommentUsesPostIssueComment(t *testing.T) {
 			{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Update docs", IsReviewComment: false},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -599,7 +598,7 @@ func TestExecuteFeedback_ReviewCommentUsesReplyToComment(t *testing.T) {
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this line", IsReviewComment: true},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "def5678901234", nil
 	}
 
@@ -637,7 +636,7 @@ func TestExecuteFeedback_MixedCommentTypes(t *testing.T) {
 			{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "Update readme", IsReviewComment: false},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -1043,7 +1042,7 @@ func TestExecuteFeedback_AuthRestoredOnExecFailure(t *testing.T) {
 
 func TestExecuteFeedback_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -1132,10 +1131,10 @@ func newMultiRepoFeedbackDeps(t *testing.T) *testDeps {
 			},
 		},
 		git: &executortest.StubGitService{
-			HasChangesFunc: func(dir string) (bool, error) {
+			HasChangesFunc: func(dir, baseBranch string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 				return "def456", nil
 			},
 			GetPRForBranchFunc: func(owner, repo, head string) (*models.PRDetails, error) {
@@ -1171,11 +1170,10 @@ func newMultiRepoFeedbackDeps(t *testing.T) *testDeps {
 			ResolveProjectFunc: func(_ models.WorkItem) (*models.ProjectSettings, error) {
 				return &models.ProjectSettings{
 					Repos: []models.RepoSettings{
-						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git"},
-						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git"},
+						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
 					},
 					Container:        models.ContainerSettings{Image: "fat:latest"},
-					BaseBranch:       "main",
 					InProgressStatus: "In Progress",
 					InReviewStatus:   "In Review",
 					TodoStatus:       "To Do",

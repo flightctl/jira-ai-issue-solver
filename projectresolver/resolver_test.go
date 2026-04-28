@@ -57,8 +57,8 @@ func TestResolveProject_HappyPath(t *testing.T) {
 	if ps.Repos[0].CloneURL != "https://github.com/my-org/backend.git" {
 		t.Errorf("clone URL = %q, want %q", ps.Repos[0].CloneURL, "https://github.com/my-org/backend.git")
 	}
-	if ps.BaseBranch != "main" {
-		t.Errorf("base branch = %q, want %q", ps.BaseBranch, "main")
+	if ps.Repos[0].BaseBranch != "main" {
+		t.Errorf("base branch = %q, want %q", ps.Repos[0].BaseBranch, "main")
 	}
 	if ps.InProgressStatus != "In Progress" {
 		t.Errorf("in-progress status = %q, want %q", ps.InProgressStatus, "In Progress")
@@ -853,7 +853,6 @@ func minimalConfig() *models.Config {
 			},
 		},
 	}
-	cfg.GitHub.TargetBranch = "main"
 	return cfg
 }
 

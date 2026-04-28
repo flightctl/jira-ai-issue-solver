@@ -418,7 +418,7 @@ func (s *GitHubServiceImpl) getAuthTokenForRepo(owner, repo string) (string, err
 }
 
 // CreateBranch creates a new branch in a local repository based on the latest target branch
-func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
+func (s *GitHubServiceImpl) CreateBranch(directory, branchName, baseBranch string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "CreateBranch")
 
@@ -432,21 +432,21 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 	s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Checkout the target branch
-	cmd = newGitCommand(s.executor("git", "checkout", s.config.GitHub.TargetBranch), directory, debugEnabled, true)
+	cmd = newGitCommand(s.executor("git", "checkout", baseBranch), directory, debugEnabled, true)
 
 	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
+		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", baseBranch, err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git checkout", fn, zap.String("branch", s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git checkout", fn, zap.String("branch", baseBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Reset to the latest commit on the target branch to ensure we're up to date
-	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch), directory, debugEnabled, true)
+	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+baseBranch), directory, debugEnabled, true)
 
 	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
+		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", baseBranch, err, cmd.getStderr())
 	}
-	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+baseBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Check if the branch already exists locally
 	cmd = newGitCommand(s.executor("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName), directory, debugEnabled, true)
@@ -482,7 +482,7 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 //
 // If coAuthor is non-nil, a Co-authored-by trailer is appended to the
 // commit message using the author's Name and Email.
-func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	// Extract co-author name/email (empty strings when nil).
 	var coAuthorName, coAuthorEmail string
 	if coAuthor != nil {
@@ -493,7 +493,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 	fn := zap.String("function", "CommitChanges")
 
 	// Check what kind of changes we have
-	hasChanges, err := s.HasChanges(dir)
+	hasChanges, err := s.HasChanges(dir, baseBranch)
 	if err != nil {
 		return "", fmt.Errorf("failed to check for changes: %w", err)
 	}
@@ -512,7 +512,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 	}
 
 	excludes := mergeExcludes(importExcludes)
-	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, coAuthorName, coAuthorEmail, excludes)
+	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthorName, coAuthorEmail, excludes)
 }
 
 // createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit.
@@ -522,7 +522,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 // "flightctl"). In non-fork workflows it equals owner. In fork
 // workflows it identifies the repo where the parent commit originated
 // so the tree can be resolved there when the fork API cannot find it.
-func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory, baseBranch string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
 	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
@@ -565,7 +565,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 		}
 	}
 	if err != nil {
-		remoteSHA, branchExists, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, token)
+		remoteSHA, branchExists, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
 		if remoteErr != nil || !branchExists {
 			return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
 		}
@@ -619,7 +619,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 	// Create or update the branch reference to point to the new commit.
 	// The branch exists locally but may not have been pushed to the
 	// remote yet, so we must check before choosing the operation.
-	_, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, token)
+	_, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
 	if err != nil {
 		return "", fmt.Errorf("failed to check branch existence: %w", err)
 	}
@@ -1195,7 +1195,7 @@ func (s *GitHubServiceImpl) updateReference(owner, repo, branchName, commitSHA, 
 // getBranchBaseCommit gets the base commit SHA for a branch
 // If the branch doesn't exist, falls back to the target branch
 // Returns: (baseSHA, branchExists, error)
-func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, token string) (string, bool, error) {
+func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, baseBranch, token string) (string, bool, error) {
 	// Try to get the branch reference
 	refURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, branchName)
 	req, err := http.NewRequest("GET", refURL, nil)
@@ -1229,10 +1229,10 @@ func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, token s
 		// Branch doesn't exist, fall back to target branch
 		s.logger.Info("Branch does not exist on remote, using target branch as base",
 			zap.String("branch", branchName),
-			zap.String("targetBranch", s.config.GitHub.TargetBranch))
+			zap.String("targetBranch", baseBranch))
 
 		// Get target branch reference
-		targetRefURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, s.config.GitHub.TargetBranch)
+		targetRefURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, baseBranch)
 		targetReq, err := http.NewRequest("GET", targetRefURL, nil)
 		if err != nil {
 			return "", false, fmt.Errorf("failed to create target branch request: %w", err)
@@ -1253,7 +1253,7 @@ func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, token s
 
 		if targetResp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(targetResp.Body)
-			return "", false, fmt.Errorf("failed to get target branch %s: %s, status: %d", s.config.GitHub.TargetBranch, string(body), targetResp.StatusCode)
+			return "", false, fmt.Errorf("failed to get target branch %s: %s, status: %d", baseBranch, string(body), targetResp.StatusCode)
 		}
 
 		var targetRefResponse models.GitHubGetReferenceResponse
@@ -1423,7 +1423,7 @@ func (s *GitHubServiceImpl) SwitchBranch(directory, branchName string) error {
 
 // HasChanges checks if there are any uncommitted changes in the repository
 // Returns true if there are changes (modified, added, or deleted files)
-func (s *GitHubServiceImpl) HasChanges(directory string) (bool, error) {
+func (s *GitHubServiceImpl) HasChanges(directory, baseBranch string) (bool, error) {
 	fn := zap.String("function", "HasChanges")
 
 	// Check for working tree changes
@@ -1436,7 +1436,7 @@ func (s *GitHubServiceImpl) HasChanges(directory string) (bool, error) {
 	}
 
 	// Check for unpushed commits (e.g., merge commits created by AI)
-	hasUnpushedCommits, err := s.hasUnpushedCommits(directory, fn)
+	hasUnpushedCommits, err := s.hasUnpushedCommits(directory, baseBranch, fn)
 	if err != nil {
 		return false, err
 	}
@@ -1495,7 +1495,7 @@ func (s *GitHubServiceImpl) stageAndCommitLocal(directory string, fn zapcore.Fie
 }
 
 // hasUnpushedCommits checks if there are local commits that haven't been pushed to origin
-func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Field) (bool, error) {
+func (s *GitHubServiceImpl) hasUnpushedCommits(directory, baseBranch string, fn zapcore.Field) (bool, error) {
 	// First, check if origin remote exists
 	remoteCmd := newGitCommand(s.executor("git", "remote", "get-url", "origin"), directory, false, false)
 	if err := remoteCmd.run(); err != nil {
@@ -1525,7 +1525,7 @@ func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Fiel
 	if err := remoteExistsCmd.run(); err != nil {
 		// Remote branch doesn't exist. Compare against origin/<target>
 		// to check if HEAD has diverged (i.e., the AI made local commits).
-		remoteRef = fmt.Sprintf("origin/%s", s.config.GitHub.TargetBranch)
+		remoteRef = fmt.Sprintf("origin/%s", baseBranch)
 		s.logger.Debug("Remote branch does not exist, comparing against target branch", fn,
 			zap.String("branch", branchName),
 			zap.String("targetRef", remoteRef))

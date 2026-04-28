@@ -36,11 +36,11 @@ func (s *Stub) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager.Job
 // When a Func field is nil, the method returns zero values.
 type StubGitService struct {
 	SyncForkFunc           func(forkOwner, repo, branch string) error
-	CreateBranchFunc       func(dir, name string) error
+	CreateBranchFunc       func(dir, name, baseBranch string) error
 	SwitchBranchFunc       func(dir, name string) error
 	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
-	HasChangesFunc         func(dir string) (bool, error)
-	CommitChangesFunc      func(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error)
+	HasChangesFunc         func(dir, baseBranch string) (bool, error)
+	CommitChangesFunc      func(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error)
 	StripRemoteAuthFunc    func(dir string) error
 	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
 	FetchRemoteFunc        func(dir string) error
@@ -60,9 +60,9 @@ func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
 	return nil
 }
 
-func (s *StubGitService) CreateBranch(dir, name string) error {
+func (s *StubGitService) CreateBranch(dir, name, baseBranch string) error {
 	if s.CreateBranchFunc != nil {
-		return s.CreateBranchFunc(dir, name)
+		return s.CreateBranchFunc(dir, name, baseBranch)
 	}
 	return nil
 }
@@ -81,16 +81,16 @@ func (s *StubGitService) RemoteBranchExists(owner, repo, branch string) (bool, e
 	return false, nil
 }
 
-func (s *StubGitService) HasChanges(dir string) (bool, error) {
+func (s *StubGitService) HasChanges(dir, baseBranch string) (bool, error) {
 	if s.HasChangesFunc != nil {
-		return s.HasChangesFunc(dir)
+		return s.HasChangesFunc(dir, baseBranch)
 	}
 	return false, nil
 }
 
-func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	if s.CommitChangesFunc != nil {
-		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, coAuthor, importExcludes)
+		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthor, importExcludes)
 	}
 	return "", nil
 }
