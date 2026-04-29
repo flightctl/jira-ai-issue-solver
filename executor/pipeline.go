@@ -237,6 +237,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// Read session metadata (may be absent on abnormal exit).
 	session := readSessionOutput(wsPath)
+	p.applyCostEstimate(&session)
 
 	logger.Info("AI session completed",
 		zap.Int("exit_code", exitCode),
@@ -328,6 +329,9 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 17: Update ticket ---
 	p.setPRURL(logger, job.TicketKey, settings, pr.URL)
+	p.postOrUpdateCostComment(logger,
+		settings.Repos[0].Owner, settings.Repos[0].Repo,
+		pr.Number, result.CostUSD, "New ticket")
 
 	if !draft {
 		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
@@ -854,6 +858,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	}
 
 	session := readSessionOutput(wsPath)
+	p.applyCostEstimate(&session)
 	logger.Info("AI session completed",
 		zap.Int("exit_code", exitCode),
 		zap.Float64("cost_usd", session.CostUSD),
@@ -906,6 +911,11 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 		p.setPRURL(logger, job.TicketKey, settings, pr.url)
 	}
 
+	// Post cost on the first PR only to avoid double-counting.
+	p.postOrUpdateCostComment(logger,
+		prs[0].owner, prs[0].repo,
+		prs[0].number, result.CostUSD, "New ticket")
+
 	result.PRURL = prs[0].url
 	result.PRNumber = prs[0].number
 	result.Draft = sessionDraft
@@ -956,6 +966,8 @@ type fanOutParams struct {
 }
 
 type repoPR struct {
+	owner  string
+	repo   string
 	url    string
 	number int
 	draft  bool
@@ -1018,7 +1030,7 @@ func (p *Pipeline) fanOutCommitAndPR(
 			return nil, fmt.Errorf("create PR for %s: %w", repo.Name, err)
 		}
 
-		prs = append(prs, repoPR{url: pr.URL, number: pr.Number, draft: repoDraft})
+		prs = append(prs, repoPR{owner: repo.Owner, repo: repo.Repo, url: pr.URL, number: pr.Number, draft: repoDraft})
 		logger.Info("PR created",
 			zap.String("repo", repo.Name),
 			zap.String("url", pr.URL),

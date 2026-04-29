@@ -171,6 +171,13 @@ type GitService interface {
 	PostIssueComment(owner, repo string, prNumber int,
 		body string) error
 
+	// ListIssueComments returns all top-level comments on a PR.
+	// Used to find existing bot comments for update-in-place.
+	ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error)
+
+	// UpdateIssueComment edits an existing top-level comment on a PR.
+	UpdateIssueComment(owner, repo string, commentID int64, body string) error
+
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after
 	// cloning. Used to make shared resources (workflow skills,
@@ -240,6 +247,10 @@ type Config struct {
 	// address" reply on the final attempt instead of failing
 	// silently and looping.
 	MaxRetries int
+
+	// GeminiPricing holds per-million-token prices for computing
+	// Gemini session costs from token counts.
+	GeminiPricing GeminiPricing
 }
 
 // ClaudeVertexConfig holds Vertex AI authentication settings for

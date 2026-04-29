@@ -287,6 +287,13 @@ gemini:
   api_key: "your-gemini-api-key-here"
   model: "gemini-2.5-pro"  # Optional: Gemini model to use. Repo-level .ai-bot/config.yaml can override.
 
+  # Token pricing (USD per million tokens) for cost estimation.
+  # Used to compute session cost from Gemini's token counts.
+  # Defaults match gemini-2.5-flash rates; override to match your model.
+  # input_price_per_mtok: 0.15
+  # output_price_per_mtok: 0.60
+  # cached_price_per_mtok: 0.0375
+
 # Workspace Configuration
 # Workspaces are ticket-scoped directories that persist across jobs.
 # Each ticket gets its own workspace directory, enabling AI-generated

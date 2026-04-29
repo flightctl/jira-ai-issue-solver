@@ -14,14 +14,25 @@ import (
 const sessionOutputPath = ".ai-bot/session-output.json"
 
 // SessionOutput holds the AI session results parsed from
-// session-output.json. The wrapper script (run.sh) writes this file
-// after the AI CLI exits.
+// session-output.json. The wrapper script writes this file after the
+// AI CLI exits.
 type SessionOutput struct {
 	// ExitCode is the AI CLI's exit code.
 	ExitCode int `json:"exit_code"`
 
 	// CostUSD is the session cost reported by the AI provider.
+	// Claude populates this directly; for Gemini it is computed
+	// from token counts after parsing.
 	CostUSD float64 `json:"cost_usd"`
+
+	// InputTokens is the total input token count (Gemini sessions).
+	InputTokens int `json:"input_tokens,omitempty"`
+
+	// OutputTokens is the total output token count (Gemini sessions).
+	OutputTokens int `json:"output_tokens,omitempty"`
+
+	// CachedTokens is the total cached input token count (Gemini sessions).
+	CachedTokens int `json:"cached_tokens,omitempty"`
 
 	// ValidationPassed indicates whether the AI's own validation
 	// succeeded. Nil means unknown (field absent or not reported).
@@ -228,10 +239,12 @@ func readCommentResponses(dir string) map[int64]string {
 	return m
 }
 
-// readSessionOutput reads and parses the session output file from the
-// workspace. Returns a zero-value SessionOutput if the file does not
-// exist or cannot be parsed. Missing files are expected when the
-// container is killed by timeout before the wrapper script finishes.
+// readSessionOutput reads session metadata from the workspace.
+// It parses session-output.json for exit code, then reads
+// cli-output.json for provider-specific cost/token data.
+// Returns a zero-value SessionOutput if files are missing or
+// unparseable. Missing files are expected when the container is
+// killed by timeout before the wrapper script finishes.
 func readSessionOutput(dir string) SessionOutput {
 	path := filepath.Join(dir, sessionOutputPath)
 
@@ -245,5 +258,51 @@ func readSessionOutput(dir string) SessionOutput {
 		return SessionOutput{}
 	}
 
+	enrichFromCLIOutput(&output, dir)
+
 	return output
+}
+
+// enrichFromCLIOutput reads the raw CLI JSON output and extracts
+// cost (Claude) or token counts (Gemini) into the SessionOutput.
+func enrichFromCLIOutput(output *SessionOutput, dir string) {
+	path := filepath.Join(dir, cliOutputPath)
+
+	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+	if err != nil {
+		return
+	}
+
+	// Try Claude format first (has total_cost_usd at top level).
+	var claude claudeCLIOutput
+	if json.Unmarshal(data, &claude) == nil && claude.TotalCostUSD > 0 {
+		output.CostUSD = claude.TotalCostUSD
+		return
+	}
+
+	// Try Gemini format (has stats.models with per-model token counts).
+	var gemini geminiCLIOutput
+	if json.Unmarshal(data, &gemini) == nil && len(gemini.Stats.Models) > 0 {
+		for _, m := range gemini.Stats.Models {
+			output.InputTokens += m.Tokens.Input
+			output.OutputTokens += m.Tokens.Candidates
+			output.CachedTokens += m.Tokens.Cached
+		}
+	}
+}
+
+type claudeCLIOutput struct {
+	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+type geminiCLIOutput struct {
+	Stats struct {
+		Models map[string]struct {
+			Tokens struct {
+				Input      int `json:"input"`
+				Candidates int `json:"candidates"`
+				Cached     int `json:"cached"`
+			} `json:"tokens"`
+		} `json:"models"`
+	} `json:"stats"`
 }

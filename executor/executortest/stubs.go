@@ -50,6 +50,8 @@ type StubGitService struct {
 	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
 	PostIssueCommentFunc   func(owner, repo string, prNumber int, body string) error
+	ListIssueCommentsFunc  func(owner, repo string, prNumber int) ([]models.IssueComment, error)
+	UpdateIssueCommentFunc func(owner, repo string, commentID int64, body string) error
 	CloneImportFunc        func(url, destDir, ref string) error
 }
 
@@ -154,6 +156,20 @@ func (s *StubGitService) ReplyToComment(owner, repo string, prNumber int, commen
 func (s *StubGitService) PostIssueComment(owner, repo string, prNumber int, body string) error {
 	if s.PostIssueCommentFunc != nil {
 		return s.PostIssueCommentFunc(owner, repo, prNumber, body)
+	}
+	return nil
+}
+
+func (s *StubGitService) ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error) {
+	if s.ListIssueCommentsFunc != nil {
+		return s.ListIssueCommentsFunc(owner, repo, prNumber)
+	}
+	return []models.IssueComment{}, nil
+}
+
+func (s *StubGitService) UpdateIssueComment(owner, repo string, commentID int64, body string) error {
+	if s.UpdateIssueCommentFunc != nil {
+		return s.UpdateIssueCommentFunc(owner, repo, commentID, body)
 	}
 	return nil
 }

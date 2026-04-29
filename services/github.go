@@ -1740,6 +1740,79 @@ func (s *GitHubServiceImpl) PostIssueComment(owner, repo string, prNumber int, b
 	return nil
 }
 
+// ListIssueComments returns all top-level comments on a PR (via the
+// issues endpoint). Results are ordered by creation time ascending.
+func (s *GitHubServiceImpl) ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var result []models.IssueComment
+	for {
+		comments, resp, err := ghClient.Issues.ListComments(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list issue comments: %w", err)
+		}
+		for _, c := range comments {
+			result = append(result, models.IssueComment{
+				ID:   c.GetID(),
+				Body: c.GetBody(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	if result == nil {
+		result = []models.IssueComment{}
+	}
+	return result, nil
+}
+
+// UpdateIssueComment edits an existing top-level comment on a PR.
+func (s *GitHubServiceImpl) UpdateIssueComment(owner, repo string, commentID int64, body string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	comment := &github.IssueComment{Body: github.Ptr(body)}
+	_, _, err = ghClient.Issues.EditComment(ctx, owner, repo, commentID, comment)
+	if err != nil {
+		return fmt.Errorf("failed to update issue comment: %w", err)
+	}
+
+	s.logger.Debug("Updated issue comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int64("comment_id", commentID))
+
+	return nil
+}
+
 // CloneImport clones an auxiliary repository into destDir. If ref is
 // non-empty, the specified branch/tag/commit is checked out. This is a
 // shallow clone (depth 1) since import repos are read-only references.

@@ -426,6 +426,12 @@ type Config struct {
 	Gemini struct {
 		APIKey string `yaml:"api_key" mapstructure:"api_key"`
 		Model  string `yaml:"model" mapstructure:"model"`
+
+		// Token pricing (USD per million tokens) for cost estimation.
+		// Defaults match gemini-2.5-flash rates as of 2026-04.
+		InputPricePerMTok  float64 `yaml:"input_price_per_mtok" mapstructure:"input_price_per_mtok"`
+		OutputPricePerMTok float64 `yaml:"output_price_per_mtok" mapstructure:"output_price_per_mtok"`
+		CachedPricePerMTok float64 `yaml:"cached_price_per_mtok" mapstructure:"cached_price_per_mtok"`
 	} `yaml:"gemini" mapstructure:"gemini"`
 
 	// Workspaces configuration for ticket-scoped workspace lifecycle
@@ -661,6 +667,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("claude.vertex_credentials_file")
 	bindEnv("gemini.api_key")
 	bindEnv("gemini.model")
+	bindEnv("gemini.input_price_per_mtok")
+	bindEnv("gemini.output_price_per_mtok")
+	bindEnv("gemini.cached_price_per_mtok")
 
 	// Server configuration
 	bindEnv("server.port")
@@ -893,6 +902,11 @@ func setDefaults(v *viper.Viper) {
 
 	// AI Provider defaults
 	v.SetDefault("ai_provider", "claude")
+
+	// Gemini pricing defaults (USD per million tokens, gemini-2.5-flash rates)
+	v.SetDefault("gemini.input_price_per_mtok", 0.15)
+	v.SetDefault("gemini.output_price_per_mtok", 0.60)
+	v.SetDefault("gemini.cached_price_per_mtok", 0.0375)
 
 	// Workspace defaults
 	v.SetDefault("workspaces.ttl_days", 7)

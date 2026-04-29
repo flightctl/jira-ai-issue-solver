@@ -54,3 +54,10 @@ type PR struct {
 	URL    string
 	State  string
 }
+
+// IssueComment represents a top-level comment on a pull request
+// (via the GitHub Issues API, as distinct from review comments).
+type IssueComment struct {
+	ID   int64
+	Body string
+}

@@ -178,6 +178,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	}
 
 	session := readSessionOutput(wsPath)
+	p.applyCostEstimate(&session)
 
 	logger.Info("AI session completed",
 		zap.Int("exit_code", exitCode),
@@ -237,6 +238,10 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	// --- Step 17: Reply to addressed comments ---
 	aiResponses := readCommentResponses(wsPath)
 	p.replyToComments(logger, settings, prDetails, newComments, sha, aiResponses)
+
+	p.postOrUpdateCostComment(logger,
+		settings.Repos[0].Owner, settings.Repos[0].Repo,
+		prDetails.Number, result.CostUSD, "Feedback")
 
 	result.PRURL = prDetails.URL
 	result.PRNumber = prDetails.Number
@@ -411,6 +416,7 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	}
 
 	session := readSessionOutput(wsPath)
+	p.applyCostEstimate(&session)
 	logger.Info("AI session completed",
 		zap.Int("exit_code", exitCode),
 		zap.Float64("cost_usd", session.CostUSD),
@@ -454,6 +460,11 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if !committed {
 		return result, nil
 	}
+
+	// Post cost on the first PR only to avoid double-counting.
+	p.postOrUpdateCostComment(logger,
+		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
+		repoInfos[0].pr.Number, result.CostUSD, "Feedback")
 
 	result.PRURL = repoInfos[0].pr.URL
 	result.PRNumber = repoInfos[0].pr.Number

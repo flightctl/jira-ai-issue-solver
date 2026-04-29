@@ -142,6 +142,11 @@ func main() {
 			DefaultClaudeModel: config.Claude.Model,
 			DefaultGeminiModel: config.Gemini.Model,
 			MaxRetries:         config.Guardrails.MaxRetries,
+			GeminiPricing: executor.GeminiPricing{
+				InputPerMTok:  config.Gemini.InputPricePerMTok,
+				OutputPerMTok: config.Gemini.OutputPricePerMTok,
+				CachedPerMTok: config.Gemini.CachedPricePerMTok,
+			},
 		},
 		issueTracker,
 		gitService,
