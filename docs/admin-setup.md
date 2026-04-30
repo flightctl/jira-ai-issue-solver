@@ -40,9 +40,10 @@ your organization and installed on your repository.
    <!-- markdownlint-disable MD013 -->
    | Permission        | Access Level   | Why Needed                                 |
    |-------------------|----------------|--------------------------------------------|
-   | **Contents**      | Read and write | Clone repos, create branches, push commits |
-   | **Pull requests** | Read and write | Create PRs, read reviews, post comments    |
-   | **Metadata**      | Read-only      | Required (automatically selected)          |
+   | **Contents**      | Read and write | Clone repos, create branches, push commits              |
+   | **Pull requests** | Read and write | Create PRs, read reviews, post comments                 |
+   | **Workflows**     | Read and write | Sync forks when upstream changes `.github/workflows/`   |
+   | **Metadata**      | Read-only      | Required (automatically selected)                       |
    <!-- markdownlint-enable MD013 -->
 
 6. **Where can this GitHub App be installed?**
