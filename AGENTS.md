@@ -15,7 +15,7 @@ The application uses consumer-defined interfaces and clear package boundaries:
 - **`tracker/`** — `IssueTracker` interface for work item operations; `jira/` sub-package adapts `services.JiraService` to this interface
 - **`workspace/`** — `Manager` interface for ticket-scoped workspace lifecycle (clone, cleanup, TTL); `FSManager` implementation
 - **`container/`** — `Manager` interface for container lifecycle; `Runner` (CLI executor), `Resolver` (image/config resolution), `RuntimeManager` (orchestration)
-- **`taskfile/`** — `Writer` interface for generating AI task files; `MarkdownWriter` implementation; appends universal instructions and (for new tickets only) workflow from repo-level files or project-config fallback
+- **`taskfile/`** — `Writer` interface for generating AI task files; `MarkdownWriter` implementation; appends universal instructions and (for new tickets only) workflow from project-config overrides or repo-level files
 - **`repoconfig/`** — Parses `.ai-bot/config.yaml` from target repositories for per-repo AI/container settings and repo imports
 - **`projectresolver/`** — `Resolver` interface mapping ticket keys to project settings (component-to-repo, status transitions, imports)
 - **`executor/`** — `Pipeline` implementing new-ticket and PR-feedback execution flows
@@ -50,13 +50,13 @@ Key configuration features:
 - `GetProjectConfigForTicket()` retrieves the appropriate project config based on ticket key
 - `StatusTransitions` maps ticket types to their workflow statuses (todo, in_progress, in_review)
 - **Workspaces** group one or more repos into a named working environment. A single-repo project is a workspace with one entry. Multi-repo workspaces clone all repos into subdirectories and run one AI session against the whole workspace.
-- **Profiles** bundle container, imports, instructions, and workflow settings. Repos within workspaces reference profiles by name. Profile settings serve as fallbacks when `.ai-bot/` files don't exist in the repo.
+- **Profiles** bundle container, imports, instructions, and workflow settings. Repos within workspaces reference profiles by name. Profile settings override repo-level `.ai-bot/` files when set, enabling prototyping without committing to the source repo.
 - `Components` maps Jira component names to workspaces (case-insensitive). `DefaultWorkspace` is used when tickets have no matching component.
 - **Container resolution**: workspace-level container overrides per-repo profile containers. Multi-repo workspaces require a workspace-level container (fat container with all toolchains).
 - `Imports` (per-repo profile) declares auxiliary repos to clone into the workspace; merged with repo-level imports from `.ai-bot/config.yaml`; optional `install` command runs inside the container after cloning
-- `Instructions` (per-repo profile) provides universal fallback instructions (validation commands, coding standards); appended to all task types; repo-level `.ai-bot/instructions.md` takes precedence
-- `NewTicketWorkflow` (per-repo profile) provides workflow instructions appended only to new-ticket task files; repo-level `.ai-bot/new-ticket-workflow.md` takes precedence
-- `FeedbackWorkflow` (per-repo profile) provides workflow instructions appended only to feedback task files; repo-level `.ai-bot/feedback-workflow.md` takes precedence
+- `Instructions` (per-repo profile) provides universal instructions (validation commands, coding standards); appended to all task types; overrides `.ai-bot/instructions.md` when set
+- `NewTicketWorkflow` (per-repo profile) provides workflow instructions appended only to new-ticket task files; overrides `.ai-bot/new-ticket-workflow.md` when set
+- `FeedbackWorkflow` (per-repo profile) provides workflow instructions appended only to feedback task files; overrides `.ai-bot/feedback-workflow.md` when set
 
 ### Workflow
 
@@ -278,7 +278,7 @@ See `models/config.go` LoadConfig() for complete environment variable binding.
 - `recovery/`: Crash recovery and startup cleanup
 - `costtracker/`: Daily AI cost tracking
 - `projectresolver/`: Ticket-to-project-config mapping
-- `taskfile/`: AI task file generation (universal instructions + new-ticket workflow from repo files or project-config fallback)
+- `taskfile/`: AI task file generation (universal instructions + new-ticket workflow from project-config overrides or repo files)
 - `repoconfig/`: Per-repo `.ai-bot/config.yaml` parsing (PR, AI, imports)
 - `config.example.yaml`: Complete configuration reference with comments
 - `docs/`: Architecture, debugging, setup guides, and [repo-level configuration](docs/repo-configuration.md)

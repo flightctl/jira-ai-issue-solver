@@ -14,8 +14,8 @@ var _ taskfile.Writer = (*Stub)(nil)
 // When a Func field is nil, the method returns nil.
 type Stub struct {
 	WriteIssueFunc                  func(workItem models.WorkItem, dir string, attachmentFiles []string) error
-	WriteNewTicketTaskFunc          func(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
-	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error
+	WriteNewTicketTaskFunc          func(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
+	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, overrideInstructions, overrideWorkflow string) error
 	WriteMultiRepoNewTicketTaskFunc func(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error
 	WriteMultiRepoFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, wsDir string, repos []taskfile.RepoContext) error
 }
@@ -27,16 +27,16 @@ func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles 
 	return nil
 }
 
-func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error {
+func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error {
 	if s.WriteNewTicketTaskFunc != nil {
-		return s.WriteNewTicketTaskFunc(workItem, dir, fallbackInstructions, fallbackWorkflow)
+		return s.WriteNewTicketTaskFunc(workItem, dir, overrideInstructions, overrideWorkflow)
 	}
 	return nil
 }
 
-func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error {
+func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, overrideInstructions, overrideWorkflow string) error {
 	if s.WriteFeedbackTaskFunc != nil {
-		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, fallbackInstructions, fallbackWorkflow)
+		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, overrideInstructions, overrideWorkflow)
 	}
 	return nil
 }

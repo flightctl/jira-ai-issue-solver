@@ -542,8 +542,8 @@ func (p *Pipeline) writeMultiRepoFeedbackFiles(
 		repoContexts[i] = taskfile.RepoContext{
 			Name:                     repo.Name,
 			Dir:                      filepath.Join(wsPath, repo.Name),
-			FallbackInstructions:     repo.Instructions,
-			FallbackFeedbackWorkflow: repo.FeedbackWorkflow,
+			OverrideInstructions:     repo.Instructions,
+			OverrideFeedbackWorkflow: repo.FeedbackWorkflow,
 		}
 	}
 	if err := p.taskWriter.WriteMultiRepoFeedbackTask(

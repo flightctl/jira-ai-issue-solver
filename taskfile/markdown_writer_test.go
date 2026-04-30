@@ -707,7 +707,7 @@ func TestWriteFeedbackTask_NoInstructionsMd(t *testing.T) {
 
 // --- Fallback instructions (project config) ---
 
-func TestWriteNewTicketTask_FallbackInstructions(t *testing.T) {
+func TestWriteNewTicketTask_OverrideInstructions_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -726,7 +726,7 @@ func TestWriteNewTicketTask_FallbackInstructions(t *testing.T) {
 	assertContains(t, content, "Run `make check` before committing.")
 }
 
-func TestWriteNewTicketTask_RepoFileOverridesFallback(t *testing.T) {
+func TestWriteNewTicketTask_ConfigOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -737,18 +737,18 @@ func TestWriteNewTicketTask_RepoFileOverridesFallback(t *testing.T) {
 		Summary: "Override test",
 	}
 
-	if err := writer.WriteNewTicketTask(workItem, dir, "Fallback guidance.", ""); err != nil {
+	if err := writer.WriteNewTicketTask(workItem, dir, "Config guidance.", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
 	assertContains(t, content, "## Project Instructions")
-	assertContains(t, content, "Repo-level guidance.")
-	assertNotContains(t, content, "Fallback guidance.")
+	assertContains(t, content, "Config guidance.")
+	assertNotContains(t, content, "Repo-level guidance.")
 }
 
-func TestWriteNewTicketTask_EmptyFallbackIsNoOp(t *testing.T) {
+func TestWriteNewTicketTask_EmptyOverrideIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -765,7 +765,7 @@ func TestWriteNewTicketTask_EmptyFallbackIsNoOp(t *testing.T) {
 	assertNotContains(t, content, "## Project Instructions")
 }
 
-func TestWriteFeedbackTask_FallbackInstructions(t *testing.T) {
+func TestWriteFeedbackTask_OverrideInstructions_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -784,30 +784,30 @@ func TestWriteFeedbackTask_FallbackInstructions(t *testing.T) {
 	assertContains(t, content, "Always run lint.")
 }
 
-func TestWriteFeedbackTask_RepoFileOverridesFallback(t *testing.T) {
+func TestWriteFeedbackTask_ConfigOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
-	writeInstructions(t, dir, "Repo instructions win.")
+	writeInstructions(t, dir, "Repo instructions lose.")
 
 	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
 	comments := []models.PRComment{
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "Fallback instructions lose.", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "Config instructions win.", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
-	assertContains(t, content, "Repo instructions win.")
-	assertNotContains(t, content, "Fallback instructions lose.")
+	assertContains(t, content, "Config instructions win.")
+	assertNotContains(t, content, "Repo instructions lose.")
 }
 
 // --- Workflow (new-ticket-only) ---
 
-func TestWriteNewTicketTask_FallbackWorkflow(t *testing.T) {
+func TestWriteNewTicketTask_OverrideWorkflow_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -843,22 +843,22 @@ func TestWriteNewTicketTask_WorkflowFile(t *testing.T) {
 	assertContains(t, content, "Read assess.md, then fix.md.")
 }
 
-func TestWriteNewTicketTask_WorkflowFileOverridesFallback(t *testing.T) {
+func TestWriteNewTicketTask_ConfigWorkflowOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
-	writeWorkflow(t, dir, "Repo workflow wins.")
+	writeWorkflow(t, dir, "Repo workflow loses.")
 
 	workItem := models.WorkItem{Key: "PROJ-702", Summary: "Override test"}
 
-	if err := writer.WriteNewTicketTask(workItem, dir, "", "Fallback workflow loses."); err != nil {
+	if err := writer.WriteNewTicketTask(workItem, dir, "", "Config workflow wins."); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
-	assertContains(t, content, "Repo workflow wins.")
-	assertNotContains(t, content, "Fallback workflow loses.")
+	assertContains(t, content, "Config workflow wins.")
+	assertNotContains(t, content, "Repo workflow loses.")
 }
 
 func TestWriteNewTicketTask_NoWorkflow(t *testing.T) {
@@ -942,7 +942,7 @@ func TestWriteFeedbackTask_FeedbackWorkflowFile(t *testing.T) {
 	assertContains(t, content, "Read session-context.md, address comments, update artifacts.")
 }
 
-func TestWriteFeedbackTask_FallbackFeedbackWorkflow(t *testing.T) {
+func TestWriteFeedbackTask_OverrideFeedbackWorkflow_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -961,25 +961,25 @@ func TestWriteFeedbackTask_FallbackFeedbackWorkflow(t *testing.T) {
 	assertContains(t, content, "Fallback feedback workflow.")
 }
 
-func TestWriteFeedbackTask_FeedbackWorkflowFileOverridesFallback(t *testing.T) {
+func TestWriteFeedbackTask_ConfigFeedbackWorkflowOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
-	writeFeedbackWorkflow(t, dir, "Repo feedback workflow wins.")
+	writeFeedbackWorkflow(t, dir, "Repo feedback workflow loses.")
 
 	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
 	comments := []models.PRComment{
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", "Fallback feedback workflow loses."); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", "Config feedback workflow wins."); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
-	assertContains(t, content, "Repo feedback workflow wins.")
-	assertNotContains(t, content, "Fallback feedback workflow loses.")
+	assertContains(t, content, "Config feedback workflow wins.")
+	assertNotContains(t, content, "Repo feedback workflow loses.")
 }
 
 func TestWriteFeedbackTask_NoFeedbackWorkflow(t *testing.T) {
@@ -1077,7 +1077,7 @@ func TestWriteMultiRepoNewTicketTask_PerRepoSections(t *testing.T) {
 	assertContains(t, content, "Run go test ./...")
 }
 
-func TestWriteMultiRepoNewTicketTask_FallbackInstructions(t *testing.T) {
+func TestWriteMultiRepoNewTicketTask_OverrideInstructions(t *testing.T) {
 	wsDir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -1086,9 +1086,9 @@ func TestWriteMultiRepoNewTicketTask_FallbackInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workItem := models.WorkItem{Key: "PROJ-2", Summary: "Profile fallback test"}
+	workItem := models.WorkItem{Key: "PROJ-2", Summary: "Profile override test"}
 	repos := []taskfile.RepoContext{
-		{Name: "svc", Dir: repoDir, FallbackInstructions: "Profile instructions here"},
+		{Name: "svc", Dir: repoDir, OverrideInstructions: "Profile instructions here"},
 	}
 
 	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
@@ -1101,7 +1101,7 @@ func TestWriteMultiRepoNewTicketTask_FallbackInstructions(t *testing.T) {
 	assertContains(t, content, "Profile instructions here")
 }
 
-func TestWriteMultiRepoNewTicketTask_RepoFileOverridesProfile(t *testing.T) {
+func TestWriteMultiRepoNewTicketTask_ProfileOverridesRepoFile(t *testing.T) {
 	wsDir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -1109,11 +1109,11 @@ func TestWriteMultiRepoNewTicketTask_RepoFileOverridesProfile(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	writeInstructions(t, repoDir, "Repo-level instructions win")
+	writeInstructions(t, repoDir, "Repo-level instructions lose")
 
 	workItem := models.WorkItem{Key: "PROJ-3", Summary: "Override test"}
 	repos := []taskfile.RepoContext{
-		{Name: "api", Dir: repoDir, FallbackInstructions: "Profile instructions lose"},
+		{Name: "api", Dir: repoDir, OverrideInstructions: "Profile instructions win"},
 	}
 
 	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
@@ -1122,11 +1122,11 @@ func TestWriteMultiRepoNewTicketTask_RepoFileOverridesProfile(t *testing.T) {
 
 	content := readTaskFile(t, wsDir)
 
-	assertContains(t, content, "Repo-level instructions win")
-	assertNotContains(t, content, "Profile instructions lose")
+	assertContains(t, content, "Profile instructions win")
+	assertNotContains(t, content, "Repo-level instructions lose")
 }
 
-func TestWriteMultiRepoNewTicketTask_WorkflowFallback(t *testing.T) {
+func TestWriteMultiRepoNewTicketTask_WorkflowOverride(t *testing.T) {
 	wsDir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -1137,7 +1137,7 @@ func TestWriteMultiRepoNewTicketTask_WorkflowFallback(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-4", Summary: "Workflow test"}
 	repos := []taskfile.RepoContext{
-		{Name: "core", Dir: repoDir, FallbackNewTicketWorkflow: "1. Assess\n2. Fix\n3. Test"},
+		{Name: "core", Dir: repoDir, OverrideNewTicketWorkflow: "1. Assess\n2. Fix\n3. Test"},
 	}
 
 	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
@@ -1178,7 +1178,7 @@ func TestWriteMultiRepoFeedbackTask_PerRepoSections(t *testing.T) {
 
 	repos := []taskfile.RepoContext{
 		{Name: "frontend", Dir: repo1Dir},
-		{Name: "backend", Dir: repo2Dir, FallbackFeedbackWorkflow: "Feedback workflow steps"},
+		{Name: "backend", Dir: repo2Dir, OverrideFeedbackWorkflow: "Feedback workflow steps"},
 	}
 
 	if err := writer.WriteMultiRepoFeedbackTask(prDetails, comments, nil, wsDir, repos); err != nil {

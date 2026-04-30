@@ -90,9 +90,9 @@ const (
 )
 
 // RepoContext describes a repository within a multi-repo workspace.
-// The writer uses Dir to read repo-level .ai-bot/ files and falls back
-// to the Fallback fields (from the repo's profile) when those files
-// don't exist.
+// The writer uses Dir to read repo-level .ai-bot/ files. Override
+// fields (from the repo's profile in the config) take precedence over
+// repo-level files, enabling prototyping without committing changes.
 type RepoContext struct {
 	// Name is the display name for this repo in the task file.
 	Name string
@@ -100,14 +100,17 @@ type RepoContext struct {
 	// Dir is the absolute path to the repo within the workspace.
 	Dir string
 
-	// FallbackInstructions is from the repo's profile Instructions field.
-	FallbackInstructions string
+	// OverrideInstructions from the repo's profile; takes precedence
+	// over .ai-bot/instructions.md in the repo.
+	OverrideInstructions string
 
-	// FallbackNewTicketWorkflow is from the repo's profile NewTicketWorkflow field.
-	FallbackNewTicketWorkflow string
+	// OverrideNewTicketWorkflow from the repo's profile; takes
+	// precedence over .ai-bot/new-ticket-workflow.md in the repo.
+	OverrideNewTicketWorkflow string
 
-	// FallbackFeedbackWorkflow is from the repo's profile FeedbackWorkflow field.
-	FallbackFeedbackWorkflow string
+	// OverrideFeedbackWorkflow from the repo's profile; takes
+	// precedence over .ai-bot/feedback-workflow.md in the repo.
+	OverrideFeedbackWorkflow string
 }
 
 // Writer generates task files that the AI agent reads to understand
@@ -123,33 +126,31 @@ type Writer interface {
 
 	// WriteNewTicketTask generates a task file for implementing a new
 	// ticket. The file is written to <dir>/.ai-bot/task.md.
-	// fallbackInstructions is used when .ai-bot/instructions.md does
-	// not exist (universal guidance like validation commands).
-	// fallbackWorkflow is used when .ai-bot/new-ticket-workflow.md
-	// does not exist (multi-phase workflow for new tickets only).
-	WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
+	// overrideInstructions takes precedence over .ai-bot/instructions.md
+	// (for prototyping changes). overrideWorkflow takes precedence over
+	// .ai-bot/new-ticket-workflow.md.
+	WriteNewTicketTask(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
 
 	// WriteFeedbackTask generates a task file for addressing PR review
 	// feedback. newComments are comments requiring action;
 	// addressedComments are previously handled comments included for
 	// context. The file is written to <dir>/.ai-bot/task.md.
-	// fallbackInstructions is used when .ai-bot/instructions.md does
-	// not exist in the workspace. fallbackWorkflow is used when
-	// .ai-bot/feedback-workflow.md does not exist.
+	// overrideInstructions takes precedence over .ai-bot/instructions.md.
+	// overrideWorkflow takes precedence over .ai-bot/feedback-workflow.md.
 	WriteFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
-		dir, fallbackInstructions, fallbackWorkflow string) error
+		dir, overrideInstructions, overrideWorkflow string) error
 
 	// WriteMultiRepoNewTicketTask generates a task file for a multi-repo
-	// workspace. Per-repo instruction and workflow sections are written
-	// using each repo's .ai-bot/ files with profile fallbacks. The task
-	// file is written to <wsDir>/.ai-bot/task.md.
+	// workspace. Per-repo instruction and workflow sections use profile
+	// overrides when set, falling back to .ai-bot/ files in each repo.
+	// The task file is written to <wsDir>/.ai-bot/task.md.
 	WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []RepoContext) error
 
 	// WriteMultiRepoFeedbackTask generates a feedback task file for a
 	// multi-repo workspace. Per-repo instruction and workflow sections
-	// are written using each repo's .ai-bot/ files with profile
-	// fallbacks. The task file is written to <wsDir>/.ai-bot/task.md.
+	// use profile overrides when set, falling back to .ai-bot/ files
+	// in each repo. The task file is written to <wsDir>/.ai-bot/task.md.
 	WriteMultiRepoFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
 		wsDir string, repos []RepoContext) error

@@ -794,8 +794,8 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 		repoContexts[i] = taskfile.RepoContext{
 			Name:                      repo.Name,
 			Dir:                       filepath.Join(wsPath, repo.Name),
-			FallbackInstructions:      repo.Instructions,
-			FallbackNewTicketWorkflow: repo.NewTicketWorkflow,
+			OverrideInstructions:      repo.Instructions,
+			OverrideNewTicketWorkflow: repo.NewTicketWorkflow,
 		}
 	}
 	if err := p.taskWriter.WriteMultiRepoNewTicketTask(*workItem, wsPath, repoContexts); err != nil {

@@ -272,7 +272,7 @@ Do not modify generated files.
   `instructions.md`.
 - **Prototyping**: Admins can set `instructions` in the bot's project
   config to prototype content before committing the file to the repo.
-  The repo-level file takes precedence when present.
+  The config value takes precedence over the repo-level file when set.
 
 ## New-Ticket Workflow (`.ai-bot/new-ticket-workflow.md`)
 
@@ -319,7 +319,7 @@ Each phase is defined in the corresponding skill file.
   to prevent the AI from burning tokens in circles.
 - **Prototyping**: Admins can set `new_ticket_workflow` in the bot's
   project config to iterate on workflow content before committing the
-  file. The repo-level file takes precedence when present.
+  file. The config value takes precedence over the repo-level file when set.
 
 ### Why not put workflows in `instructions.md`?
 

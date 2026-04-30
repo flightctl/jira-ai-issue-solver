@@ -45,7 +45,7 @@ func (w *MarkdownWriter) WriteIssue(workItem models.WorkItem, dir string, attach
 	return writeFile(dir, IssueFilePath, b.String())
 }
 
-func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error {
+func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# Task: %s\n\n", workItem.Key)
@@ -54,11 +54,11 @@ func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, fallb
 
 	writeNewTicketInstructions(&b, workItem.HasSecurityLevel())
 
-	if err := appendInstructions(&b, dir, fallbackInstructions); err != nil {
+	if err := appendInstructions(&b, dir, overrideInstructions); err != nil {
 		return err
 	}
 
-	if err := appendWorkflow(&b, dir, fallbackWorkflow); err != nil {
+	if err := appendWorkflow(&b, dir, overrideWorkflow); err != nil {
 		return err
 	}
 
@@ -68,7 +68,7 @@ func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, fallb
 func (w *MarkdownWriter) WriteFeedbackTask(
 	prDetails models.PRDetails,
 	newComments, addressedComments []models.PRComment,
-	dir, fallbackInstructions, fallbackWorkflow string,
+	dir, overrideInstructions, overrideWorkflow string,
 ) error {
 	var b strings.Builder
 
@@ -91,11 +91,11 @@ func (w *MarkdownWriter) WriteFeedbackTask(
 
 	writeFeedbackInstructions(&b)
 
-	if err := appendInstructions(&b, dir, fallbackInstructions); err != nil {
+	if err := appendInstructions(&b, dir, overrideInstructions); err != nil {
 		return err
 	}
 
-	if err := appendFeedbackWorkflow(&b, dir, fallbackWorkflow); err != nil {
+	if err := appendFeedbackWorkflow(&b, dir, overrideWorkflow); err != nil {
 		return err
 	}
 
@@ -113,10 +113,10 @@ func (w *MarkdownWriter) WriteMultiRepoNewTicketTask(workItem models.WorkItem, w
 
 	for _, repo := range repos {
 		fmt.Fprintf(&b, "\n## Repository: %s\n", repo.Name)
-		if err := appendInstructions(&b, repo.Dir, repo.FallbackInstructions); err != nil {
+		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions); err != nil {
 			return err
 		}
-		if err := appendWorkflow(&b, repo.Dir, repo.FallbackNewTicketWorkflow); err != nil {
+		if err := appendWorkflow(&b, repo.Dir, repo.OverrideNewTicketWorkflow); err != nil {
 			return err
 		}
 	}
@@ -152,10 +152,10 @@ func (w *MarkdownWriter) WriteMultiRepoFeedbackTask(
 
 	for _, repo := range repos {
 		fmt.Fprintf(&b, "\n## Repository: %s\n", repo.Name)
-		if err := appendInstructions(&b, repo.Dir, repo.FallbackInstructions); err != nil {
+		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions); err != nil {
 			return err
 		}
-		if err := appendFeedbackWorkflow(&b, repo.Dir, repo.FallbackFeedbackWorkflow); err != nil {
+		if err := appendFeedbackWorkflow(&b, repo.Dir, repo.OverrideFeedbackWorkflow); err != nil {
 			return err
 		}
 	}
@@ -200,24 +200,23 @@ func writeFeedbackInstructions(b *strings.Builder) {
 	b.WriteString("```\n")
 }
 
-// appendInstructions reads .ai-bot/instructions.md from the workspace
-// and appends its content as a "Project Instructions" section. If the
-// file does not exist, the fallback string is used instead (typically
-// from the project config for prototyping). If both are empty, nothing
-// is appended.
-func appendInstructions(b *strings.Builder, dir, fallback string) error {
-	path := filepath.Join(dir, InstructionsPath)
+// appendInstructions appends a "Project Instructions" section. The
+// override string (from the project config profile) takes precedence,
+// enabling rapid prototyping without committing to the source repo.
+// If no override is set, .ai-bot/instructions.md from the workspace
+// is used. If both are empty, nothing is appended.
+func appendInstructions(b *strings.Builder, dir, override string) error {
+	content := strings.TrimSpace(override)
 
-	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read instructions file: %w", err)
-	}
-
-	content := strings.TrimSpace(string(data))
-
-	// Repo-level file takes precedence; fall back to project config.
 	if content == "" {
-		content = strings.TrimSpace(fallback)
+		path := filepath.Join(dir, InstructionsPath)
+
+		data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read instructions file: %w", err)
+		}
+
+		content = strings.TrimSpace(string(data))
 	}
 
 	if content == "" {
@@ -231,23 +230,23 @@ func appendInstructions(b *strings.Builder, dir, fallback string) error {
 	return nil
 }
 
-// appendWorkflow reads .ai-bot/new-ticket-workflow.md from the
-// workspace and appends its content as a "Workflow" section. If the
-// file does not exist, the fallback string is used instead. If both
-// are empty, nothing is appended. This is only called for new-ticket
-// task files — feedback tasks do not get workflow instructions.
-func appendWorkflow(b *strings.Builder, dir, fallback string) error {
-	path := filepath.Join(dir, NewTicketWorkflowPath)
-
-	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read workflow file: %w", err)
-	}
-
-	content := strings.TrimSpace(string(data))
+// appendWorkflow appends a "Workflow" section. The override string
+// (from the project config profile) takes precedence. If no override
+// is set, .ai-bot/new-ticket-workflow.md from the workspace is used.
+// If both are empty, nothing is appended. Only called for new-ticket
+// task files — feedback tasks use appendFeedbackWorkflow.
+func appendWorkflow(b *strings.Builder, dir, override string) error {
+	content := strings.TrimSpace(override)
 
 	if content == "" {
-		content = strings.TrimSpace(fallback)
+		path := filepath.Join(dir, NewTicketWorkflowPath)
+
+		data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read workflow file: %w", err)
+		}
+
+		content = strings.TrimSpace(string(data))
 	}
 
 	if content == "" {
@@ -261,23 +260,24 @@ func appendWorkflow(b *strings.Builder, dir, fallback string) error {
 	return nil
 }
 
-// appendFeedbackWorkflow reads .ai-bot/feedback-workflow.md from the
-// workspace and appends its content as a "Workflow" section. If the
-// file does not exist, the fallback string is used instead. If both
-// are empty, nothing is appended. This is only called for feedback
-// task files — new-ticket tasks use appendWorkflow instead.
-func appendFeedbackWorkflow(b *strings.Builder, dir, fallback string) error {
-	path := filepath.Join(dir, FeedbackWorkflowPath)
-
-	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read feedback workflow file: %w", err)
-	}
-
-	content := strings.TrimSpace(string(data))
+// appendFeedbackWorkflow appends a "Workflow" section for feedback
+// tasks. The override string (from the project config profile) takes
+// precedence. If no override is set, .ai-bot/feedback-workflow.md
+// from the workspace is used. If both are empty, nothing is appended.
+// Only called for feedback task files — new-ticket tasks use
+// appendWorkflow.
+func appendFeedbackWorkflow(b *strings.Builder, dir, override string) error {
+	content := strings.TrimSpace(override)
 
 	if content == "" {
-		content = strings.TrimSpace(fallback)
+		path := filepath.Join(dir, FeedbackWorkflowPath)
+
+		data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read feedback workflow file: %w", err)
+		}
+
+		content = strings.TrimSpace(string(data))
 	}
 
 	if content == "" {
