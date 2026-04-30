@@ -140,8 +140,8 @@ jira:
           # Workflow for new tickets only. Appended ONLY to new-ticket
           # task files — feedback tasks do not receive this. Use for
           # multi-phase workflows (diagnose → fix → test → review → document).
-          # Repo-level .ai-bot/new-ticket-workflow.md takes precedence
-          # when the profile field is empty.
+          # Profile field overrides repo-level .ai-bot/new-ticket-workflow.md
+          # when set.
           # new_ticket_workflow: |
           #   Read and execute .ai-workflows/bugfix/skills/unattended.md
           #   with these settings:
@@ -154,8 +154,8 @@ jira:
           # task files — new-ticket tasks do not receive this. Use for
           # structured feedback handling with session context recovery
           # and artifact updates across review rounds.
-          # Repo-level .ai-bot/feedback-workflow.md takes precedence
-          # when the profile field is empty.
+          # Profile field overrides repo-level .ai-bot/feedback-workflow.md
+          # when set.
           # feedback_workflow: |
           #   Read and execute .ai-workflows/bugfix/skills/feedback.md
           #   All artifact paths (.artifacts/bugfix/{issue}/) should use

@@ -41,10 +41,10 @@ const (
 	InstructionsPath = ".ai-bot/instructions.md"
 
 	// PRDescriptionPath is the path, relative to the workspace root,
-	// where the AI agent may write a PR title and description. If
-	// present, the first line is used as the PR title and the
-	// remaining lines as the PR body. This file is read by the bot
-	// after the AI session completes.
+	// where the AI agent may write a PR title and description. The
+	// bot parses this file after the AI session completes, trying
+	// labeled titles ("Title: ..."), heading sections ("## Title"),
+	// and first-line fallback to extract the PR title.
 	PRDescriptionPath = ".ai-bot/pr.md"
 
 	// AttachmentsDirPath is the path, relative to the workspace
