@@ -2019,10 +2019,70 @@ func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNum
 	return allComments, nil
 }
 
-// GetPRComments returns all PR comments (both line-based review comments
-// and general conversation comments), converted to models.PRComment.
-// If since is non-zero, only comments created after that timestamp are
-// returned.
+// listPRReviewBodies fetches PR reviews and returns non-empty review
+// bodies as GitHubPRComment entries. Review bodies are the top-level
+// text submitted with a review (e.g., CodeRabbit's summary with
+// inline nitpicks). These are distinct from line-level review comments.
+func (s *GitHubServiceImpl) listPRReviewBodies(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	var allReviews []*github.PullRequestReview
+	page := 1
+	perPage := 100
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		opts := &github.ListOptions{Page: page, PerPage: perPage}
+		reviews, _, err := ghClient.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list PR reviews: %w", err)
+		}
+
+		allReviews = append(allReviews, reviews...)
+		if len(reviews) < perPage {
+			break
+		}
+		page++
+		if page > maxPaginationPages {
+			break
+		}
+	}
+
+	var result []models.GitHubPRComment
+	for _, r := range allReviews {
+		body := strings.TrimSpace(r.GetBody())
+		if body == "" {
+			continue
+		}
+		user := r.GetUser()
+		login := ""
+		if user != nil {
+			login = user.GetLogin()
+		}
+		result = append(result, models.GitHubPRComment{
+			ID:        r.GetID(),
+			User:      models.GitHubUser{Login: login},
+			Body:      body,
+			CreatedAt: r.GetSubmittedAt().Time,
+		})
+	}
+
+	return result, nil
+}
+
+// GetPRComments returns all PR comments (line-based review comments,
+// general conversation comments, and review bodies), converted to
+// models.PRComment. If since is non-zero, only comments created after
+// that timestamp are returned.
 func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
 	// Get line-based review comments from pulls endpoint
 	reviewComments, err := s.listPRReviewComments(owner, repo, number)
@@ -2036,18 +2096,26 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 		return nil, fmt.Errorf("failed to get conversation comments: %w", err)
 	}
 
+	// Get review bodies (top-level text submitted with PR reviews)
+	reviewBodies, err := s.listPRReviewBodies(owner, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get review bodies: %w", err)
+	}
+
 	s.logger.Debug("Retrieved PR comments",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", number),
 		zap.Int("review_comments", len(reviewComments)),
 		zap.Int("conversation_comments", len(conversationComments)),
-		zap.Int("total_comments", len(reviewComments)+len(conversationComments)))
+		zap.Int("review_bodies", len(reviewBodies)),
+		zap.Int("total_comments", len(reviewComments)+len(conversationComments)+len(reviewBodies)))
 
 	// Convert to models.PRComment and apply the since filter.
-	// Review comments and conversation comments are converted
-	// separately so IsReviewComment is set correctly.
-	result := make([]models.PRComment, 0, len(reviewComments)+len(conversationComments))
+	// Each source is converted separately so IsReviewComment is set
+	// correctly.
+	total := len(reviewComments) + len(conversationComments) + len(reviewBodies)
+	result := make([]models.PRComment, 0, total)
 	for _, c := range reviewComments {
 		if !since.IsZero() && !c.CreatedAt.After(since) {
 			continue
@@ -2067,6 +2135,20 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 		})
 	}
 	for _, c := range conversationComments {
+		if !since.IsZero() && !c.CreatedAt.After(since) {
+			continue
+		}
+		result = append(result, models.PRComment{
+			ID: c.ID,
+			Author: models.Author{
+				Name:     c.User.Login,
+				Username: c.User.Login,
+			},
+			Body:      c.Body,
+			Timestamp: c.CreatedAt,
+		})
+	}
+	for _, c := range reviewBodies {
 		if !since.IsZero() && !c.CreatedAt.After(since) {
 			continue
 		}
