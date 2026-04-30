@@ -219,6 +219,33 @@ func TestExecuteFeedback_NoChanges(t *testing.T) {
 	}
 }
 
+func TestExecuteFeedback_NoChanges_WithCommentResponses(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
+		return false, nil
+	}
+
+	writeCommentResponses(t, d.wsDir, `[
+		{"comment_id": 1, "response": "No code changes needed — this is already handled."}
+	]`)
+
+	var repliedTo []int64
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
+		repliedTo = append(repliedTo, commentID)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("expected no error when comment responses exist, got %v", err)
+	}
+	if len(repliedTo) != 1 || repliedTo[0] != 1 {
+		t.Errorf("expected reply to comment 1, got %v", repliedTo)
+	}
+}
+
 // --- AI timeout ---
 
 func TestExecuteFeedback_SessionTimeout(t *testing.T) {

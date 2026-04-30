@@ -208,6 +208,18 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("check changes: %w", err)
 	}
 	if !hasChanges {
+		aiResponses := readCommentResponses(wsPath)
+		if aiResponses != nil {
+			logger.Info("AI produced no code changes but provided comment responses")
+			p.replyToComments(logger, settings, prDetails, newComments, "", aiResponses)
+			p.postOrUpdateCostComment(logger,
+				settings.Repos[0].Owner, settings.Repos[0].Repo,
+				prDetails.Number, result.CostUSD, "Feedback")
+			return result, nil
+		}
+		p.postOrUpdateCostComment(logger,
+			settings.Repos[0].Owner, settings.Repos[0].Repo,
+			prDetails.Number, result.CostUSD, "Feedback")
 		return result, fmt.Errorf("AI produced no changes (exit code: %d)", exitCode)
 	}
 
@@ -224,6 +236,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 			p.replyUnableToAddress(logger, settings, prDetails, newComments)
 			return result, nil
 		}
+		p.postOrUpdateCostComment(logger,
+			settings.Repos[0].Owner, settings.Repos[0].Repo,
+			prDetails.Number, result.CostUSD, "Feedback")
 		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
 	}
 	if err != nil {
@@ -454,17 +469,18 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		finalAttempt: p.isFinalAttempt(job.AttemptNum),
 		repoInfos:    repoInfos,
 	})
+
+	// Post cost on the first PR regardless of outcome.
+	p.postOrUpdateCostComment(logger,
+		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
+		repoInfos[0].pr.Number, result.CostUSD, "Feedback")
+
 	if err != nil {
 		return result, err
 	}
 	if !committed {
 		return result, nil
 	}
-
-	// Post cost on the first PR only to avoid double-counting.
-	p.postOrUpdateCostComment(logger,
-		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
-		repoInfos[0].pr.Number, result.CostUSD, "Feedback")
 
 	result.PRURL = repoInfos[0].pr.URL
 	result.PRNumber = repoInfos[0].pr.Number
@@ -614,6 +630,15 @@ func (p *Pipeline) commitMultiRepoFeedback(
 		}
 	}
 	if !anyChanges {
+		aiResponses := readCommentResponses(params.wsPath)
+		if aiResponses != nil {
+			logger.Info("AI produced no code changes but provided comment responses")
+			for _, ri := range params.repoInfos {
+				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+					ri.pr, ri.newCmts, "", aiResponses)
+			}
+			return false, nil
+		}
 		if params.finalAttempt {
 			logger.Info("Final attempt produced no changes, posting unable-to-address replies")
 			for _, ri := range params.repoInfos {
@@ -719,12 +744,17 @@ func (p *Pipeline) replyToCommentsOnRepo(
 
 	for _, c := range comments {
 		var replyBody string
-		if sha == "unable" {
+		switch {
+		case sha == "unable":
 			replyBody = "I was unable to produce code changes to address this comment after multiple attempts."
-		} else if summary, ok := responses[c.ID]; ok {
-			replyBody = fmt.Sprintf("%s\n\nAddressed in %s.", summary, sha)
-		} else {
+		case sha != "" && responses[c.ID] != "":
+			replyBody = fmt.Sprintf("%s\n\nAddressed in %s.", responses[c.ID], sha)
+		case sha != "":
 			replyBody = fmt.Sprintf("Addressed in %s.", sha)
+		case responses[c.ID] != "":
+			replyBody = responses[c.ID]
+		default:
+			replyBody = "Reviewed — no code changes needed."
 		}
 
 		if c.IsReviewComment {
@@ -851,9 +881,15 @@ func (p *Pipeline) replyToComments(
 	for _, c := range comments {
 		var replyBody string
 		if summary, ok := aiResponses[c.ID]; ok {
-			replyBody = fmt.Sprintf("%s\n\nAddressed in %s.", summary, shortSHA)
-		} else {
+			if shortSHA != "" {
+				replyBody = fmt.Sprintf("%s\n\nAddressed in %s.", summary, shortSHA)
+			} else {
+				replyBody = summary
+			}
+		} else if shortSHA != "" {
 			replyBody = fmt.Sprintf("Addressed in %s.", shortSHA)
+		} else {
+			replyBody = "Reviewed — no code changes needed."
 		}
 
 		if c.IsReviewComment {
