@@ -88,7 +88,7 @@ func main() {
 		containerRunner,
 		containerResolver,
 		container.RuntimeManagerConfig{
-			NamePrefix: "ai-bot",
+			NamePrefix: config.GitHub.BotUsername,
 		},
 		logger)
 	if err != nil {
