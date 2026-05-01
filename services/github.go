@@ -2072,6 +2072,7 @@ func (s *GitHubServiceImpl) listPRReviewBodies(owner, repo string, prNumber int)
 			ID:        r.GetID(),
 			User:      models.GitHubUser{Login: login},
 			Body:      body,
+			HTMLURL:   r.GetHTMLURL(),
 			CreatedAt: r.GetSubmittedAt().Time,
 		})
 	}
@@ -2129,6 +2130,7 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 			Body:            c.Body,
 			FilePath:        c.Path,
 			Line:            c.Line,
+			URL:             c.HTMLURL,
 			Timestamp:       c.CreatedAt,
 			InReplyTo:       c.InReplyToID,
 			IsReviewComment: true,
@@ -2145,6 +2147,7 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 				Username: c.User.Login,
 			},
 			Body:      c.Body,
+			URL:       c.HTMLURL,
 			Timestamp: c.CreatedAt,
 		})
 	}
@@ -2159,6 +2162,7 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 				Username: c.User.Login,
 			},
 			Body:      c.Body,
+			URL:       c.HTMLURL,
 			Timestamp: c.CreatedAt,
 		})
 	}

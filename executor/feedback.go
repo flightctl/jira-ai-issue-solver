@@ -764,7 +764,8 @@ func (p *Pipeline) replyToCommentsOnRepo(
 					zap.Error(err))
 			}
 		} else {
-			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			contextual := conversationReplyBody(c, replyBody)
+			markedBody := fmt.Sprintf("%s\n%s", contextual, commentfilter.AddressedMarker(c.ID))
 			if err := p.git.PostIssueComment(owner, repo, pr.Number, markedBody); err != nil {
 				logger.Warn("Failed to reply to conversation comment",
 					zap.Int64("comment_id", c.ID),
@@ -900,10 +901,8 @@ func (p *Pipeline) replyToComments(
 					zap.Error(err))
 			}
 		} else {
-			// Conversation comments don't support threading, so
-			// embed a marker that CategorizeComments can parse to
-			// detect addressed comments.
-			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			contextual := conversationReplyBody(c, replyBody)
+			markedBody := fmt.Sprintf("%s\n%s", contextual, commentfilter.AddressedMarker(c.ID))
 			if err := p.git.PostIssueComment(
 				settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, markedBody); err != nil {
 				logger.Warn("Failed to reply to conversation comment",
@@ -943,7 +942,8 @@ func (p *Pipeline) replyUnableToAddress(
 					zap.Error(err))
 			}
 		} else {
-			markedBody := fmt.Sprintf("%s\n%s", replyBody, commentfilter.AddressedMarker(c.ID))
+			contextual := conversationReplyBody(c, replyBody)
+			markedBody := fmt.Sprintf("%s\n%s", contextual, commentfilter.AddressedMarker(c.ID))
 			if err := p.git.PostIssueComment(
 				settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, markedBody); err != nil {
 				logger.Warn("Failed to reply to conversation comment",
@@ -952,6 +952,26 @@ func (p *Pipeline) replyUnableToAddress(
 			}
 		}
 	}
+}
+
+// conversationReplyBody builds a reply to a conversation comment with
+// context linking back to the original. Review comments don't need
+// this because GitHub threads them automatically.
+func conversationReplyBody(c models.PRComment, response string) string {
+	var b strings.Builder
+
+	if c.URL != "" {
+		fmt.Fprintf(&b, "In [comment](%s), @%s said:\n\n", c.URL, c.Author.Username)
+	} else {
+		fmt.Fprintf(&b, "@%s said:\n\n", c.Author.Username)
+	}
+
+	for _, line := range strings.Split(strings.TrimRight(c.Body, "\n"), "\n") {
+		fmt.Fprintf(&b, "> %s\n", line)
+	}
+
+	fmt.Fprintf(&b, "\n%s", response)
+	return b.String()
 }
 
 // normalizeUsername strips the GitHub [bot] suffix and lowercases
