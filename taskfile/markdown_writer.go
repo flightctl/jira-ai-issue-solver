@@ -54,11 +54,11 @@ func (w *MarkdownWriter) WriteNewTicketTask(workItem models.WorkItem, dir, overr
 
 	writeNewTicketInstructions(&b, workItem.HasSecurityLevel())
 
-	if err := appendInstructions(&b, dir, overrideInstructions); err != nil {
+	if err := appendInstructions(&b, dir, overrideInstructions, 2); err != nil {
 		return err
 	}
 
-	if err := appendWorkflow(&b, dir, overrideWorkflow); err != nil {
+	if err := appendWorkflow(&b, dir, overrideWorkflow, 2); err != nil {
 		return err
 	}
 
@@ -94,11 +94,11 @@ func (w *MarkdownWriter) WriteFeedbackTask(
 
 	writeFeedbackInstructions(&b, len(newComments) > 0, len(ciFailures) > 0)
 
-	if err := appendInstructions(&b, dir, overrideInstructions); err != nil {
+	if err := appendInstructions(&b, dir, overrideInstructions, 2); err != nil {
 		return err
 	}
 
-	if err := appendFeedbackWorkflow(&b, dir, overrideWorkflow); err != nil {
+	if err := appendFeedbackWorkflow(&b, dir, overrideWorkflow, 2); err != nil {
 		return err
 	}
 
@@ -116,10 +116,10 @@ func (w *MarkdownWriter) WriteMultiRepoNewTicketTask(workItem models.WorkItem, w
 
 	for _, repo := range repos {
 		fmt.Fprintf(&b, "\n## Repository: %s\n", repo.Name)
-		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions); err != nil {
+		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions, 3); err != nil {
 			return err
 		}
-		if err := appendWorkflow(&b, repo.Dir, repo.OverrideNewTicketWorkflow); err != nil {
+		if err := appendWorkflow(&b, repo.Dir, repo.OverrideNewTicketWorkflow, 3); err != nil {
 			return err
 		}
 	}
@@ -158,10 +158,10 @@ func (w *MarkdownWriter) WriteMultiRepoFeedbackTask(
 
 	for _, repo := range repos {
 		fmt.Fprintf(&b, "\n## Repository: %s\n", repo.Name)
-		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions); err != nil {
+		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions, 3); err != nil {
 			return err
 		}
-		if err := appendFeedbackWorkflow(&b, repo.Dir, repo.OverrideFeedbackWorkflow); err != nil {
+		if err := appendFeedbackWorkflow(&b, repo.Dir, repo.OverrideFeedbackWorkflow, 3); err != nil {
 			return err
 		}
 	}
@@ -319,7 +319,7 @@ func writeCIAnnotations(b *strings.Builder, annotations []models.CheckAnnotation
 // enabling rapid prototyping without committing to the source repo.
 // If no override is set, .ai-bot/instructions.md from the workspace
 // is used. If both are empty, nothing is appended.
-func appendInstructions(b *strings.Builder, dir, override string) error {
+func appendInstructions(b *strings.Builder, dir, override string, level int) error {
 	content := strings.TrimSpace(override)
 
 	if content == "" {
@@ -337,7 +337,7 @@ func appendInstructions(b *strings.Builder, dir, override string) error {
 		return nil
 	}
 
-	b.WriteString("\n## Project Instructions\n")
+	fmt.Fprintf(b, "\n%s Project Instructions\n", strings.Repeat("#", level))
 	b.WriteString(content)
 	b.WriteString("\n")
 
@@ -349,7 +349,7 @@ func appendInstructions(b *strings.Builder, dir, override string) error {
 // is set, .ai-bot/new-ticket-workflow.md from the workspace is used.
 // If both are empty, nothing is appended. Only called for new-ticket
 // task files — feedback tasks use appendFeedbackWorkflow.
-func appendWorkflow(b *strings.Builder, dir, override string) error {
+func appendWorkflow(b *strings.Builder, dir, override string, level int) error {
 	content := strings.TrimSpace(override)
 
 	if content == "" {
@@ -367,7 +367,7 @@ func appendWorkflow(b *strings.Builder, dir, override string) error {
 		return nil
 	}
 
-	b.WriteString("\n## Workflow\n")
+	fmt.Fprintf(b, "\n%s Workflow\n", strings.Repeat("#", level))
 	b.WriteString(content)
 	b.WriteString("\n")
 
@@ -380,7 +380,7 @@ func appendWorkflow(b *strings.Builder, dir, override string) error {
 // from the workspace is used. If both are empty, nothing is appended.
 // Only called for feedback task files — new-ticket tasks use
 // appendWorkflow.
-func appendFeedbackWorkflow(b *strings.Builder, dir, override string) error {
+func appendFeedbackWorkflow(b *strings.Builder, dir, override string, level int) error {
 	content := strings.TrimSpace(override)
 
 	if content == "" {
@@ -398,7 +398,7 @@ func appendFeedbackWorkflow(b *strings.Builder, dir, override string) error {
 		return nil
 	}
 
-	b.WriteString("\n## Workflow\n")
+	fmt.Fprintf(b, "\n%s Workflow\n", strings.Repeat("#", level))
 	b.WriteString(content)
 	b.WriteString("\n")
 

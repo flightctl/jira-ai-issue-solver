@@ -1269,8 +1269,37 @@ func TestWriteMultiRepoNewTicketTask_WorkflowOverride(t *testing.T) {
 
 	content := readTaskFile(t, wsDir)
 
-	assertContains(t, content, "## Workflow")
+	assertContains(t, content, "### Workflow")
+	assertNotContains(t, content, "\n## Workflow\n")
 	assertContains(t, content, "1. Assess")
+}
+
+func TestWriteMultiRepoNewTicketTask_SubHeadingLevels(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "svc")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeInstructions(t, repoDir, "Repo instructions")
+
+	workItem := models.WorkItem{Key: "PROJ-5", Summary: "Heading level test"}
+	repos := []taskfile.RepoContext{
+		{Name: "svc", Dir: repoDir, OverrideNewTicketWorkflow: "Do the workflow"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Repository: svc")
+	assertContains(t, content, "### Project Instructions")
+	assertNotContains(t, content, "\n## Project Instructions\n")
+	assertContains(t, content, "### Workflow")
+	assertNotContains(t, content, "\n## Workflow\n")
 }
 
 // --- WriteMultiRepoFeedbackTask ---
@@ -1317,6 +1346,40 @@ func TestWriteMultiRepoFeedbackTask_PerRepoSections(t *testing.T) {
 	assertContains(t, content, "## Repository: backend")
 	assertContains(t, content, "Backend validation")
 	assertContains(t, content, "Feedback workflow steps")
+}
+
+func TestWriteMultiRepoFeedbackTask_SubHeadingLevels(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "api")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeInstructions(t, repoDir, "API instructions")
+
+	prDetails := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
+	comments := []models.PRComment{{
+		ID:     1,
+		Body:   "Fix this",
+		Author: models.Author{Username: "reviewer"},
+	}}
+
+	repos := []taskfile.RepoContext{
+		{Name: "api", Dir: repoDir, OverrideFeedbackWorkflow: "Feedback steps"},
+	}
+
+	if err := writer.WriteMultiRepoFeedbackTask(prDetails, comments, nil, nil, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Repository: api")
+	assertContains(t, content, "### Project Instructions")
+	assertNotContains(t, content, "\n## Project Instructions\n")
+	assertContains(t, content, "### Workflow")
+	assertNotContains(t, content, "\n## Workflow\n")
 }
 
 // --- helpers ---
