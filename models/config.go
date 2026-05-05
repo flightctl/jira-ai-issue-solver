@@ -562,6 +562,12 @@ type GuardrailsConfig struct {
 	// fix CI failures on a single PR. Zero disables CI failure
 	// detection entirely. Negative means unlimited attempts.
 	MaxCIFixAttempts int `yaml:"max_ci_fix_attempts" mapstructure:"max_ci_fix_attempts" default:"3"`
+
+	// RetryLabel is the Jira label that users can add to a ticket to
+	// trigger a retry after the bot has exhausted its retry limit.
+	// The scanner detects the label, resets the retry count, removes
+	// the label, and resubmits the ticket. Empty disables the feature.
+	RetryLabel string `yaml:"retry_label" mapstructure:"retry_label" default:"ai-retry"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -704,6 +710,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.circuit_breaker_window_minutes")
 	bindEnv("guardrails.circuit_breaker_cooldown_minutes")
 	bindEnv("guardrails.max_ci_fix_attempts")
+	bindEnv("guardrails.retry_label")
 
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
@@ -930,6 +937,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.circuit_breaker_window_minutes", 10)
 	v.SetDefault("guardrails.circuit_breaker_cooldown_minutes", 5)
 	v.SetDefault("guardrails.max_ci_fix_attempts", 3)
+	v.SetDefault("guardrails.retry_label", "ai-retry")
 }
 
 // validate validates the entire configuration

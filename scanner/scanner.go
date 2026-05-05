@@ -60,6 +60,17 @@ type JobSubmitter interface {
 	Submit(event jobmanager.Event) (*jobmanager.Job, error)
 }
 
+// RetryResetter clears a ticket's failure count so it can be
+// resubmitted after exhausting the retry limit.
+type RetryResetter interface {
+	ResetRetries(ticketKey string) error
+}
+
+// LabelRemover removes labels from work items.
+type LabelRemover interface {
+	RemoveLabel(key, label string) error
+}
+
 // PRFetcher retrieves PR details and comments from GitHub.
 type PRFetcher interface {
 	// GetPRForBranch finds the open pull request whose head

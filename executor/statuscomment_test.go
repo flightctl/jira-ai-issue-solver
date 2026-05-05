@@ -14,7 +14,7 @@ func TestFormatStatusComment(t *testing.T) {
 	jobErr := errors.New("container exited with code 1")
 
 	t.Run("includes marker and attempt info", func(t *testing.T) {
-		body := formatStatusComment(2, 3, jobErr, now)
+		body := formatStatusComment(2, 3, "ai-retry", jobErr, now)
 
 		for _, want := range []string{
 			statusCommentMarker,
@@ -29,13 +29,38 @@ func TestFormatStatusComment(t *testing.T) {
 	})
 
 	t.Run("negative maxRetries omits total", func(t *testing.T) {
-		body := formatStatusComment(3, -1, jobErr, now)
+		body := formatStatusComment(3, -1, "", jobErr, now)
 
 		if !strings.Contains(body, "attempt 3)") {
 			t.Errorf("body should show attempt without total, got:\n%s", body)
 		}
 		if strings.Contains(body, " of ") {
 			t.Errorf("body should not contain 'of' when retries are unlimited, got:\n%s", body)
+		}
+	})
+
+	t.Run("retry hint shown when exhausted", func(t *testing.T) {
+		body := formatStatusComment(4, 3, "ai-retry", jobErr, now)
+
+		want := `add the label "ai-retry"`
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing retry hint %q, got:\n%s", want, body)
+		}
+	})
+
+	t.Run("no retry hint before exhaustion", func(t *testing.T) {
+		body := formatStatusComment(2, 3, "ai-retry", jobErr, now)
+
+		if strings.Contains(body, "add the label") {
+			t.Errorf("body should not contain retry hint before exhaustion, got:\n%s", body)
+		}
+	})
+
+	t.Run("no retry hint when label empty", func(t *testing.T) {
+		body := formatStatusComment(4, 3, "", jobErr, now)
+
+		if strings.Contains(body, "add the label") {
+			t.Errorf("body should not contain retry hint when label is empty, got:\n%s", body)
 		}
 	})
 }

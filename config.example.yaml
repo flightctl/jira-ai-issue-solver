@@ -377,3 +377,9 @@ guardrails:
   # single PR. Set to 0 to disable CI failure detection entirely.
   # Set to -1 for unlimited attempts.
   max_ci_fix_attempts: 3
+
+  # Jira label that users can add to a ticket to trigger a retry after
+  # the bot has exhausted its retry limit. The scanner detects the label,
+  # resets the retry count, removes the label, and resubmits the ticket.
+  # Set to empty string to disable the feature.
+  retry_label: "ai-retry"

@@ -20,6 +20,8 @@ var (
 	_ scanner.CIChecker           = (*StubCIChecker)(nil)
 	_ scanner.WorkspaceCleaner    = (*StubWorkspaceCleaner)(nil)
 	_ scanner.TicketStatusChecker = (*StubTicketStatusChecker)(nil)
+	_ scanner.LabelRemover        = (*StubLabelRemover)(nil)
+	_ scanner.RetryResetter       = (*StubRetryResetter)(nil)
 )
 
 // StubScanner is a test double for [scanner.Scanner].
@@ -69,6 +71,18 @@ func (s *StubJobSubmitter) Submit(event jobmanager.Event) (*jobmanager.Job, erro
 		return s.SubmitFunc(event)
 	}
 	return &jobmanager.Job{}, nil
+}
+
+// StubRetryResetter is a test double for [scanner.RetryResetter].
+type StubRetryResetter struct {
+	ResetRetriesFunc func(ticketKey string) error
+}
+
+func (s *StubRetryResetter) ResetRetries(ticketKey string) error {
+	if s.ResetRetriesFunc != nil {
+		return s.ResetRetriesFunc(ticketKey)
+	}
+	return nil
 }
 
 // StubPRFetcher is a test double for [scanner.PRFetcher].
@@ -161,4 +175,16 @@ func (s *StubTicketStatusChecker) GetWorkItem(key string) (*models.WorkItem, err
 		return s.GetWorkItemFunc(key)
 	}
 	return &models.WorkItem{}, nil
+}
+
+// StubLabelRemover is a test double for [scanner.LabelRemover].
+type StubLabelRemover struct {
+	RemoveLabelFunc func(key, label string) error
+}
+
+func (s *StubLabelRemover) RemoveLabel(key, label string) error {
+	if s.RemoveLabelFunc != nil {
+		return s.RemoveLabelFunc(key, label)
+	}
+	return nil
 }

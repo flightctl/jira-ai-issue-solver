@@ -47,6 +47,9 @@ type IssueTracker interface {
 	// DeleteComment removes a comment from a work item.
 	DeleteComment(key, commentID string) error
 
+	// RemoveLabel removes a label from a work item.
+	RemoveLabel(key, label string) error
+
 	// SetFieldValue writes a string value to a named field on a work item.
 	SetFieldValue(key, field, value string) error
 

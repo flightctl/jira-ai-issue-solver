@@ -21,6 +21,7 @@ type Stub struct {
 	GetCommentsFunc             func(key string) ([]models.JiraComment, error)
 	UpdateCommentFunc           func(key, commentID, body string) error
 	DeleteCommentFunc           func(key, commentID string) error
+	RemoveLabelFunc             func(key, label string) error
 	UpdateTicketFieldByNameFunc func(key string, fieldName string, value interface{}) error
 	GetFieldIDByNameFunc        func(fieldName string) (string, error)
 	DownloadAttachmentFunc      func(url string) ([]byte, error)
@@ -78,6 +79,13 @@ func (s *Stub) UpdateComment(key, commentID, body string) error {
 func (s *Stub) DeleteComment(key, commentID string) error {
 	if s.DeleteCommentFunc != nil {
 		return s.DeleteCommentFunc(key, commentID)
+	}
+	return nil
+}
+
+func (s *Stub) RemoveLabel(key, label string) error {
+	if s.RemoveLabelFunc != nil {
+		return s.RemoveLabelFunc(key, label)
 	}
 	return nil
 }

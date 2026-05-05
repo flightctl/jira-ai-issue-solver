@@ -144,6 +144,7 @@ func main() {
 			MaxRetries:         config.Guardrails.MaxRetries,
 			IgnoredCheckNames:  config.GitHub.IgnoredCheckNames,
 			MaxCIFixAttempts:   config.Guardrails.MaxCIFixAttempts,
+			RetryLabel:         config.Guardrails.RetryLabel,
 			GeminiPricing: executor.GeminiPricing{
 				InputPerMTok:  config.Gemini.InputPricePerMTok,
 				OutputPerMTok: config.Gemini.OutputPricePerMTok,
@@ -217,6 +218,9 @@ func main() {
 	ticketScanner, err := scanner.NewWorkItemScanner(
 		issueTracker,
 		coordinator,
+		coordinator,
+		issueTracker,
+		config.Guardrails.RetryLabel,
 		scanner.WorkItemScannerConfig{
 			Criteria:     todoCriteria,
 			PollInterval: time.Duration(config.Jira.IntervalSeconds) * time.Second,

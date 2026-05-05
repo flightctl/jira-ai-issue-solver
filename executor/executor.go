@@ -270,6 +270,10 @@ type Config struct {
 	// MaxCIFixAttempts limits CI fix attempts per PR. Zero
 	// disables CI failure detection. Negative means unlimited.
 	MaxCIFixAttempts int
+
+	// RetryLabel is the Jira label users add to request a retry
+	// after exhaustion. Included in the status comment hint.
+	RetryLabel string
 }
 
 // ClaudeVertexConfig holds Vertex AI authentication settings for

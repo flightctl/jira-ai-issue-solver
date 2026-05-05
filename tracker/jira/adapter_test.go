@@ -1152,3 +1152,47 @@ func TestAdapter_DeleteComment(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// RemoveLabel
+// ---------------------------------------------------------------------------
+
+func TestAdapter_RemoveLabel(t *testing.T) {
+	t.Run("delegates to client", func(t *testing.T) {
+		var gotKey, gotLabel string
+		mock := &jiratest.Stub{
+			RemoveLabelFunc: func(key, label string) error {
+				gotKey, gotLabel = key, label
+				return nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.RemoveLabel("PROJ-1", "ai-retry")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotKey != "PROJ-1" || gotLabel != "ai-retry" {
+			t.Errorf("got (%q, %q), want (PROJ-1, ai-retry)", gotKey, gotLabel)
+		}
+	})
+
+	t.Run("wraps error", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			RemoveLabelFunc: func(key, label string) error {
+				return errors.New("forbidden")
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.RemoveLabel("PROJ-1", "ai-retry")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "forbidden") {
+			t.Errorf("error = %q, want to contain 'forbidden'", err.Error())
+		}
+	})
+}

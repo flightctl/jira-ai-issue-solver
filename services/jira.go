@@ -455,6 +455,31 @@ func (s *JiraServiceImpl) DeleteComment(key, commentID string) error {
 	return nil
 }
 
+// RemoveLabel removes a single label from a ticket without affecting
+// other labels. Uses the Jira update operation syntax.
+func (s *JiraServiceImpl) RemoveLabel(key, label string) error {
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s", s.config.Jira.BaseURL, key)
+
+	payload := map[string]any{
+		"update": map[string]any{
+			"labels": []map[string]string{
+				{"remove": label},
+			},
+		},
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal remove label payload: %w", err)
+	}
+
+	if _, err := s.doPut(url, bytes.NewReader(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to remove label: %w", err)
+	}
+
+	return nil
+}
+
 // UpdateTicketField updates a specific field of a ticket
 func (s *JiraServiceImpl) UpdateTicketField(key string, fieldID string, value interface{}) error {
 	url := fmt.Sprintf("%s/rest/api/3/issue/%s", s.config.Jira.BaseURL, key)

@@ -680,7 +680,7 @@ func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings 
 		return
 	}
 
-	body := formatStatusComment(attempt, p.cfg.MaxRetries, jobErr, time.Now())
+	body := formatStatusComment(attempt, p.cfg.MaxRetries, p.cfg.RetryLabel, jobErr, time.Now())
 
 	comments, err := p.tracker.GetComments(ticketKey)
 	if err != nil {

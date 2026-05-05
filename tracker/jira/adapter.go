@@ -30,6 +30,7 @@ type JiraClient interface {
 	GetComments(key string) ([]models.JiraComment, error)
 	UpdateComment(key, commentID, body string) error
 	DeleteComment(key, commentID string) error
+	RemoveLabel(key, label string) error
 	UpdateTicketFieldByName(key string, fieldName string, value interface{}) error
 	GetFieldIDByName(fieldName string) (string, error)
 	DownloadAttachment(url string) ([]byte, error)
@@ -185,6 +186,13 @@ func (a *Adapter) DownloadAttachment(url string) ([]byte, error) {
 		return nil, fmt.Errorf("download attachment: %w", err)
 	}
 	return data, nil
+}
+
+func (a *Adapter) RemoveLabel(key, label string) error {
+	if err := a.jira.RemoveLabel(key, label); err != nil {
+		return fmt.Errorf("remove label %q from %s: %w", label, key, err)
+	}
+	return nil
 }
 
 func (a *Adapter) SetFieldValue(key, field, value string) error {
