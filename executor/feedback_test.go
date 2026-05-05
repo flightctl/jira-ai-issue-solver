@@ -1300,3 +1300,97 @@ func TestMultiRepoFeedback_WritesMultiRepoFeedbackTask(t *testing.T) {
 		t.Error("WriteMultiRepoFeedbackTask was not called")
 	}
 }
+
+// --- Emoji reactions ---
+
+func TestExecuteFeedback_ReactsToNewComments(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc123", nil
+	}
+
+	var reacted []int64
+	d.git.AddCommentReactionFunc = func(_, _ string, comment models.PRComment, reaction string) error {
+		if reaction != "eyes" {
+			t.Errorf("reaction = %q, want eyes", reaction)
+		}
+		reacted = append(reacted, comment.ID)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reacted) != 1 || reacted[0] != 1 {
+		t.Errorf("reacted comment IDs = %v, want [1]", reacted)
+	}
+}
+
+func TestExecuteFeedback_ReactionFailureNonFatal(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc123", nil
+	}
+
+	d.git.AddCommentReactionFunc = func(_, _ string, _ models.PRComment, _ string) error {
+		return errors.New("reaction API error")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("reaction failure should not abort pipeline, got: %v", err)
+	}
+}
+
+func TestExecuteFeedback_NoReactionsWhenNoNewComments(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	d.git.AddCommentReactionFunc = func(_, _ string, _ models.PRComment, _ string) error {
+		t.Error("AddCommentReaction should not be called when there are no comments")
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, _ = p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+}
+
+func TestExecuteMultiRepoFeedback_ReactsPerRepo(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	type reactionCall struct {
+		repo      string
+		commentID int64
+	}
+	var reactions []reactionCall
+	d.git.AddCommentReactionFunc = func(_, repo string, comment models.PRComment, reaction string) error {
+		if reaction != "eyes" {
+			t.Errorf("reaction = %q, want eyes", reaction)
+		}
+		reactions = append(reactions, reactionCall{repo: repo, commentID: comment.ID})
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reactions) != 1 {
+		t.Fatalf("expected 1 reaction, got %d", len(reactions))
+	}
+	if reactions[0].repo != "svc-a" {
+		t.Errorf("reaction repo = %q, want svc-a", reactions[0].repo)
+	}
+	if reactions[0].commentID != 100 {
+		t.Errorf("reaction comment ID = %d, want 100", reactions[0].commentID)
+	}
+}

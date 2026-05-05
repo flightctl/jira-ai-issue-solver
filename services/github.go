@@ -1813,6 +1813,42 @@ func (s *GitHubServiceImpl) UpdateIssueComment(owner, repo string, commentID int
 	return nil
 }
 
+// AddCommentReaction adds an emoji reaction to a PR comment. For review
+// comments (file-level) the pull request reactions API is used; for
+// conversation comments the issue comment reactions API is used.
+func (s *GitHubServiceImpl) AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	if comment.IsReviewComment {
+		_, _, err = ghClient.Reactions.CreatePullRequestCommentReaction(ctx, owner, repo, comment.ID, reaction)
+	} else {
+		_, _, err = ghClient.Reactions.CreateIssueCommentReaction(ctx, owner, repo, comment.ID, reaction)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to add %s reaction to comment %d: %w", reaction, comment.ID, err)
+	}
+
+	s.logger.Debug("Added reaction to comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int64("comment_id", comment.ID),
+		zap.String("reaction", reaction),
+		zap.Bool("is_review_comment", comment.IsReviewComment))
+
+	return nil
+}
+
 // CloneImport clones an auxiliary repository into destDir. If ref is
 // non-empty, the specified branch/tag/commit is checked out. This is a
 // shallow clone (depth 1) since import repos are read-only references.

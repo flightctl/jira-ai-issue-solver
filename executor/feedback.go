@@ -106,6 +106,8 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, nil
 	}
 
+	p.reactToComments(logger, owner, repo, newComments)
+
 	// --- Step 7: Load repo config ---
 	repoCfg, err := repoconfig.Load(wsPath)
 	if err != nil {
@@ -339,6 +341,10 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if len(allNew) == 0 && len(allCIFailures) == 0 {
 		logger.Info("No new comments or CI failures to address across any repo")
 		return result, nil
+	}
+
+	for _, ri := range repoInfos {
+		p.reactToComments(logger, ri.repo.Owner, ri.repo.Repo, ri.newCmts)
 	}
 
 	// --- Step 7: Load repo configs and merge imports ---
@@ -856,7 +862,21 @@ func (p *Pipeline) handleFeedbackFailure(
 	}
 }
 
+// reactToComments adds an eyes emoji reaction to each comment to signal
+// that the bot has noticed the feedback and is working on it. Failures
+// are logged but not fatal — reactions are best-effort.
+func (p *Pipeline) reactToComments(logger *zap.Logger, owner, repo string, comments []models.PRComment) {
+	for _, c := range comments {
+		if err := p.git.AddCommentReaction(owner, repo, c, "eyes"); err != nil {
+			logger.Warn("Failed to add reaction to comment",
+				zap.Int64("comment_id", c.ID),
+				zap.Error(err))
+		}
+	}
+}
+
 // replyToComments posts a reply to each comment that was processed.
+//
 // When the AI provides a per-comment response summary (via
 // comment-responses.json), the reply includes that summary alongside
 // the commit reference. Otherwise, a generic "Addressed in <sha>"

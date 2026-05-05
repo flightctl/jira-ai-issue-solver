@@ -56,6 +56,7 @@ type StubGitService struct {
 	ListCheckRunsForRefFunc     func(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
 	ListCheckRunAnnotationsFunc func(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
 	GetFailedJobLogsFunc        func(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
+	AddCommentReactionFunc      func(owner, repo string, comment models.PRComment, reaction string) error
 }
 
 func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
@@ -203,6 +204,13 @@ func (s *StubGitService) GetFailedJobLogs(owner, repo, headSHA string, maxBytesP
 		return s.GetFailedJobLogsFunc(owner, repo, headSHA, maxBytesPerStep)
 	}
 	return map[string][]models.FailedStep{}, nil
+}
+
+func (s *StubGitService) AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error {
+	if s.AddCommentReactionFunc != nil {
+		return s.AddCommentReactionFunc(owner, repo, comment, reaction)
+	}
+	return nil
 }
 
 // StubProjectResolver is a test double for [executor.ProjectResolver].

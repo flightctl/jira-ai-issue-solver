@@ -178,6 +178,11 @@ type GitService interface {
 	// UpdateIssueComment edits an existing top-level comment on a PR.
 	UpdateIssueComment(owner, repo string, commentID int64, body string) error
 
+	// AddCommentReaction adds an emoji reaction to a PR comment. Uses
+	// the pull request reactions API for review comments and the issue
+	// comment reactions API for conversation comments.
+	AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error
+
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after
 	// cloning. Used to make shared resources (workflow skills,
