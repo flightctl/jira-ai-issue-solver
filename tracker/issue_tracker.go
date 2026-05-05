@@ -37,6 +37,16 @@ type IssueTracker interface {
 	// AddComment posts a comment to a work item.
 	AddComment(key, body string) error
 
+	// GetComments returns all comments on a work item.
+	// Returns an empty slice (not nil) when no comments exist.
+	GetComments(key string) ([]models.Comment, error)
+
+	// UpdateComment replaces the body of an existing comment.
+	UpdateComment(key, commentID, body string) error
+
+	// DeleteComment removes a comment from a work item.
+	DeleteComment(key, commentID string) error
+
 	// SetFieldValue writes a string value to a named field on a work item.
 	SetFieldValue(key, field, value string) error
 

@@ -1299,3 +1299,150 @@ func TestIsTextContentType(t *testing.T) {
 		})
 	}
 }
+
+func TestGetComments(t *testing.T) {
+	t.Run("returns comments", func(t *testing.T) {
+		body := `{"comments":[{"id":"1","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]},"author":{"displayName":"Bot"}}],"maxResults":50,"total":1,"startAt":0}`
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		comments, err := service.GetComments("TEST-1")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(comments) != 1 {
+			t.Fatalf("got %d comments, want 1", len(comments))
+		}
+		if comments[0].ID != "1" {
+			t.Errorf("comment ID = %q, want %q", comments[0].ID, "1")
+		}
+		if string(comments[0].Body) != "hello" {
+			t.Errorf("comment body = %q, want %q", comments[0].Body, "hello")
+		}
+	})
+
+	t.Run("returns empty slice for no comments", func(t *testing.T) {
+		body := `{"comments":null,"maxResults":50,"total":0,"startAt":0}`
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		comments, err := service.GetComments("TEST-1")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if comments == nil {
+			t.Fatal("expected non-nil slice")
+		}
+		if len(comments) != 0 {
+			t.Errorf("got %d comments, want 0", len(comments))
+		}
+	})
+
+	t.Run("returns error on failure", func(t *testing.T) {
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Not found"]}`))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		_, err := service.GetComments("TEST-1")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
+func TestUpdateComment(t *testing.T) {
+	t.Run("successful update", func(t *testing.T) {
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodPut {
+				t.Errorf("method = %s, want PUT", req.Method)
+			}
+			if !strings.Contains(req.URL.Path, "/comment/42") {
+				t.Errorf("path = %s, want to contain /comment/42", req.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		err := service.UpdateComment("TEST-1", "42", "updated text")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("returns error on failure", func(t *testing.T) {
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Forbidden"]}`))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		err := service.UpdateComment("TEST-1", "42", "text")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
+func TestDeleteComment(t *testing.T) {
+	t.Run("successful delete", func(t *testing.T) {
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodDelete {
+				t.Errorf("method = %s, want DELETE", req.Method)
+			}
+			if !strings.Contains(req.URL.Path, "/comment/42") {
+				t.Errorf("path = %s, want to contain /comment/42", req.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(bytes.NewReader([]byte(``))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		err := service.DeleteComment("TEST-1", "42")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("returns error on failure", func(t *testing.T) {
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Not found"]}`))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		err := service.DeleteComment("TEST-1", "42")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}

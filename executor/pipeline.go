@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -143,7 +144,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		}
 		// On failure: revert status and optionally post error comment.
 		if retErr != nil && statusTransitioned {
-			p.handleFailure(logger, job.TicketKey, settings, retErr)
+			p.handleFailure(logger, job.TicketKey, settings, job.AttemptNum, retErr)
 		}
 	}()
 
@@ -329,6 +330,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	// --- Step 17: Update ticket ---
 	p.setPRURL(logger, job.TicketKey, settings, pr.URL)
+	p.cleanupStatusComment(logger, job.TicketKey)
 	p.postOrUpdateCostComment(logger,
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
 		pr.Number, result.CostUSD, "New ticket")
@@ -643,9 +645,31 @@ func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *mode
 	}
 }
 
-// handleFailure reverts the ticket status and optionally posts an
-// error comment.
-func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, jobErr error) {
+// cleanupStatusComment removes any [AI-BOT-STATUS] comment from the
+// ticket. Called after a PR is created so that communication moves
+// entirely to the PR. Errors are logged but not propagated.
+func (p *Pipeline) cleanupStatusComment(logger *zap.Logger, ticketKey string) {
+	comments, err := p.tracker.GetComments(ticketKey)
+	if err != nil {
+		logger.Warn("Failed to fetch comments for status cleanup", zap.Error(err))
+		return
+	}
+
+	existing := findStatusComment(comments)
+	if existing == nil {
+		return
+	}
+
+	if err := p.tracker.DeleteComment(ticketKey, existing.ID); err != nil {
+		logger.Warn("Failed to delete status comment", zap.Error(err))
+	}
+}
+
+// handleFailure reverts the ticket status and upserts a status comment.
+// If a previous [AI-BOT-STATUS] comment exists, it is updated in place;
+// otherwise a new comment is created. This keeps at most one status
+// comment per ticket.
+func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, attempt int, jobErr error) {
 	if err := p.tracker.TransitionStatus(ticketKey, settings.TodoStatus); err != nil {
 		logger.Error("Failed to revert ticket status",
 			zap.String("target_status", settings.TodoStatus),
@@ -656,9 +680,26 @@ func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings 
 		return
 	}
 
-	comment := fmt.Sprintf("AI processing failed: %s", jobErr.Error())
-	if err := p.tracker.AddComment(ticketKey, comment); err != nil {
-		logger.Error("Failed to post error comment", zap.Error(err))
+	body := formatStatusComment(attempt, p.cfg.MaxRetries, jobErr, time.Now())
+
+	comments, err := p.tracker.GetComments(ticketKey)
+	if err != nil {
+		logger.Warn("Failed to fetch comments for status upsert, falling back to new comment", zap.Error(err))
+		if addErr := p.tracker.AddComment(ticketKey, body); addErr != nil {
+			logger.Error("Failed to post status comment", zap.Error(addErr))
+		}
+		return
+	}
+
+	if existing := findStatusComment(comments); existing != nil {
+		if err := p.tracker.UpdateComment(ticketKey, existing.ID, body); err != nil {
+			logger.Error("Failed to update status comment", zap.Error(err))
+		}
+		return
+	}
+
+	if err := p.tracker.AddComment(ticketKey, body); err != nil {
+		logger.Error("Failed to post status comment", zap.Error(err))
 	}
 }
 
@@ -910,6 +951,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	for _, pr := range prs {
 		p.setPRURL(logger, job.TicketKey, settings, pr.url)
 	}
+	p.cleanupStatusComment(logger, job.TicketKey)
 
 	// Post cost on the first PR only to avoid double-counting.
 	p.postOrUpdateCostComment(logger,

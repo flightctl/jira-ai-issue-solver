@@ -17,6 +17,9 @@ type Stub struct {
 	GetWorkItemFunc        func(key string) (*models.WorkItem, error)
 	TransitionStatusFunc   func(key, status string) error
 	AddCommentFunc         func(key, body string) error
+	GetCommentsFunc        func(key string) ([]models.Comment, error)
+	UpdateCommentFunc      func(key, commentID, body string) error
+	DeleteCommentFunc      func(key, commentID string) error
 	SetFieldValueFunc      func(key, field, value string) error
 	DownloadAttachmentFunc func(url string) ([]byte, error)
 }
@@ -45,6 +48,27 @@ func (s *Stub) TransitionStatus(key, status string) error {
 func (s *Stub) AddComment(key, body string) error {
 	if s.AddCommentFunc != nil {
 		return s.AddCommentFunc(key, body)
+	}
+	return nil
+}
+
+func (s *Stub) GetComments(key string) ([]models.Comment, error) {
+	if s.GetCommentsFunc != nil {
+		return s.GetCommentsFunc(key)
+	}
+	return []models.Comment{}, nil
+}
+
+func (s *Stub) UpdateComment(key, commentID, body string) error {
+	if s.UpdateCommentFunc != nil {
+		return s.UpdateCommentFunc(key, commentID, body)
+	}
+	return nil
+}
+
+func (s *Stub) DeleteComment(key, commentID string) error {
+	if s.DeleteCommentFunc != nil {
+		return s.DeleteCommentFunc(key, commentID)
 	}
 	return nil
 }

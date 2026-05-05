@@ -60,6 +60,18 @@ type Attachment struct {
 	URL string
 }
 
+// Comment represents a comment on a work item.
+type Comment struct {
+	// ID is the tracker-specific identifier for this comment.
+	ID string
+
+	// Body is the plain-text content of the comment.
+	Body string
+
+	// Author is the display name of the comment author.
+	Author string
+}
+
 // HasSecurityLevel reports whether this work item has a security level set.
 func (w WorkItem) HasSecurityLevel() bool {
 	return w.SecurityLevel != ""

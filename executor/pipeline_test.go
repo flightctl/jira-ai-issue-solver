@@ -657,6 +657,106 @@ func TestExecuteNewTicket_ErrorCommentsDisabled(t *testing.T) {
 	}
 }
 
+// --- Status comment upsert ---
+
+func TestExecuteNewTicket_StatusComment_CreatedOnFirstFailure(t *testing.T) {
+	d := newTestDeps(t)
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
+		return false, nil
+	}
+
+	var addedComment string
+	d.tracker.AddCommentFunc = func(key, body string) error {
+		addedComment = body
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		MaxRetries:      2,
+	})
+	_, _ = p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if !strings.Contains(addedComment, "[AI-BOT-STATUS]") {
+		t.Errorf("comment missing status marker, got:\n%s", addedComment)
+	}
+	if !strings.Contains(addedComment, "attempt 1 of 3") {
+		t.Errorf("comment missing attempt info, got:\n%s", addedComment)
+	}
+}
+
+func TestExecuteNewTicket_StatusComment_UpdatedOnRetry(t *testing.T) {
+	d := newTestDeps(t)
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
+		return false, nil
+	}
+
+	d.tracker.GetCommentsFunc = func(key string) ([]models.Comment, error) {
+		return []models.Comment{
+			{ID: "100", Body: "[AI-BOT-STATUS] AI processing failed (attempt 1 of 3)\n\nError: old"},
+		}, nil
+	}
+
+	var updatedID, updatedBody string
+	d.tracker.UpdateCommentFunc = func(key, commentID, body string) error {
+		updatedID = commentID
+		updatedBody = body
+		return nil
+	}
+
+	addCalled := false
+	d.tracker.AddCommentFunc = func(key, body string) error {
+		addCalled = true
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:     "ai-bot",
+		DefaultProvider: "claude",
+		MaxRetries:      2,
+	})
+	job := newTicketJob("PROJ-1")
+	job.AttemptNum = 2
+	_, _ = p.Execute(context.Background(), job)
+
+	if updatedID != "100" {
+		t.Errorf("expected comment 100 to be updated, got %q", updatedID)
+	}
+	if !strings.Contains(updatedBody, "attempt 2 of 3") {
+		t.Errorf("updated comment missing attempt info, got:\n%s", updatedBody)
+	}
+	if addCalled {
+		t.Error("should update existing comment, not add a new one")
+	}
+}
+
+func TestExecuteNewTicket_StatusComment_DeletedOnPRCreation(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.tracker.GetCommentsFunc = func(key string) ([]models.Comment, error) {
+		return []models.Comment{
+			{ID: "200", Body: "[AI-BOT-STATUS] AI processing failed (attempt 1 of 3)\n\nError: old"},
+		}, nil
+	}
+
+	var deletedID string
+	d.tracker.DeleteCommentFunc = func(key, commentID string) error {
+		deletedID = commentID
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deletedID != "200" {
+		t.Errorf("expected status comment 200 to be deleted, got %q", deletedID)
+	}
+}
+
 // --- Workspace reuse (retry scenario) ---
 
 func TestExecuteNewTicket_WorkspaceReused_SwitchesBranch(t *testing.T) {

@@ -992,3 +992,163 @@ func TestAdapter_SetFieldValue(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// GetComments
+// ---------------------------------------------------------------------------
+
+func TestAdapter_GetComments(t *testing.T) {
+	t.Run("maps JiraComment to Comment", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			GetCommentsFunc: func(key string) ([]models.JiraComment, error) {
+				return []models.JiraComment{
+					{ID: "10", Body: "hello", Author: models.JiraUser{DisplayName: "Bot"}},
+					{ID: "20", Body: "world", Author: models.JiraUser{DisplayName: "Human"}},
+				}, nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		comments, err := adapter.GetComments("PROJ-1")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(comments) != 2 {
+			t.Fatalf("got %d comments, want 2", len(comments))
+		}
+		if comments[0].ID != "10" || comments[0].Body != "hello" || comments[0].Author != "Bot" {
+			t.Errorf("comment[0] = %+v", comments[0])
+		}
+		if comments[1].ID != "20" || comments[1].Body != "world" || comments[1].Author != "Human" {
+			t.Errorf("comment[1] = %+v", comments[1])
+		}
+	})
+
+	t.Run("returns empty slice for no comments", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			GetCommentsFunc: func(key string) ([]models.JiraComment, error) {
+				return []models.JiraComment{}, nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		comments, err := adapter.GetComments("PROJ-1")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if comments == nil {
+			t.Fatal("expected non-nil slice")
+		}
+		if len(comments) != 0 {
+			t.Errorf("got %d comments, want 0", len(comments))
+		}
+	})
+
+	t.Run("wraps error", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			GetCommentsFunc: func(key string) ([]models.JiraComment, error) {
+				return nil, errors.New("api failure")
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		_, err := adapter.GetComments("PROJ-1")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "api failure") {
+			t.Errorf("error = %q, want to contain 'api failure'", err.Error())
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// UpdateComment
+// ---------------------------------------------------------------------------
+
+func TestAdapter_UpdateComment(t *testing.T) {
+	t.Run("delegates to client", func(t *testing.T) {
+		var gotKey, gotID, gotBody string
+		mock := &jiratest.Stub{
+			UpdateCommentFunc: func(key, commentID, body string) error {
+				gotKey, gotID, gotBody = key, commentID, body
+				return nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.UpdateComment("PROJ-1", "42", "new text")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotKey != "PROJ-1" || gotID != "42" || gotBody != "new text" {
+			t.Errorf("got (%q, %q, %q), want (PROJ-1, 42, new text)", gotKey, gotID, gotBody)
+		}
+	})
+
+	t.Run("wraps error", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			UpdateCommentFunc: func(key, commentID, body string) error {
+				return errors.New("forbidden")
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.UpdateComment("PROJ-1", "42", "text")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "forbidden") {
+			t.Errorf("error = %q, want to contain 'forbidden'", err.Error())
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// DeleteComment
+// ---------------------------------------------------------------------------
+
+func TestAdapter_DeleteComment(t *testing.T) {
+	t.Run("delegates to client", func(t *testing.T) {
+		var gotKey, gotID string
+		mock := &jiratest.Stub{
+			DeleteCommentFunc: func(key, commentID string) error {
+				gotKey, gotID = key, commentID
+				return nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.DeleteComment("PROJ-1", "42")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotKey != "PROJ-1" || gotID != "42" {
+			t.Errorf("got (%q, %q), want (PROJ-1, 42)", gotKey, gotID)
+		}
+	})
+
+	t.Run("wraps error", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			DeleteCommentFunc: func(key, commentID string) error {
+				return errors.New("not found")
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.DeleteComment("PROJ-1", "42")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error = %q, want to contain 'not found'", err.Error())
+		}
+	})
+}
