@@ -392,6 +392,7 @@ type Config struct {
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
 		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`           // List of usernames whose PR comments are completely ignored
+		IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`       // Check run names excluded from CI failure detection
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
@@ -556,6 +557,11 @@ type GuardrailsConfig struct {
 	// CircuitBreakerCooldownMinutes is how long (in minutes) the circuit
 	// breaker stays open before automatically resetting.
 	CircuitBreakerCooldownMinutes int `yaml:"circuit_breaker_cooldown_minutes" mapstructure:"circuit_breaker_cooldown_minutes" default:"5"`
+
+	// MaxCIFixAttempts limits how many times the bot will attempt to
+	// fix CI failures on a single PR. Zero disables CI failure
+	// detection entirely. Negative means unlimited attempts.
+	MaxCIFixAttempts int `yaml:"max_ci_fix_attempts" mapstructure:"max_ci_fix_attempts" default:"3"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -655,6 +661,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.max_thread_depth")
 	bindEnv("github.known_bot_usernames")
 	bindEnv("github.ignored_usernames")
+	bindEnv("github.ignored_check_names")
 
 	// AI configuration
 	bindEnv("ai_provider")
@@ -696,6 +703,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.circuit_breaker_threshold")
 	bindEnv("guardrails.circuit_breaker_window_minutes")
 	bindEnv("guardrails.circuit_breaker_cooldown_minutes")
+	bindEnv("guardrails.max_ci_fix_attempts")
 
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
@@ -921,6 +929,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.circuit_breaker_threshold", 5)
 	v.SetDefault("guardrails.circuit_breaker_window_minutes", 10)
 	v.SetDefault("guardrails.circuit_breaker_cooldown_minutes", 5)
+	v.SetDefault("guardrails.max_ci_fix_attempts", 3)
 }
 
 // validate validates the entire configuration

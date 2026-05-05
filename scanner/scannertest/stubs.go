@@ -17,6 +17,7 @@ var (
 	_ scanner.JobSubmitter        = (*StubJobSubmitter)(nil)
 	_ scanner.PRFetcher           = (*StubPRFetcher)(nil)
 	_ scanner.RepoLocator         = (*StubRepoLocator)(nil)
+	_ scanner.CIChecker           = (*StubCIChecker)(nil)
 	_ scanner.WorkspaceCleaner    = (*StubWorkspaceCleaner)(nil)
 	_ scanner.TicketStatusChecker = (*StubTicketStatusChecker)(nil)
 )
@@ -120,6 +121,18 @@ func (s *StubRepoLocator) ForkOwner(workItem models.WorkItem) string {
 		return s.ForkOwnerFunc(workItem)
 	}
 	return ""
+}
+
+// StubCIChecker is a test double for [scanner.CIChecker].
+type StubCIChecker struct {
+	ListCheckRunsForRefFunc func(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+}
+
+func (s *StubCIChecker) ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+	if s.ListCheckRunsForRefFunc != nil {
+		return s.ListCheckRunsForRefFunc(owner, repo, ref)
+	}
+	return []models.CheckRunFailure{}, true, nil
 }
 
 // StubWorkspaceCleaner is a test double for [scanner.WorkspaceCleaner].

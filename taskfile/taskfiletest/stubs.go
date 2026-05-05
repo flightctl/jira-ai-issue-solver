@@ -15,9 +15,9 @@ var _ taskfile.Writer = (*Stub)(nil)
 type Stub struct {
 	WriteIssueFunc                  func(workItem models.WorkItem, dir string, attachmentFiles []string) error
 	WriteNewTicketTaskFunc          func(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
-	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, overrideInstructions, overrideWorkflow string) error
+	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, dir, overrideInstructions, overrideWorkflow string) error
 	WriteMultiRepoNewTicketTaskFunc func(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error
-	WriteMultiRepoFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, wsDir string, repos []taskfile.RepoContext) error
+	WriteMultiRepoFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error
 }
 
 func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error {
@@ -34,9 +34,9 @@ func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, overrideInstruc
 	return nil
 }
 
-func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, overrideInstructions, overrideWorkflow string) error {
+func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, dir, overrideInstructions, overrideWorkflow string) error {
 	if s.WriteFeedbackTaskFunc != nil {
-		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, overrideInstructions, overrideWorkflow)
+		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, ciFailures, dir, overrideInstructions, overrideWorkflow)
 	}
 	return nil
 }
@@ -48,9 +48,9 @@ func (s *Stub) WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir strin
 	return nil
 }
 
-func (s *Stub) WriteMultiRepoFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, wsDir string, repos []taskfile.RepoContext) error {
+func (s *Stub) WriteMultiRepoFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error {
 	if s.WriteMultiRepoFeedbackTaskFunc != nil {
-		return s.WriteMultiRepoFeedbackTaskFunc(prDetails, newComments, addressedComments, wsDir, repos)
+		return s.WriteMultiRepoFeedbackTaskFunc(prDetails, newComments, addressedComments, ciFailures, wsDir, repos)
 	}
 	return nil
 }

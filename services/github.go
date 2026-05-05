@@ -2320,6 +2320,7 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 				Branch:     pr.GetHead().GetRef(),
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
+				HeadSHA:    pr.GetHead().GetSHA(),
 			}, nil
 		}
 	}

@@ -252,6 +252,13 @@ github:
   ignored_usernames:
     - "packit-as-a-service"
 
+  # Check run names to exclude from CI failure detection. Use for checks
+  # that are flaky, informational, or not fixable by code changes.
+  # Matched case-insensitively.
+  ignored_check_names:
+    # - "license/cla"
+    # - "codecov/patch"
+
 # AI Provider Selection (choose one: "claude" or "gemini")
 ai_provider: claude
 
@@ -365,3 +372,8 @@ guardrails:
   circuit_breaker_threshold: 5
   circuit_breaker_window_minutes: 10
   circuit_breaker_cooldown_minutes: 5
+
+  # Maximum number of times the bot will attempt to fix CI failures on a
+  # single PR. Set to 0 to disable CI failure detection entirely.
+  # Set to -1 for unlimited attempts.
+  max_ci_fix_attempts: 3

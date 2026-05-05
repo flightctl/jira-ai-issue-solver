@@ -134,11 +134,14 @@ type Writer interface {
 	// WriteFeedbackTask generates a task file for addressing PR review
 	// feedback. newComments are comments requiring action;
 	// addressedComments are previously handled comments included for
-	// context. The file is written to <dir>/.ai-bot/task.md.
-	// overrideInstructions takes precedence over .ai-bot/instructions.md.
-	// overrideWorkflow takes precedence over .ai-bot/feedback-workflow.md.
+	// context. ciFailures contains failed CI check runs with their
+	// annotations and step logs. The file is written to
+	// <dir>/.ai-bot/task.md. overrideInstructions takes precedence
+	// over .ai-bot/instructions.md. overrideWorkflow takes precedence
+	// over .ai-bot/feedback-workflow.md.
 	WriteFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
+		ciFailures []models.CheckRunFailure,
 		dir, overrideInstructions, overrideWorkflow string) error
 
 	// WriteMultiRepoNewTicketTask generates a task file for a multi-repo
@@ -153,5 +156,6 @@ type Writer interface {
 	// in each repo. The task file is written to <wsDir>/.ai-bot/task.md.
 	WriteMultiRepoFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
+		ciFailures []models.CheckRunFailure,
 		wsDir string, repos []RepoContext) error
 }

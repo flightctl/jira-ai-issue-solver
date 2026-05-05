@@ -183,6 +183,17 @@ type GitService interface {
 	// cloning. Used to make shared resources (workflow skills,
 	// scripts) available in the workspace before AI execution.
 	CloneImport(url, destDir, ref string) error
+
+	// ListCheckRunsForRef returns failed check runs for a commit ref.
+	// The second return value is true when all checks have completed.
+	ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+
+	// ListCheckRunAnnotations returns annotations for a check run.
+	ListCheckRunAnnotations(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
+
+	// GetFailedJobLogs returns truncated log output from failed
+	// workflow job steps, keyed by job name.
+	GetFailedJobLogs(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
 }
 
 // ProjectResolver maps work items to their project-specific settings.
@@ -251,6 +262,14 @@ type Config struct {
 	// GeminiPricing holds per-million-token prices for computing
 	// Gemini session costs from token counts.
 	GeminiPricing GeminiPricing
+
+	// IgnoredCheckNames lists check run names excluded from CI
+	// failure detection (case-insensitive).
+	IgnoredCheckNames []string
+
+	// MaxCIFixAttempts limits CI fix attempts per PR. Zero
+	// disables CI failure detection. Negative means unlimited.
+	MaxCIFixAttempts int
 }
 
 // ClaudeVertexConfig holds Vertex AI authentication settings for

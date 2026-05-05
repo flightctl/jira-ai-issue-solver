@@ -30,6 +30,7 @@ func getValidGitHubConfig() struct {
 	MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 	KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 	IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+	IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 } {
 	return struct {
 		AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
@@ -41,6 +42,7 @@ func getValidGitHubConfig() struct {
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+		IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 	}{
 		AppID:          123456,
 		PrivateKeyPath: "/tmp/test_key.pem",
@@ -109,6 +111,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tmpKeyPath,
@@ -834,6 +837,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
@@ -896,6 +900,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 				}{
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot",
@@ -954,6 +959,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: "/non/existent/path/key.pem",
@@ -1011,6 +1017,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
+					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),

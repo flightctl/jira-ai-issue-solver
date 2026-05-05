@@ -90,6 +90,11 @@ type RepoLocator interface {
 	ForkOwner(workItem models.WorkItem) string
 }
 
+// CIChecker checks the CI status of a commit.
+type CIChecker interface {
+	ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+}
+
 // WorkspaceCleaner removes workspaces matching a caller-provided
 // predicate. Used by [WorkspaceCleanupScanner] to remove workspaces
 // for tickets in terminal states.

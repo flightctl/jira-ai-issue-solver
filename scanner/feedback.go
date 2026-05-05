@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,14 @@ type FeedbackScannerConfig struct {
 	// MaxThreadDepth limits bot replies per thread. Zero or
 	// negative means no limit.
 	MaxThreadDepth int
+
+	// IgnoredCheckNames lists check run names excluded from CI
+	// failure detection (case-insensitive).
+	IgnoredCheckNames []string
+
+	// MaxCIFixAttempts limits CI fix attempts per PR. Zero
+	// disables CI failure detection. Negative means unlimited.
+	MaxCIFixAttempts int
 }
 
 // FeedbackScanner polls for tickets in "in review" status and checks
@@ -49,6 +58,7 @@ type FeedbackScanner struct {
 	submitter JobSubmitter
 	prs       PRFetcher
 	repos     RepoLocator
+	ci        CIChecker
 	cfg       FeedbackScannerConfig
 	logger    *zap.Logger
 
@@ -64,6 +74,7 @@ func NewFeedbackScanner(
 	submitter JobSubmitter,
 	prs PRFetcher,
 	repos RepoLocator,
+	ci CIChecker,
 	cfg FeedbackScannerConfig,
 	logger *zap.Logger,
 ) (*FeedbackScanner, error) {
@@ -94,6 +105,7 @@ func NewFeedbackScanner(
 		submitter: submitter,
 		prs:       prs,
 		repos:     repos,
+		ci:        ci,
 		cfg:       cfg,
 		logger:    logger,
 	}, nil
@@ -225,8 +237,8 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 }
 
 // hasActionableComments checks all repos for PRs with actionable
-// review comments. Returns true as soon as any repo has actionable
-// comments.
+// review comments or CI failures. Returns true as soon as any repo
+// has actionable work.
 func (s *FeedbackScanner) hasActionableComments(
 	logger *zap.Logger,
 	repos []struct{ Owner, Repo string },
@@ -251,10 +263,128 @@ func (s *FeedbackScanner) hasActionableComments(
 		if commentfilter.HasNewActionable(comments, s.filterConfig()) {
 			return true
 		}
+
+		if s.hasActionableCIFailures(logger, r.Owner, r.Repo, pr, comments) {
+			return true
+		}
 	}
 
-	logger.Debug("No actionable comments")
+	logger.Debug("No actionable feedback")
 	return false
+}
+
+// hasActionableCIFailures checks whether a PR has CI failures that the
+// bot should attempt to fix. Returns false if CI checking is disabled,
+// checks are still running, all failures are ignored, or fix attempts
+// are exhausted.
+func (s *FeedbackScanner) hasActionableCIFailures(
+	logger *zap.Logger,
+	owner, repo string,
+	pr *models.PRDetails,
+	comments []models.PRComment,
+) bool {
+	if s.cfg.MaxCIFixAttempts == 0 || s.ci == nil {
+		return false
+	}
+	if pr.HeadSHA == "" {
+		return false
+	}
+
+	failures, allCompleted, err := s.ci.ListCheckRunsForRef(owner, repo, pr.HeadSHA)
+	if err != nil {
+		logger.Warn("Failed to check CI status",
+			zap.String("repo", owner+"/"+repo),
+			zap.Error(err))
+		return false
+	}
+	if !allCompleted {
+		logger.Debug("CI checks still running, skipping CI analysis",
+			zap.String("repo", owner+"/"+repo))
+		return false
+	}
+
+	filtered := filterIgnoredChecks(failures, s.cfg.IgnoredCheckNames)
+	if len(filtered) == 0 {
+		return false
+	}
+
+	if pr.BaseBranch != "" {
+		baseFailures, _, baseErr := s.ci.ListCheckRunsForRef(owner, repo, pr.BaseBranch)
+		if baseErr == nil {
+			filtered = filterPreExistingFailures(filtered, baseFailures)
+			if len(filtered) == 0 {
+				return false
+			}
+		}
+	}
+
+	if s.cfg.MaxCIFixAttempts > 0 {
+		attempts := commentfilter.CountCIFixAttempts(comments, s.cfg.BotUsername)
+		if attempts >= s.cfg.MaxCIFixAttempts {
+			logger.Debug("CI fix attempts exhausted",
+				zap.String("repo", owner+"/"+repo),
+				zap.Int("attempts", attempts),
+				zap.Int("max", s.cfg.MaxCIFixAttempts))
+			return false
+		}
+	}
+
+	logger.Info("Found actionable CI failures",
+		zap.String("repo", owner+"/"+repo),
+		zap.Int("count", len(filtered)))
+	return true
+}
+
+// filterPreExistingFailures removes failures whose check name also
+// appears in base branch failures.
+func filterPreExistingFailures(
+	prFailures, baseFailures []models.CheckRunFailure,
+) []models.CheckRunFailure {
+	if len(baseFailures) == 0 {
+		return prFailures
+	}
+
+	baseNames := make(map[string]bool, len(baseFailures))
+	for _, f := range baseFailures {
+		baseNames[f.Name] = true
+	}
+
+	var filtered []models.CheckRunFailure
+	for _, f := range prFailures {
+		if !baseNames[f.Name] {
+			filtered = append(filtered, f)
+		}
+	}
+	if filtered == nil {
+		filtered = []models.CheckRunFailure{}
+	}
+	return filtered
+}
+
+// filterIgnoredChecks removes check runs whose names match the ignore
+// list (case-insensitive).
+func filterIgnoredChecks(
+	failures []models.CheckRunFailure, ignored []string,
+) []models.CheckRunFailure {
+	if len(ignored) == 0 {
+		return failures
+	}
+
+	ignoredSet := make(map[string]bool, len(ignored))
+	for _, name := range ignored {
+		ignoredSet[strings.ToLower(name)] = true
+	}
+
+	var filtered []models.CheckRunFailure
+	for _, f := range failures {
+		if !ignoredSet[strings.ToLower(f.Name)] {
+			filtered = append(filtered, f)
+		}
+	}
+	if filtered == nil {
+		filtered = []models.CheckRunFailure{}
+	}
+	return filtered
 }
 
 func (s *FeedbackScanner) filterConfig() commentfilter.Config {

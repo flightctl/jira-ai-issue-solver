@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -92,19 +93,16 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("sync with remote: %w", err)
 	}
 
-	// --- Step 6: Fetch and categorize comments ---
-	allComments, err := p.git.GetPRComments(
-		settings.Repos[0].Owner, settings.Repos[0].Repo, prDetails.Number, time.Time{})
+	// --- Step 6: Fetch and categorize comments + CI analysis ---
+	owner := settings.Repos[0].Owner
+	repo := settings.Repos[0].Repo
+	newComments, addressedComments, ciFailures, err := p.fetchFeedbackContext(
+		logger, owner, repo, prDetails)
 	if err != nil {
-		return result, fmt.Errorf("get PR comments: %w", err)
+		return result, err
 	}
-
-	// Apply bot-loop prevention before categorization.
-	filtered := commentfilter.Filter(allComments, p.commentFilterConfig())
-	newComments, addressedComments := CategorizeComments(filtered, p.cfg.BotUsername)
-
-	if len(newComments) == 0 {
-		logger.Info("No new comments to address")
+	if len(newComments) == 0 && len(ciFailures) == 0 {
+		logger.Info("No new comments or CI failures to address")
 		return result, nil
 	}
 
@@ -123,7 +121,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 9: Download attachments, write issue and feedback task files ---
 	if err := p.writeFeedbackFiles(
-		logger, *workItem, *prDetails, newComments, addressedComments, wsPath, settings,
+		logger, *workItem, *prDetails, newComments, addressedComments, ciFailures, wsPath, settings,
 	); err != nil {
 		return result, err
 	}
@@ -208,19 +206,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("check changes: %w", err)
 	}
 	if !hasChanges {
-		aiResponses := readCommentResponses(wsPath)
-		if aiResponses != nil {
-			logger.Info("AI produced no code changes but provided comment responses")
-			p.replyToComments(logger, settings, prDetails, newComments, "", aiResponses)
-			p.postOrUpdateCostComment(logger,
-				settings.Repos[0].Owner, settings.Repos[0].Repo,
-				prDetails.Number, result.CostUSD, "Feedback")
-			return result, nil
-		}
-		p.postOrUpdateCostComment(logger,
-			settings.Repos[0].Owner, settings.Repos[0].Repo,
-			prDetails.Number, result.CostUSD, "Feedback")
-		return result, fmt.Errorf("AI produced no changes (exit code: %d)", exitCode)
+		return p.handleNoChanges(logger, settings, prDetails, newComments, ciFailures, wsPath, result, exitCode)
 	}
 
 	// --- Step 15: Commit via GitHub API ---
@@ -253,6 +239,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	// --- Step 17: Reply to addressed comments ---
 	aiResponses := readCommentResponses(wsPath)
 	p.replyToComments(logger, settings, prDetails, newComments, sha, aiResponses)
+
+	// --- Step 17a: Post CI fix attempt marker ---
+	p.postCIFixMarker(logger, owner, repo, prDetails.Number, ciFailures, sha)
 
 	p.postOrUpdateCostComment(logger,
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
@@ -343,8 +332,12 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if err != nil {
 		return result, err
 	}
-	if len(allNew) == 0 {
-		logger.Info("No new comments to address across any repo")
+
+	// --- Step 6a: CI failure analysis per repo ---
+	allCIFailures := p.analyzeMultiRepoCIFailures(logger, repoInfos)
+
+	if len(allNew) == 0 && len(allCIFailures) == 0 {
+		logger.Info("No new comments or CI failures to address across any repo")
 		return result, nil
 	}
 
@@ -374,7 +367,7 @@ func (p *Pipeline) executeMultiRepoFeedback(
 
 	// --- Step 8: Write issue and feedback task files ---
 	if err := p.writeMultiRepoFeedbackFiles(
-		logger, *workItem, repoInfos[0].pr, allNew, allAddressed, wsPath, settings,
+		logger, *workItem, repoInfos[0].pr, allNew, allAddressed, allCIFailures, wsPath, settings,
 	); err != nil {
 		return result, err
 	}
@@ -470,6 +463,11 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		repoInfos:    repoInfos,
 	})
 
+	// Record CI fix attempt regardless of whether changes were produced.
+	p.postCIFixMarker(logger,
+		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
+		repoInfos[0].pr.Number, allCIFailures, "multi-repo")
+
 	// Post cost on the first PR regardless of outcome.
 	p.postOrUpdateCostComment(logger,
 		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
@@ -542,6 +540,7 @@ func (p *Pipeline) writeMultiRepoFeedbackFiles(
 	workItem models.WorkItem,
 	pr *models.PRDetails,
 	newComments, addressedComments []models.PRComment,
+	ciFailures []models.CheckRunFailure,
 	wsPath string,
 	settings *models.ProjectSettings,
 ) error {
@@ -563,7 +562,7 @@ func (p *Pipeline) writeMultiRepoFeedbackFiles(
 		}
 	}
 	if err := p.taskWriter.WriteMultiRepoFeedbackTask(
-		*pr, newComments, addressedComments, wsPath, repoContexts,
+		*pr, newComments, addressedComments, ciFailures, wsPath, repoContexts,
 	); err != nil {
 		return fmt.Errorf("write task file: %w", err)
 	}
@@ -577,6 +576,7 @@ func (p *Pipeline) writeFeedbackFiles(
 	workItem models.WorkItem,
 	prDetails models.PRDetails,
 	newComments, addressedComments []models.PRComment,
+	ciFailures []models.CheckRunFailure,
 	wsPath string,
 	settings *models.ProjectSettings,
 ) error {
@@ -588,7 +588,7 @@ func (p *Pipeline) writeFeedbackFiles(
 		return fmt.Errorf("write issue file: %w", err)
 	}
 	if err := p.taskWriter.WriteFeedbackTask(
-		prDetails, newComments, addressedComments, wsPath,
+		prDetails, newComments, addressedComments, ciFailures, wsPath,
 		settings.Repos[0].Instructions, settings.Repos[0].FeedbackWorkflow,
 	); err != nil {
 		return fmt.Errorf("write task file: %w", err)
@@ -979,4 +979,220 @@ func conversationReplyBody(c models.PRComment, response string) string {
 // by [commentfilter.Filter].
 func normalizeUsername(s string) string {
 	return strings.ToLower(strings.TrimSuffix(s, "[bot]"))
+}
+
+func (p *Pipeline) analyzeMultiRepoCIFailures(
+	logger *zap.Logger, repoInfos []repoPRInfo,
+) []models.CheckRunFailure {
+	var all []models.CheckRunFailure
+	for _, ri := range repoInfos {
+		comments, err := p.git.GetPRComments(ri.repo.Owner, ri.repo.Repo, ri.pr.Number, time.Time{})
+		if err != nil {
+			logger.Warn("Failed to fetch PR comments for CI analysis, skipping CI for repo",
+				zap.String("repo", ri.repo.Name), zap.Error(err))
+			continue
+		}
+		ciFailures := p.analyzeCIFailures(logger, ri.repo.Owner, ri.repo.Repo, ri.pr, comments)
+		all = append(all, ciFailures...)
+	}
+	return all
+}
+
+func (p *Pipeline) handleNoChanges(
+	logger *zap.Logger,
+	settings *models.ProjectSettings,
+	prDetails *models.PRDetails,
+	newComments []models.PRComment,
+	ciFailures []models.CheckRunFailure,
+	wsPath string,
+	result jobmanager.JobResult,
+	exitCode int,
+) (jobmanager.JobResult, error) {
+	owner := settings.Repos[0].Owner
+	repo := settings.Repos[0].Repo
+
+	// Record CI fix attempt even when no code changes were produced,
+	// to prevent infinite retry loops.
+	p.postCIFixMarker(logger, owner, repo, prDetails.Number, ciFailures, "no-changes")
+
+	aiResponses := readCommentResponses(wsPath)
+	if aiResponses != nil {
+		logger.Info("AI produced no code changes but provided comment responses")
+		p.replyToComments(logger, settings, prDetails, newComments, "", aiResponses)
+		p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback")
+		return result, nil
+	}
+	p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback")
+	return result, fmt.Errorf("AI produced no changes (exit code: %d)", exitCode)
+}
+
+func (p *Pipeline) fetchFeedbackContext(
+	logger *zap.Logger,
+	owner, repo string,
+	prDetails *models.PRDetails,
+) (newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, err error) {
+	allComments, err := p.git.GetPRComments(owner, repo, prDetails.Number, time.Time{})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("get PR comments: %w", err)
+	}
+
+	filtered := commentfilter.Filter(allComments, p.commentFilterConfig())
+	newComments, addressedComments = CategorizeComments(filtered, p.cfg.BotUsername)
+	ciFailures = p.analyzeCIFailures(logger, owner, repo, prDetails, allComments)
+
+	return newComments, addressedComments, ciFailures, nil
+}
+
+func (p *Pipeline) postCIFixMarker(
+	logger *zap.Logger,
+	owner, repo string,
+	prNumber int,
+	ciFailures []models.CheckRunFailure,
+	commitSHA string,
+) {
+	if len(ciFailures) == 0 {
+		return
+	}
+	marker := commentfilter.CIFixAttemptMarker(ciFailures, commitSHA)
+	if err := p.git.PostIssueComment(owner, repo, prNumber, marker); err != nil {
+		logger.Warn("Failed to post CI fix attempt marker", zap.Error(err))
+	}
+}
+
+const maxBytesPerStep = 4096
+
+// analyzeCIFailures checks the PR's head commit for actionable CI
+// failures. Returns an empty slice if CI checking is disabled, checks
+// are pending, failures are ignored, or fix attempts are exhausted.
+func (p *Pipeline) analyzeCIFailures(
+	logger *zap.Logger,
+	owner, repo string,
+	pr *models.PRDetails,
+	comments []models.PRComment,
+) []models.CheckRunFailure {
+	if p.cfg.MaxCIFixAttempts == 0 || pr.HeadSHA == "" {
+		return nil
+	}
+
+	failures, allCompleted, err := p.git.ListCheckRunsForRef(owner, repo, pr.HeadSHA)
+	if err != nil {
+		logger.Warn("Failed to check CI status", zap.Error(err))
+		return nil
+	}
+	if !allCompleted {
+		logger.Debug("CI checks still running, skipping CI analysis")
+		return nil
+	}
+
+	filtered := filterIgnoredChecks(failures, p.cfg.IgnoredCheckNames)
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	// Filter pre-existing failures (also failing on base branch).
+	baseFailures, _, baseErr := p.git.ListCheckRunsForRef(owner, repo, pr.BaseBranch)
+	if baseErr == nil {
+		filtered = filterPreExistingFailures(filtered, baseFailures)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	// Check CI fix attempt limit.
+	if p.cfg.MaxCIFixAttempts > 0 {
+		attempts := commentfilter.CountCIFixAttempts(comments, p.cfg.BotUsername)
+		if attempts >= p.cfg.MaxCIFixAttempts {
+			logger.Debug("CI fix attempts exhausted",
+				zap.Int("attempts", attempts),
+				zap.Int("max", p.cfg.MaxCIFixAttempts))
+			return nil
+		}
+	}
+
+	// Enrich failures with annotations and step logs.
+	for i := range filtered {
+		annotations, err := p.git.ListCheckRunAnnotations(owner, repo, filtered[i].ID)
+		if err != nil {
+			logger.Warn("Failed to fetch annotations",
+				zap.String("check", filtered[i].Name),
+				zap.Error(err))
+			continue
+		}
+		filtered[i].Annotations = annotations
+	}
+
+	jobLogs, err := p.git.GetFailedJobLogs(owner, repo, pr.HeadSHA, maxBytesPerStep)
+	if err != nil {
+		logger.Warn("Failed to fetch job logs", zap.Error(err))
+	} else {
+		for i := range filtered {
+			if steps, ok := jobLogs[filtered[i].Name]; ok {
+				filtered[i].FailedSteps = steps
+			}
+		}
+	}
+
+	sortCheckRunFailures(filtered)
+
+	logger.Info("Found CI failures to address",
+		zap.Int("count", len(filtered)))
+	return filtered
+}
+
+// filterIgnoredChecks removes check runs whose names match the ignore
+// list (case-insensitive).
+func filterIgnoredChecks(
+	failures []models.CheckRunFailure, ignored []string,
+) []models.CheckRunFailure {
+	if len(ignored) == 0 {
+		return failures
+	}
+
+	ignoredSet := make(map[string]bool, len(ignored))
+	for _, name := range ignored {
+		ignoredSet[strings.ToLower(name)] = true
+	}
+
+	var filtered []models.CheckRunFailure
+	for _, f := range failures {
+		if !ignoredSet[strings.ToLower(f.Name)] {
+			filtered = append(filtered, f)
+		}
+	}
+	if filtered == nil {
+		filtered = []models.CheckRunFailure{}
+	}
+	return filtered
+}
+
+func sortCheckRunFailures(failures []models.CheckRunFailure) {
+	sort.Slice(failures, func(i, j int) bool {
+		return failures[i].Name < failures[j].Name
+	})
+}
+
+// filterPreExistingFailures removes failures whose check name also
+// appears in base branch failures, since those existed before the PR.
+func filterPreExistingFailures(
+	prFailures, baseFailures []models.CheckRunFailure,
+) []models.CheckRunFailure {
+	if len(baseFailures) == 0 {
+		return prFailures
+	}
+
+	baseNames := make(map[string]bool, len(baseFailures))
+	for _, f := range baseFailures {
+		baseNames[f.Name] = true
+	}
+
+	var filtered []models.CheckRunFailure
+	for _, f := range prFailures {
+		if !baseNames[f.Name] {
+			filtered = append(filtered, f)
+		}
+	}
+	if filtered == nil {
+		filtered = []models.CheckRunFailure{}
+	}
+	return filtered
 }

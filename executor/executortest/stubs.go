@@ -35,24 +35,27 @@ func (s *Stub) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager.Job
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubGitService struct {
-	SyncForkFunc           func(forkOwner, repo, branch string) error
-	CreateBranchFunc       func(dir, name, baseBranch string) error
-	SwitchBranchFunc       func(dir, name string) error
-	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
-	HasChangesFunc         func(dir, baseBranch string) (bool, error)
-	CommitChangesFunc      func(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error)
-	StripRemoteAuthFunc    func(dir string) error
-	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
-	FetchRemoteFunc        func(dir string) error
-	SyncWithRemoteFunc     func(dir, branch string, importExcludes []string) error
-	CreatePRFunc           func(params models.PRParams) (*models.PR, error)
-	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
-	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
-	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
-	PostIssueCommentFunc   func(owner, repo string, prNumber int, body string) error
-	ListIssueCommentsFunc  func(owner, repo string, prNumber int) ([]models.IssueComment, error)
-	UpdateIssueCommentFunc func(owner, repo string, commentID int64, body string) error
-	CloneImportFunc        func(url, destDir, ref string) error
+	SyncForkFunc                func(forkOwner, repo, branch string) error
+	CreateBranchFunc            func(dir, name, baseBranch string) error
+	SwitchBranchFunc            func(dir, name string) error
+	RemoteBranchExistsFunc      func(owner, repo, branch string) (bool, error)
+	HasChangesFunc              func(dir, baseBranch string) (bool, error)
+	CommitChangesFunc           func(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error)
+	StripRemoteAuthFunc         func(dir string) error
+	RestoreRemoteAuthFunc       func(dir, owner, repo string) error
+	FetchRemoteFunc             func(dir string) error
+	SyncWithRemoteFunc          func(dir, branch string, importExcludes []string) error
+	CreatePRFunc                func(params models.PRParams) (*models.PR, error)
+	GetPRForBranchFunc          func(owner, repo, head string) (*models.PRDetails, error)
+	GetPRCommentsFunc           func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
+	ReplyToCommentFunc          func(owner, repo string, prNumber int, commentID int64, body string) error
+	PostIssueCommentFunc        func(owner, repo string, prNumber int, body string) error
+	ListIssueCommentsFunc       func(owner, repo string, prNumber int) ([]models.IssueComment, error)
+	UpdateIssueCommentFunc      func(owner, repo string, commentID int64, body string) error
+	CloneImportFunc             func(url, destDir, ref string) error
+	ListCheckRunsForRefFunc     func(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+	ListCheckRunAnnotationsFunc func(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
+	GetFailedJobLogsFunc        func(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
 }
 
 func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
@@ -179,6 +182,27 @@ func (s *StubGitService) CloneImport(url, destDir, ref string) error {
 		return s.CloneImportFunc(url, destDir, ref)
 	}
 	return nil
+}
+
+func (s *StubGitService) ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+	if s.ListCheckRunsForRefFunc != nil {
+		return s.ListCheckRunsForRefFunc(owner, repo, ref)
+	}
+	return []models.CheckRunFailure{}, true, nil
+}
+
+func (s *StubGitService) ListCheckRunAnnotations(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error) {
+	if s.ListCheckRunAnnotationsFunc != nil {
+		return s.ListCheckRunAnnotationsFunc(owner, repo, checkRunID)
+	}
+	return []models.CheckAnnotation{}, nil
+}
+
+func (s *StubGitService) GetFailedJobLogs(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error) {
+	if s.GetFailedJobLogsFunc != nil {
+		return s.GetFailedJobLogsFunc(owner, repo, headSHA, maxBytesPerStep)
+	}
+	return map[string][]models.FailedStep{}, nil
 }
 
 // StubProjectResolver is a test double for [executor.ProjectResolver].

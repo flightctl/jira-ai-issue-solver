@@ -84,7 +84,7 @@ func TestNewFeedbackScanner_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := scanner.NewFeedbackScanner(
-				tt.searcher, tt.submitter, tt.prs, tt.repos, tt.cfg, tt.logger)
+				tt.searcher, tt.submitter, tt.prs, tt.repos, nil, tt.cfg, tt.logger)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -643,6 +643,228 @@ func TestFeedbackScanner_MultiRepo_NoCommentsOnAnyRepo(t *testing.T) {
 	}
 }
 
+// --- CI failure detection ---
+
+func TestFeedbackScanner_CIFailuresActionable(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 3
+
+	// No review comments.
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{ID: 1, Name: "lint", Conclusion: "failure"}}, true, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected feedback event for CI failure")
+	}
+}
+
+func TestFeedbackScanner_CIDisabled_MaxZero(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 0
+
+	// No review comments.
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			t.Fatal("CI checker should not be called when disabled")
+			return nil, true, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if submitted {
+		t.Error("should not submit when CI is disabled and no comments")
+	}
+}
+
+func TestFeedbackScanner_CIPending_Skipped(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 3
+
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{ID: 1, Name: "lint", Conclusion: "failure"}}, false, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if submitted {
+		t.Error("should not submit when CI checks are still running")
+	}
+}
+
+func TestFeedbackScanner_CIIgnoredChecks(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 3
+	d.cfg.IgnoredCheckNames = []string{"license/cla"}
+
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{ID: 1, Name: "license/cla", Conclusion: "failure"}}, true, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if submitted {
+		t.Error("should not submit when all CI failures are ignored")
+	}
+}
+
+func TestFeedbackScanner_CIPreExistingFiltered(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 3
+
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123", BaseBranch: "main"}, nil
+	}
+
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, ref string) ([]models.CheckRunFailure, bool, error) {
+			// Both PR and base branch have the same failing check.
+			return []models.CheckRunFailure{{ID: 1, Name: "lint", Conclusion: "failure"}}, true, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if submitted {
+		t.Error("should not submit when all CI failures are pre-existing on base branch")
+	}
+}
+
+func TestFeedbackScanner_CIFixAttemptsExhausted(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 2
+
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{Author: models.Author{Username: "ai-bot"}, Body: "CI failures addressed in abc.\n<!-- ci-fix-attempt: 1 -->"},
+			{Author: models.Author{Username: "ai-bot"}, Body: "CI failures addressed in def.\n<!-- ci-fix-attempt: 2 -->"},
+		}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{ID: 3, Name: "test", Conclusion: "failure"}}, true, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if submitted {
+		t.Error("should not submit when CI fix attempts exhausted")
+	}
+}
+
+func TestFeedbackScanner_CIAndComments_BothActionable(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.MaxCIFixAttempts = 3
+
+	// Has review comments — should trigger before CI check.
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+
+	// CI also has failures, but should not need to be checked
+	// since comments already triggered the event.
+	ciChecked := false
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			ciChecked = true
+			return []models.CheckRunFailure{{ID: 1, Name: "lint", Conclusion: "failure"}}, true, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected feedback event")
+	}
+	if ciChecked {
+		t.Error("CI check should be skipped when review comments already triggered event")
+	}
+}
+
 // --- helpers ---
 
 type feedbackDeps struct {
@@ -650,6 +872,7 @@ type feedbackDeps struct {
 	submitter *scannertest.StubJobSubmitter
 	prs       *scannertest.StubPRFetcher
 	repos     *scannertest.StubRepoLocator
+	ci        *scannertest.StubCIChecker
 	cfg       scanner.FeedbackScannerConfig
 }
 
@@ -689,7 +912,7 @@ func newFeedbackDeps() *feedbackDeps {
 func (d *feedbackDeps) scanner(t *testing.T) *scanner.FeedbackScanner {
 	t.Helper()
 	s, err := scanner.NewFeedbackScanner(
-		d.searcher, d.submitter, d.prs, d.repos, d.cfg, zap.NewNop())
+		d.searcher, d.submitter, d.prs, d.repos, d.ci, d.cfg, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}

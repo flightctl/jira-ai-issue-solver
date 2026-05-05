@@ -546,7 +546,7 @@ func TestExecuteFeedback_MultipleComments(t *testing.T) {
 	}
 
 	var taskNewComments []models.PRComment
-	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _, _ string) error {
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, _ []models.CheckRunFailure, dir, _, _ string) error {
 		taskNewComments = newC
 		return nil
 	}
@@ -980,7 +980,7 @@ func TestExecuteFeedback_FilterKeepsActionableComments(t *testing.T) {
 	}
 
 	var taskNewComments []models.PRComment
-	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _, _ string) error {
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, _ []models.CheckRunFailure, dir, _, _ string) error {
 		taskNewComments = newC
 		return nil
 	}
@@ -1277,6 +1277,7 @@ func TestMultiRepoFeedback_WritesMultiRepoFeedbackTask(t *testing.T) {
 	var taskWritten bool
 	d.taskWriter.WriteMultiRepoFeedbackTaskFunc = func(
 		_ models.PRDetails, newComments, _ []models.PRComment,
+		_ []models.CheckRunFailure,
 		_ string, repos []taskfile.RepoContext,
 	) error {
 		taskWritten = true
