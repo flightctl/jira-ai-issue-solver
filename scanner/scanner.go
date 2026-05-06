@@ -91,9 +91,8 @@ type RepoLocator interface {
 
 	// LocateRepos returns all repositories for the given work item.
 	// For single-repo workspaces this returns one entry; for multi-repo
-	// workspaces it returns all repos in the workspace. Each element
-	// has Owner and Repo fields.
-	LocateRepos(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error)
+	// workspaces it returns all repos in the workspace.
+	LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error)
 
 	// ForkOwner returns the GitHub username that owns the fork where
 	// the bot pushes branches. Returns empty string when the assignee

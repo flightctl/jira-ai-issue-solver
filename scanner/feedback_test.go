@@ -262,7 +262,7 @@ func TestFeedbackScanner_PRNotFound_Skipped(t *testing.T) {
 
 func TestFeedbackScanner_RepoLocateFailure_Skipped(t *testing.T) {
 	d := newFeedbackDeps()
-	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
 		return nil, errors.New("unknown component")
 	}
 
@@ -575,8 +575,8 @@ func TestFeedbackScanner_MultiRepo_CommentsOnSecondRepo(t *testing.T) {
 	d := newFeedbackDeps()
 
 	// Workspace has 3 repos; only svc-b has a PR with comments.
-	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
-		return []struct{ Owner, Repo string }{
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
 			{Owner: "org", Repo: "svc-a"},
 			{Owner: "org", Repo: "svc-b"},
 			{Owner: "org", Repo: "svc-c"},
@@ -598,9 +598,9 @@ func TestFeedbackScanner_MultiRepo_CommentsOnSecondRepo(t *testing.T) {
 		return []models.PRComment{}, nil
 	}
 
-	var submitted bool
+	var submitCount int
 	d.submitter.SubmitFunc = func(event jobmanager.Event) (*jobmanager.Job, error) {
-		submitted = true
+		submitCount++
 		if event.Type != jobmanager.JobTypeFeedback {
 			t.Errorf("event type = %q, want feedback", event.Type)
 		}
@@ -610,16 +610,16 @@ func TestFeedbackScanner_MultiRepo_CommentsOnSecondRepo(t *testing.T) {
 	s := d.scanner(t)
 	runOneFeedbackScan(t, s)
 
-	if !submitted {
-		t.Error("expected feedback event for comments on svc-b")
+	if submitCount != 1 {
+		t.Errorf("submitted %d events, want 1", submitCount)
 	}
 }
 
 func TestFeedbackScanner_MultiRepo_NoCommentsOnAnyRepo(t *testing.T) {
 	d := newFeedbackDeps()
 
-	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
-		return []struct{ Owner, Repo string }{
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
 			{Owner: "org", Repo: "svc-a"},
 			{Owner: "org", Repo: "svc-b"},
 		}, nil
@@ -898,8 +898,8 @@ func newFeedbackDeps() *feedbackDeps {
 			},
 		},
 		repos: &scannertest.StubRepoLocator{
-			LocateReposFunc: func(_ models.WorkItem) ([]struct{ Owner, Repo string }, error) {
-				return []struct{ Owner, Repo string }{{Owner: "org", Repo: "repo"}}, nil
+			LocateReposFunc: func(_ models.WorkItem) ([]models.RepoCoord, error) {
+				return []models.RepoCoord{{Owner: "org", Repo: "repo"}}, nil
 			},
 		},
 		cfg: scanner.FeedbackScannerConfig{

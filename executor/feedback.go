@@ -266,10 +266,12 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 // repoPRInfo groups a repo's PR details and categorized comments for
 // multi-repo feedback processing.
 type repoPRInfo struct {
-	repo     models.RepoSettings
-	pr       *models.PRDetails
-	newCmts  []models.PRComment
-	addrCmts []models.PRComment
+	repo       models.RepoSettings
+	pr         *models.PRDetails
+	rawCmts    []models.PRComment
+	newCmts    []models.PRComment
+	addrCmts   []models.PRComment
+	ciFailures []models.CheckRunFailure
 }
 
 // executeMultiRepoFeedback handles feedback for workspaces with
@@ -462,10 +464,12 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		repoInfos:    repoInfos,
 	})
 
-	// Record CI fix attempt regardless of whether changes were produced.
-	p.postCIFixMarker(logger,
-		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
-		repoInfos[0].pr.Number, allCIFailures, "multi-repo")
+	// Record CI fix attempt per-repo so per-repo limits are enforced.
+	for _, ri := range repoInfos {
+		p.postCIFixMarker(logger,
+			ri.repo.Owner, ri.repo.Repo,
+			ri.pr.Number, ri.ciFailures, "multi-repo")
+	}
 
 	// Post cost on the first PR regardless of outcome.
 	p.postOrUpdateCostComment(logger,
@@ -525,6 +529,7 @@ func (p *Pipeline) fetchMultiRepoComments(
 		if err != nil {
 			return nil, nil, fmt.Errorf("get PR comments for %s: %w", ri.repo.Name, err)
 		}
+		ri.rawCmts = comments
 		filtered := commentfilter.Filter(comments, p.commentFilterConfig())
 		ri.newCmts, ri.addrCmts = CategorizeComments(filtered, p.cfg.BotUsername)
 		allNew = append(allNew, ri.newCmts...)
@@ -619,16 +624,17 @@ func (p *Pipeline) commitMultiRepoFeedback(
 	params commitMultiRepoParams,
 ) (bool, error) {
 	// Check for any changes across repos that have PRs.
+	repoHasChanges := make([]bool, len(params.repoInfos))
 	anyChanges := false
-	for _, ri := range params.repoInfos {
+	for i, ri := range params.repoInfos {
 		repoDir := filepath.Join(params.wsPath, ri.repo.Name)
 		has, err := p.git.HasChanges(repoDir, ri.repo.BaseBranch)
 		if err != nil {
 			return false, fmt.Errorf("check changes for %s: %w", ri.repo.Name, err)
 		}
+		repoHasChanges[i] = has
 		if has {
 			anyChanges = true
-			break
 		}
 	}
 	if !anyChanges {
@@ -656,12 +662,11 @@ func (p *Pipeline) commitMultiRepoFeedback(
 	commitMsg := fmt.Sprintf("%s: address PR feedback", params.ticketKey)
 	var commitSHA string
 
-	for _, ri := range params.repoInfos {
-		repoDir := filepath.Join(params.wsPath, ri.repo.Name)
-		has, _ := p.git.HasChanges(repoDir, ri.repo.BaseBranch)
-		if !has {
+	for i, ri := range params.repoInfos {
+		if !repoHasChanges[i] {
 			continue
 		}
+		repoDir := filepath.Join(params.wsPath, ri.repo.Name)
 
 		sha, err := p.git.CommitChanges(
 			ri.repo.Owner, params.settings.CommitOwnerFor(ri.repo), ri.repo.Repo, params.branchName,
@@ -1001,15 +1006,10 @@ func (p *Pipeline) analyzeMultiRepoCIFailures(
 	logger *zap.Logger, repoInfos []repoPRInfo,
 ) []models.CheckRunFailure {
 	var all []models.CheckRunFailure
-	for _, ri := range repoInfos {
-		comments, err := p.git.GetPRComments(ri.repo.Owner, ri.repo.Repo, ri.pr.Number, time.Time{})
-		if err != nil {
-			logger.Warn("Failed to fetch PR comments for CI analysis, skipping CI for repo",
-				zap.String("repo", ri.repo.Name), zap.Error(err))
-			continue
-		}
-		ciFailures := p.analyzeCIFailures(logger, ri.repo.Owner, ri.repo.Repo, ri.pr, comments)
-		all = append(all, ciFailures...)
+	for i := range repoInfos {
+		ri := &repoInfos[i]
+		ri.ciFailures = p.analyzeCIFailures(logger, ri.repo.Owner, ri.repo.Repo, ri.pr, ri.rawCmts)
+		all = append(all, ri.ciFailures...)
 	}
 	return all
 }

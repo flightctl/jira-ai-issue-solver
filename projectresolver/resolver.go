@@ -53,6 +53,9 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 	if !ok {
 		return nil, fmt.Errorf("workspace %q does not exist in project config for %s", wsName, workItem.Key)
 	}
+	if len(ws.Repos) == 0 {
+		return nil, fmt.Errorf("workspace %q has no repos configured for %s", wsName, workItem.Key)
+	}
 
 	repos, err := r.buildRepoSettings(workItem, pc, ws)
 	if err != nil {
@@ -131,20 +134,23 @@ func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
+	if len(settings.Repos) == 0 {
+		return "", "", fmt.Errorf("no repos configured for %s", workItem.Key)
+	}
 	return settings.Repos[0].Owner, settings.Repos[0].Repo, nil
 }
 
 // LocateRepos returns all repositories for the work item's resolved
 // workspace. For single-repo workspaces this returns one entry; for
 // multi-repo workspaces it returns all repos.
-func (r *ConfigResolver) LocateRepos(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+func (r *ConfigResolver) LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error) {
 	settings, err := r.ResolveProject(workItem)
 	if err != nil {
 		return nil, err
 	}
-	results := make([]struct{ Owner, Repo string }, len(settings.Repos))
+	results := make([]models.RepoCoord, len(settings.Repos))
 	for i, rs := range settings.Repos {
-		results[i] = struct{ Owner, Repo string }{Owner: rs.Owner, Repo: rs.Repo}
+		results[i] = models.RepoCoord{Owner: rs.Owner, Repo: rs.Repo}
 	}
 	return results, nil
 }

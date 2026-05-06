@@ -112,7 +112,7 @@ func (s *StubPRFetcher) GetPRComments(owner, repo string, number int, since time
 // When a Func field is nil, the method returns empty/zero values.
 type StubRepoLocator struct {
 	LocateRepoFunc  func(workItem models.WorkItem) (string, string, error)
-	LocateReposFunc func(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error)
+	LocateReposFunc func(workItem models.WorkItem) ([]models.RepoCoord, error)
 	ForkOwnerFunc   func(workItem models.WorkItem) string
 }
 
@@ -123,11 +123,11 @@ func (s *StubRepoLocator) LocateRepo(workItem models.WorkItem) (string, string, 
 	return "", "", nil
 }
 
-func (s *StubRepoLocator) LocateRepos(workItem models.WorkItem) ([]struct{ Owner, Repo string }, error) {
+func (s *StubRepoLocator) LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error) {
 	if s.LocateReposFunc != nil {
 		return s.LocateReposFunc(workItem)
 	}
-	return []struct{ Owner, Repo string }{}, nil
+	return []models.RepoCoord{}, nil
 }
 
 func (s *StubRepoLocator) ForkOwner(workItem models.WorkItem) string {

@@ -565,8 +565,8 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 		}
 	}
 	if err != nil {
-		remoteSHA, branchExists, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
-		if remoteErr != nil || !branchExists {
+		remoteSHA, _, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
+		if remoteErr != nil {
 			return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
 		}
 		s.logger.Warn("Local parent not found on remote, falling back to remote branch HEAD",

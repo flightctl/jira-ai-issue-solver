@@ -241,7 +241,7 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 // has actionable work.
 func (s *FeedbackScanner) hasActionableComments(
 	logger *zap.Logger,
-	repos []struct{ Owner, Repo string },
+	repos []models.RepoCoord,
 	head string,
 ) bool {
 	for _, r := range repos {
@@ -341,6 +341,9 @@ func filterPreExistingFailures(
 	prFailures, baseFailures []models.CheckRunFailure,
 ) []models.CheckRunFailure {
 	if len(baseFailures) == 0 {
+		if prFailures == nil {
+			return []models.CheckRunFailure{}
+		}
 		return prFailures
 	}
 
@@ -367,6 +370,9 @@ func filterIgnoredChecks(
 	failures []models.CheckRunFailure, ignored []string,
 ) []models.CheckRunFailure {
 	if len(ignored) == 0 {
+		if failures == nil {
+			return []models.CheckRunFailure{}
+		}
 		return failures
 	}
 

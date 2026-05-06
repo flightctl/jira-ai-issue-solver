@@ -14,11 +14,12 @@ func computeGeminiCost(session SessionOutput, pricing GeminiPricing) float64 {
 		return 0
 	}
 
-	uncachedInput := max(session.InputTokens-session.CachedTokens, 0)
+	cachedInput := min(session.CachedTokens, session.InputTokens)
+	uncachedInput := session.InputTokens - cachedInput
 
 	cost := float64(uncachedInput) * pricing.InputPerMTok / 1_000_000
 	cost += float64(session.OutputTokens) * pricing.OutputPerMTok / 1_000_000
-	cost += float64(session.CachedTokens) * pricing.CachedPerMTok / 1_000_000
+	cost += float64(cachedInput) * pricing.CachedPerMTok / 1_000_000
 
 	return cost
 }

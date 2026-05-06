@@ -7,7 +7,7 @@ IMAGE_NAME := jira-ai-issue-solver
 TAG        := latest
 REGISTRY   ?=
 
-.PHONY: build build-flightctl-ai build-osac-ai push clean run stop logs help debug debug-tests fmt lint tidy unit-test
+.PHONY: build build-flightctl-ai build-osac-ai push clean run stop logs help debug debug-tests fmt lint tidy unit-test compose-up compose-down compose-logs
 
 # Default target
 help:

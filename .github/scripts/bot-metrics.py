@@ -172,11 +172,14 @@ def fetch_pr_cost(repo, pr_number):
     try:
         result = subprocess.run(
             ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments",
-             "--paginate", "--jq", ".[].body"],
+             "--paginate", "--jq", "[.[].body]"],
             capture_output=True, text=True, check=True,
         )
-        bodies = result.stdout.strip().split("\n")
-    except subprocess.CalledProcessError:
+        bodies = []
+        for line in result.stdout.strip().split("\n"):
+            if line:
+                bodies.extend(json.loads(line))
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
         return 0.0
 
     for body in bodies:

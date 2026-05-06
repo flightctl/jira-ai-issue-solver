@@ -1671,6 +1671,23 @@ func TestConfig_validateWorkspaceConfiguration(t *testing.T) {
 			expectedError: "either components or default_workspace must be configured",
 		},
 		{
+			name: "duplicate repo names in one workspace",
+			setup: func(c *Config) {
+				p := baseProject()
+				p.Workspaces = map[string]WorkspaceConfig{
+					"ws": {
+						Repos: []RepoEntry{
+							{Name: "api", URL: "https://github.com/org/api-one", Profile: "default"},
+							{Name: "api", URL: "https://github.com/org/api-two", Profile: "default"},
+						},
+					},
+				}
+				p.DefaultWorkspace = "ws"
+				c.Jira.Projects = []ProjectConfig{p}
+			},
+			expectedError: "duplicate repo name",
+		},
+		{
 			name: "repo with empty profile is valid",
 			setup: func(c *Config) {
 				p := baseProject()

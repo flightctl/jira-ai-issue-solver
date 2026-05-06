@@ -146,6 +146,7 @@ func main() {
 			MaxCIFixAttempts:   config.Guardrails.MaxCIFixAttempts,
 			RetryLabel:         config.Guardrails.RetryLabel,
 			JiraUsername:       config.Jira.Username,
+			MinCommentLength:   config.Guardrails.MinCommentLength,
 			GeminiPricing: executor.GeminiPricing{
 				InputPerMTok:  config.Gemini.InputPricePerMTok,
 				OutputPerMTok: config.Gemini.OutputPricePerMTok,
@@ -188,7 +189,7 @@ func main() {
 
 	startupRunner, err := recovery.NewStartupRunner(
 		recovery.Config{
-			ContainerPrefix:    "ai-bot",
+			ContainerPrefix:    config.GitHub.BotUsername,
 			WorkspaceTTL:       time.Duration(config.Workspaces.TTLDays) * 24 * time.Hour,
 			BotUsername:        config.GitHub.BotUsername,
 			InProgressCriteria: buildInProgressCriteria(config),

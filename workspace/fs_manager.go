@@ -69,6 +69,17 @@ func (m *FSManager) CreateMultiRepo(ticketKey string, repos []RepoEntry) (string
 		return "", fmt.Errorf("at least one repo entry is required")
 	}
 
+	seen := make(map[string]struct{}, len(repos))
+	for _, repo := range repos {
+		if repo.Name == "" || repo.Name == "." || repo.Name == ".." || filepath.Base(repo.Name) != repo.Name {
+			return "", fmt.Errorf("invalid repo name %q: must be a simple name without path separators", repo.Name)
+		}
+		if _, exists := seen[repo.Name]; exists {
+			return "", fmt.Errorf("duplicate repo name %q", repo.Name)
+		}
+		seen[repo.Name] = struct{}{}
+	}
+
 	dir := m.workspacePath(ticketKey)
 
 	if _, err := os.Stat(dir); err == nil {

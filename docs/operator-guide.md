@@ -38,8 +38,9 @@ The bot follows a fork-based workflow:
    for revisions
 
 The bot uses the Jira ticket's **Components** field to determine which
-repository to target, and the ticket's **assignee** (mapped to a GitHub
-username) to determine which fork to push to.
+workspace (one or more repositories) to target, and the ticket's
+**assignee** (mapped to a GitHub username) to determine which fork to
+push to in each repo.
 
 For a deeper understanding of the architecture, see
 [architecture.md](architecture.md).

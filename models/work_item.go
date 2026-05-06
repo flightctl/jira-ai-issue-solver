@@ -75,6 +75,12 @@ type Comment struct {
 	AuthorEmail string
 }
 
+// RepoCoord identifies a single GitHub repository by owner and name.
+type RepoCoord struct {
+	Owner string
+	Repo  string
+}
+
 // HasSecurityLevel reports whether this work item has a security level set.
 func (w WorkItem) HasSecurityLevel() bool {
 	return w.SecurityLevel != ""

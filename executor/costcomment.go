@@ -112,7 +112,9 @@ func (p *Pipeline) postOrUpdateCostComment(
 
 	comments, err := p.git.ListIssueComments(owner, repo, prNumber)
 	if err != nil {
-		logger.Warn("Failed to list PR comments for cost tracking", zap.Error(err))
+		logger.Warn("Failed to list PR comments for cost tracking",
+			zap.String("owner", owner), zap.String("repo", repo),
+			zap.Int("pr_number", prNumber), zap.Error(err))
 		return
 	}
 
@@ -126,7 +128,9 @@ func (p *Pipeline) postOrUpdateCostComment(
 		body := formatCostComment(entries)
 
 		if err := p.git.UpdateIssueComment(owner, repo, existing.ID, body); err != nil {
-			logger.Warn("Failed to update cost comment", zap.Error(err))
+			logger.Warn("Failed to update cost comment",
+				zap.String("owner", owner), zap.String("repo", repo),
+				zap.Int("pr_number", prNumber), zap.Error(err))
 		}
 		return
 	}
@@ -137,6 +141,8 @@ func (p *Pipeline) postOrUpdateCostComment(
 	body := formatCostComment([]costEntry{{Label: label, Cost: cost}})
 
 	if err := p.git.PostIssueComment(owner, repo, prNumber, body); err != nil {
-		logger.Warn("Failed to post cost comment", zap.Error(err))
+		logger.Warn("Failed to post cost comment",
+			zap.String("owner", owner), zap.String("repo", repo),
+			zap.Int("pr_number", prNumber), zap.Error(err))
 	}
 }

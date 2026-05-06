@@ -383,3 +383,8 @@ guardrails:
   # resets the retry count, removes the label, and resubmits the ticket.
   # Set to empty string to disable the feature.
   retry_label: "ai-retry"
+
+  # Minimum character length for Jira ticket comments to be included
+  # in AI task files. Comments shorter than this are filtered as noise.
+  # Set to 0 to include all non-empty comments.
+  min_comment_length: 20

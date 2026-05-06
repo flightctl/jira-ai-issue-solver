@@ -283,6 +283,10 @@ type Config struct {
 	// JiraUsername is the Jira account email used to filter out
 	// the bot's own comments when building the issue file.
 	JiraUsername string
+
+	// MinCommentLength is the minimum character length for Jira
+	// ticket comments to be included in the AI task file.
+	MinCommentLength int
 }
 
 // ClaudeVertexConfig holds Vertex AI authentication settings for

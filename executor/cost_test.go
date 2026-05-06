@@ -63,10 +63,11 @@ func TestComputeGeminiCost(t *testing.T) {
 				OutputTokens: 10_000,
 				CachedTokens: 80_000,
 			},
-			// uncached input: 0 (clamped)
+			// CachedTokens clamped to InputTokens (50k)
+			// uncached input: 0
 			// output:         10_000 * 0.60/1M = 0.006
-			// cached:         80_000 * 0.0375/1M = 0.003
-			wantCost: 0.006 + 0.003,
+			// cached:         50_000 * 0.0375/1M = 0.001875
+			wantCost: 0.006 + 0.001875,
 		},
 	}
 

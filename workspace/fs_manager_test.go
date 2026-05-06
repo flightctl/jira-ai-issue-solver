@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -560,6 +561,32 @@ func TestCreateMultiRepo_ErrorsOnEmptyRepos(t *testing.T) {
 	_, err := mgr.CreateMultiRepo("PROJ-300", nil)
 	if err == nil {
 		t.Fatal("expected error for empty repos, got nil")
+	}
+}
+
+func TestCreateMultiRepo_RejectsInvalidRepoNames(t *testing.T) {
+	baseDir := t.TempDir()
+	cloner := &stubCloner{}
+	mgr := mustNewManager(t, baseDir, cloner)
+
+	cases := []struct {
+		name  string
+		repos []workspace.RepoEntry
+		want  string
+	}{
+		{"empty name", []workspace.RepoEntry{{Name: "", URL: "u"}}, "invalid repo name"},
+		{"dot", []workspace.RepoEntry{{Name: ".", URL: "u"}}, "invalid repo name"},
+		{"dotdot", []workspace.RepoEntry{{Name: "..", URL: "u"}}, "invalid repo name"},
+		{"path separator", []workspace.RepoEntry{{Name: "a/b", URL: "u"}}, "invalid repo name"},
+		{"duplicate", []workspace.RepoEntry{{Name: "x", URL: "u"}, {Name: "x", URL: "v"}}, "duplicate repo name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := mgr.CreateMultiRepo("PROJ-INV-"+tc.name, tc.repos)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("got error %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 

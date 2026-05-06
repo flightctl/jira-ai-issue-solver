@@ -286,7 +286,7 @@ func extractFailedStepLogs(
 ) []models.FailedStep {
 	stepSections := parseGroupSections(logText)
 
-	var steps []models.FailedStep
+	steps := []models.FailedStep{}
 	for _, name := range failedStepNames {
 		section, ok := stepSections[name]
 		if !ok {
@@ -311,6 +311,7 @@ func extractFailedStepLogs(
 func parseGroupSections(logText string) map[string]string {
 	sections := map[string]string{}
 	scanner := bufio.NewScanner(strings.NewReader(logText))
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	var currentGroup string
 	var buf strings.Builder
@@ -342,6 +343,9 @@ func parseGroupSections(logText string) map[string]string {
 	}
 	if currentGroup != "" {
 		sections[currentGroup] = buf.String()
+	}
+	if scanner.Err() != nil {
+		return map[string]string{}
 	}
 
 	return sections

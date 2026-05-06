@@ -246,16 +246,12 @@ func readCommentResponses(dir string) map[int64]string {
 // unparseable. Missing files are expected when the container is
 // killed by timeout before the wrapper script finishes.
 func readSessionOutput(dir string) SessionOutput {
-	path := filepath.Join(dir, sessionOutputPath)
-
-	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
-	if err != nil {
-		return SessionOutput{}
-	}
-
 	var output SessionOutput
-	if err := json.Unmarshal(data, &output); err != nil {
-		return SessionOutput{}
+
+	path := filepath.Join(dir, sessionOutputPath)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is dir + constant
+	if err == nil {
+		_ = json.Unmarshal(data, &output)
 	}
 
 	enrichFromCLIOutput(&output, dir)

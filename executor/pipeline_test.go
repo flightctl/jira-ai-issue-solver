@@ -3551,7 +3551,7 @@ func TestFilterTicketComments_RemovesBotComments(t *testing.T) {
 		{ID: "3", Author: "Other Human", AuthorEmail: "other@example.com", Body: "I can confirm this is happening."},
 	}
 
-	got := executor.FilterTicketComments(comments, "bot@example.com")
+	got := executor.FilterTicketComments(comments, "bot@example.com", 20)
 
 	if len(got) != 2 {
 		t.Fatalf("got %d comments, want 2", len(got))
@@ -3567,7 +3567,7 @@ func TestFilterTicketComments_CaseInsensitiveEmail(t *testing.T) {
 		{ID: "2", Author: "Human", AuthorEmail: "human@example.com", Body: "This should remain in results."},
 	}
 
-	got := executor.FilterTicketComments(comments, "bot@example.com")
+	got := executor.FilterTicketComments(comments, "bot@example.com", 20)
 
 	if len(got) != 1 {
 		t.Fatalf("got %d comments, want 1", len(got))
@@ -3585,7 +3585,7 @@ func TestFilterTicketComments_RemovesShortComments(t *testing.T) {
 		{ID: "4", Author: "Human", AuthorEmail: "a@b.com", Body: "This is a substantive comment with details."},
 	}
 
-	got := executor.FilterTicketComments(comments, "bot@example.com")
+	got := executor.FilterTicketComments(comments, "bot@example.com", 20)
 
 	if len(got) != 1 {
 		t.Fatalf("got %d comments, want 1", len(got))
@@ -3596,7 +3596,7 @@ func TestFilterTicketComments_RemovesShortComments(t *testing.T) {
 }
 
 func TestFilterTicketComments_EmptyInput(t *testing.T) {
-	got := executor.FilterTicketComments([]models.Comment{}, "bot@example.com")
+	got := executor.FilterTicketComments([]models.Comment{}, "bot@example.com", 20)
 
 	if got == nil {
 		t.Fatal("expected non-nil slice")
@@ -3611,7 +3611,7 @@ func TestFilterTicketComments_EmptyJiraUsername(t *testing.T) {
 		{ID: "1", Author: "Anyone", AuthorEmail: "any@example.com", Body: "This should not be filtered by email."},
 	}
 
-	got := executor.FilterTicketComments(comments, "")
+	got := executor.FilterTicketComments(comments, "", 20)
 
 	if len(got) != 1 {
 		t.Fatalf("got %d comments, want 1", len(got))
@@ -3625,7 +3625,7 @@ func TestFilterTicketComments_BoundaryLength(t *testing.T) {
 		{ID: "3", Author: "Human", AuthorEmail: "a@b.com", Body: "exactly 21 chars....."},
 	}
 
-	got := executor.FilterTicketComments(comments, "bot@example.com")
+	got := executor.FilterTicketComments(comments, "bot@example.com", 20)
 
 	if len(got) != 2 {
 		t.Fatalf("got %d comments, want 2 (20 and 21 chars)", len(got))

@@ -271,9 +271,20 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 		return
 	}
 
-	// Post all PR URLs and complete the transition.
+	// Post all PR URLs, set the field once, and transition once.
 	for _, url := range prURLs {
-		r.completeTransition(logger, item.Key, settings, url)
+		comment := fmt.Sprintf("[AI-BOT-PR] %s", url)
+		if err := r.tracker.AddComment(item.Key, comment); err != nil {
+			logger.Warn("Failed to add PR URL comment", zap.Error(err))
+		}
+	}
+	if settings.PRURLFieldName != "" {
+		if err := r.tracker.SetFieldValue(item.Key, settings.PRURLFieldName, prURLs[0]); err != nil {
+			logger.Warn("Failed to set PR URL field", zap.Error(err))
+		}
+	}
+	if err := r.tracker.TransitionStatus(item.Key, settings.InReviewStatus); err != nil {
+		logger.Warn("Failed to transition to in-review", zap.Error(err))
 	}
 }
 

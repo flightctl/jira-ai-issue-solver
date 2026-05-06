@@ -568,6 +568,11 @@ type GuardrailsConfig struct {
 	// The scanner detects the label, resets the retry count, removes
 	// the label, and resubmits the ticket. Empty disables the feature.
 	RetryLabel string `yaml:"retry_label" mapstructure:"retry_label" default:"ai-retry"`
+
+	// MinCommentLength is the minimum character length for Jira ticket
+	// comments to be included in AI task files. Comments shorter than
+	// this are filtered as noise. Zero disables length filtering.
+	MinCommentLength int `yaml:"min_comment_length" mapstructure:"min_comment_length" default:"20"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -710,6 +715,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.circuit_breaker_window_minutes")
 	bindEnv("guardrails.circuit_breaker_cooldown_minutes")
 	bindEnv("guardrails.max_ci_fix_attempts")
+	bindEnv("guardrails.min_comment_length")
 	bindEnv("guardrails.retry_label")
 
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
@@ -938,6 +944,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.circuit_breaker_cooldown_minutes", 5)
 	v.SetDefault("guardrails.max_ci_fix_attempts", 3)
 	v.SetDefault("guardrails.retry_label", "ai-retry")
+	v.SetDefault("guardrails.min_comment_length", 20)
 }
 
 // validate validates the entire configuration
@@ -1080,10 +1087,15 @@ func (p *ProjectConfig) validate(index int) error {
 		if len(ws.Repos) == 0 {
 			return fmt.Errorf("%s.workspaces.%s: at least one repo is required", prefix, wsName)
 		}
+		seenRepoNames := make(map[string]struct{}, len(ws.Repos))
 		for i, repo := range ws.Repos {
 			if repo.Name == "" {
 				return fmt.Errorf("%s.workspaces.%s.repos[%d].name is required", prefix, wsName, i)
 			}
+			if _, exists := seenRepoNames[repo.Name]; exists {
+				return fmt.Errorf("%s.workspaces.%s.repos[%d].name: duplicate repo name %q", prefix, wsName, i, repo.Name)
+			}
+			seenRepoNames[repo.Name] = struct{}{}
 			if repo.URL == "" {
 				return fmt.Errorf("%s.workspaces.%s.repos[%d].url is required", prefix, wsName, i)
 			}

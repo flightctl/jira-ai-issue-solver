@@ -645,6 +645,20 @@ func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *mode
 	}
 }
 
+func (p *Pipeline) setMultiRepoPRURLs(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, prs []repoPR) {
+	for _, pr := range prs {
+		comment := fmt.Sprintf("[AI-BOT-PR] %s", pr.url)
+		if err := p.tracker.AddComment(ticketKey, comment); err != nil {
+			logger.Warn("Failed to add PR URL comment", zap.Error(err))
+		}
+	}
+	if settings.PRURLFieldName != "" {
+		if err := p.tracker.SetFieldValue(ticketKey, settings.PRURLFieldName, prs[0].url); err != nil {
+			logger.Warn("Failed to set PR URL field", zap.Error(err))
+		}
+	}
+}
+
 // cleanupStatusComment removes any [AI-BOT-STATUS] comment from the
 // ticket. Called after a PR is created so that communication moves
 // entirely to the PR. Errors are logged but not propagated.
@@ -949,9 +963,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	}
 
 	// --- Step 17: Update ticket with all PR URLs ---
-	for _, pr := range prs {
-		p.setPRURL(logger, job.TicketKey, settings, pr.url)
-	}
+	p.setMultiRepoPRURLs(logger, job.TicketKey, settings, prs)
 	p.cleanupStatusComment(logger, job.TicketKey)
 
 	// Post cost on the first PR only to avoid double-counting.
@@ -973,8 +985,6 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	return result, nil
 }
 
-const minCommentLength = 20
-
 // fetchTicketComments fetches comments from the tracker and filters
 // out bot-authored and trivially short comments. Errors are logged
 // and result in an empty slice — missing comments should not block
@@ -985,19 +995,19 @@ func (p *Pipeline) fetchTicketComments(logger *zap.Logger, ticketKey string) []m
 		logger.Warn("Failed to fetch ticket comments", zap.String("ticket", ticketKey), zap.Error(err))
 		return []models.Comment{}
 	}
-	return FilterTicketComments(all, p.cfg.JiraUsername)
+	return FilterTicketComments(all, p.cfg.JiraUsername, p.cfg.MinCommentLength)
 }
 
 // FilterTicketComments removes comments authored by the bot and
-// comments shorter than minCommentLength characters.
-func FilterTicketComments(comments []models.Comment, jiraUsername string) []models.Comment {
+// comments shorter than minLen characters.
+func FilterTicketComments(comments []models.Comment, jiraUsername string, minLen int) []models.Comment {
 	filtered := make([]models.Comment, 0, len(comments))
 	lower := strings.ToLower(jiraUsername)
 	for _, c := range comments {
 		if lower != "" && strings.ToLower(c.AuthorEmail) == lower {
 			continue
 		}
-		if len(strings.TrimSpace(c.Body)) < minCommentLength {
+		if minLen > 0 && len(strings.TrimSpace(c.Body)) < minLen {
 			continue
 		}
 		filtered = append(filtered, c)
