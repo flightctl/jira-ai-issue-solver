@@ -118,11 +118,12 @@ type RepoContext struct {
 type Writer interface {
 	// WriteIssue writes the Jira issue content to <dir>/.ai-bot/issue.md.
 	// This file contains the stable problem definition (key, summary,
-	// description) and is referenced by both new-ticket and feedback
-	// task files. attachmentFiles lists filenames downloaded to
+	// description, comments) and is referenced by both new-ticket and
+	// feedback task files. attachmentFiles lists filenames downloaded to
 	// .ai-bot/attachments/; if non-empty, an Attachments section is
-	// added referencing them.
-	WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error
+	// added referencing them. comments are human comments from the
+	// tracker; if non-empty, a Comments section is appended.
+	WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error
 
 	// WriteNewTicketTask generates a task file for implementing a new
 	// ticket. The file is written to <dir>/.ai-bot/task.md.

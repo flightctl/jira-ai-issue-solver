@@ -2332,7 +2332,7 @@ func TestExecuteNewTicket_DownloadsAttachments(t *testing.T) {
 
 	// Capture WriteIssue call to verify attachment files are passed.
 	var gotAttachments []string
-	d.taskWriter.WriteIssueFunc = func(workItem models.WorkItem, dir string, attachmentFiles []string) error {
+	d.taskWriter.WriteIssueFunc = func(workItem models.WorkItem, dir string, attachmentFiles []string, _ []models.Comment) error {
 		gotAttachments = attachmentFiles
 		return nil
 	}
@@ -2389,7 +2389,7 @@ func TestExecuteNewTicket_SkipsLargeAttachments(t *testing.T) {
 	}
 
 	var gotAttachments []string
-	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string) error {
+	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string, _ []models.Comment) error {
 		gotAttachments = attachmentFiles
 		return nil
 	}
@@ -2413,7 +2413,7 @@ func TestExecuteNewTicket_NoAttachments_NoSection(t *testing.T) {
 	d := newTestDeps(t)
 
 	var gotAttachments []string
-	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string) error {
+	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string, _ []models.Comment) error {
 		gotAttachments = attachmentFiles
 		return nil
 	}
@@ -2451,7 +2451,7 @@ func TestExecuteNewTicket_SanitizesAttachmentFilename(t *testing.T) {
 	}
 
 	var gotAttachments []string
-	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string) error {
+	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string, _ []models.Comment) error {
 		gotAttachments = attachmentFiles
 		return nil
 	}
@@ -2508,7 +2508,7 @@ func TestExecuteNewTicket_SkipsExistingAttachments(t *testing.T) {
 	}
 
 	var gotAttachments []string
-	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string) error {
+	d.taskWriter.WriteIssueFunc = func(_ models.WorkItem, _ string, attachmentFiles []string, _ []models.Comment) error {
 		gotAttachments = attachmentFiles
 		return nil
 	}
@@ -3540,4 +3540,97 @@ func createTempCredsFile(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.Remove(f.Name()) })
 	return f.Name()
+}
+
+// --- FilterTicketComments ---
+
+func TestFilterTicketComments_RemovesBotComments(t *testing.T) {
+	comments := []models.Comment{
+		{ID: "1", Author: "Human", AuthorEmail: "human@example.com", Body: "This is a real human comment with details."},
+		{ID: "2", Author: "Bot", AuthorEmail: "bot@example.com", Body: "AI processing started for ticket PROJ-123."},
+		{ID: "3", Author: "Other Human", AuthorEmail: "other@example.com", Body: "I can confirm this is happening."},
+	}
+
+	got := executor.FilterTicketComments(comments, "bot@example.com")
+
+	if len(got) != 2 {
+		t.Fatalf("got %d comments, want 2", len(got))
+	}
+	if got[0].ID != "1" || got[1].ID != "3" {
+		t.Errorf("unexpected comments: %+v", got)
+	}
+}
+
+func TestFilterTicketComments_CaseInsensitiveEmail(t *testing.T) {
+	comments := []models.Comment{
+		{ID: "1", Author: "Bot", AuthorEmail: "Bot@Example.COM", Body: "This should be filtered out completely."},
+		{ID: "2", Author: "Human", AuthorEmail: "human@example.com", Body: "This should remain in results."},
+	}
+
+	got := executor.FilterTicketComments(comments, "bot@example.com")
+
+	if len(got) != 1 {
+		t.Fatalf("got %d comments, want 1", len(got))
+	}
+	if got[0].ID != "2" {
+		t.Errorf("unexpected comment: %+v", got[0])
+	}
+}
+
+func TestFilterTicketComments_RemovesShortComments(t *testing.T) {
+	comments := []models.Comment{
+		{ID: "1", Author: "Human", AuthorEmail: "a@b.com", Body: "ok"},
+		{ID: "2", Author: "Human", AuthorEmail: "a@b.com", Body: "+1"},
+		{ID: "3", Author: "Human", AuthorEmail: "a@b.com", Body: "   thanks   "},
+		{ID: "4", Author: "Human", AuthorEmail: "a@b.com", Body: "This is a substantive comment with details."},
+	}
+
+	got := executor.FilterTicketComments(comments, "bot@example.com")
+
+	if len(got) != 1 {
+		t.Fatalf("got %d comments, want 1", len(got))
+	}
+	if got[0].ID != "4" {
+		t.Errorf("unexpected comment: %+v", got[0])
+	}
+}
+
+func TestFilterTicketComments_EmptyInput(t *testing.T) {
+	got := executor.FilterTicketComments([]models.Comment{}, "bot@example.com")
+
+	if got == nil {
+		t.Fatal("expected non-nil slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d comments, want 0", len(got))
+	}
+}
+
+func TestFilterTicketComments_EmptyJiraUsername(t *testing.T) {
+	comments := []models.Comment{
+		{ID: "1", Author: "Anyone", AuthorEmail: "any@example.com", Body: "This should not be filtered by email."},
+	}
+
+	got := executor.FilterTicketComments(comments, "")
+
+	if len(got) != 1 {
+		t.Fatalf("got %d comments, want 1", len(got))
+	}
+}
+
+func TestFilterTicketComments_BoundaryLength(t *testing.T) {
+	comments := []models.Comment{
+		{ID: "1", Author: "Human", AuthorEmail: "a@b.com", Body: "exactly 19 chars..."},
+		{ID: "2", Author: "Human", AuthorEmail: "a@b.com", Body: "exactly 20 chars...."},
+		{ID: "3", Author: "Human", AuthorEmail: "a@b.com", Body: "exactly 21 chars....."},
+	}
+
+	got := executor.FilterTicketComments(comments, "bot@example.com")
+
+	if len(got) != 2 {
+		t.Fatalf("got %d comments, want 2 (20 and 21 chars)", len(got))
+	}
+	if got[0].ID != "2" || got[1].ID != "3" {
+		t.Errorf("unexpected comments: %+v", got)
+	}
 }

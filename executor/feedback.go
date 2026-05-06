@@ -554,7 +554,8 @@ func (p *Pipeline) writeMultiRepoFeedbackFiles(
 	if err != nil {
 		return fmt.Errorf("download attachments: %w", err)
 	}
-	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded); err != nil {
+	comments := p.fetchTicketComments(logger, workItem.Key)
+	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded, comments); err != nil {
 		return fmt.Errorf("write issue file: %w", err)
 	}
 
@@ -590,7 +591,8 @@ func (p *Pipeline) writeFeedbackFiles(
 	if err != nil {
 		return fmt.Errorf("download attachments: %w", err)
 	}
-	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded); err != nil {
+	comments := p.fetchTicketComments(logger, workItem.Key)
+	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded, comments); err != nil {
 		return fmt.Errorf("write issue file: %w", err)
 	}
 	if err := p.taskWriter.WriteFeedbackTask(

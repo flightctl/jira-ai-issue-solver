@@ -70,6 +70,9 @@ type Comment struct {
 
 	// Author is the display name of the comment author.
 	Author string
+
+	// AuthorEmail is the email address of the comment author.
+	AuthorEmail string
 }
 
 // HasSecurityLevel reports whether this work item has a security level set.

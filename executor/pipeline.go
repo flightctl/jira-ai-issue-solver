@@ -826,7 +826,8 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	if err != nil {
 		return result, fmt.Errorf("download attachments: %w", err)
 	}
-	if err := p.taskWriter.WriteIssue(*workItem, wsPath, downloaded); err != nil {
+	comments := p.fetchTicketComments(logger, workItem.Key)
+	if err := p.taskWriter.WriteIssue(*workItem, wsPath, downloaded, comments); err != nil {
 		return result, fmt.Errorf("write issue file: %w", err)
 	}
 
@@ -972,6 +973,38 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	return result, nil
 }
 
+const minCommentLength = 20
+
+// fetchTicketComments fetches comments from the tracker and filters
+// out bot-authored and trivially short comments. Errors are logged
+// and result in an empty slice — missing comments should not block
+// ticket processing.
+func (p *Pipeline) fetchTicketComments(logger *zap.Logger, ticketKey string) []models.Comment {
+	all, err := p.tracker.GetComments(ticketKey)
+	if err != nil {
+		logger.Warn("Failed to fetch ticket comments", zap.String("ticket", ticketKey), zap.Error(err))
+		return []models.Comment{}
+	}
+	return FilterTicketComments(all, p.cfg.JiraUsername)
+}
+
+// FilterTicketComments removes comments authored by the bot and
+// comments shorter than minCommentLength characters.
+func FilterTicketComments(comments []models.Comment, jiraUsername string) []models.Comment {
+	filtered := make([]models.Comment, 0, len(comments))
+	lower := strings.ToLower(jiraUsername)
+	for _, c := range comments {
+		if lower != "" && strings.ToLower(c.AuthorEmail) == lower {
+			continue
+		}
+		if len(strings.TrimSpace(c.Body)) < minCommentLength {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	return filtered
+}
+
 // writeNewTicketFiles downloads attachments and writes the issue and
 // task files for a single-repo new-ticket pipeline run.
 func (p *Pipeline) writeNewTicketFiles(
@@ -984,7 +1017,8 @@ func (p *Pipeline) writeNewTicketFiles(
 	if err != nil {
 		return fmt.Errorf("download attachments: %w", err)
 	}
-	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded); err != nil {
+	comments := p.fetchTicketComments(logger, workItem.Key)
+	if err := p.taskWriter.WriteIssue(workItem, wsPath, downloaded, comments); err != nil {
 		return fmt.Errorf("write issue file: %w", err)
 	}
 	if err := p.taskWriter.WriteNewTicketTask(

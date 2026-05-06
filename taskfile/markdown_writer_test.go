@@ -23,7 +23,7 @@ func TestWriteIssue_BasicTicket(t *testing.T) {
 		Type:        "Bug",
 	}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestWriteIssue_EmptyDescription(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-456", Summary: "Quick fix"}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestWriteIssue_MultilineDescription(t *testing.T) {
 		Description: "Line one.\n\nLine three after blank.\nLine four.",
 	}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestWriteIssue_CreatesDirectory(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-300", Summary: "Test dir creation"}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestWriteIssue_WithAttachments(t *testing.T) {
 	}
 
 	attachments := []string{"crash.log", "config.yaml"}
-	if err := writer.WriteIssue(workItem, dir, attachments); err != nil {
+	if err := writer.WriteIssue(workItem, dir, attachments, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestWriteIssue_NoAttachments_NoSection(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-401", Summary: "No attachments"}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -130,12 +130,138 @@ func TestWriteIssue_EmptyAttachmentList_NoSection(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-402", Summary: "Empty list"}
 
-	if err := writer.WriteIssue(workItem, dir, []string{}); err != nil {
+	if err := writer.WriteIssue(workItem, dir, []string{}, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readIssueFile(t, dir)
 	assertNotContains(t, content, "## Attachments")
+}
+
+func TestWriteIssue_WithComments(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{
+		Key:         "PROJ-500",
+		Summary:     "Bug report",
+		Description: "Something is broken.",
+	}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice Jones", Body: "I can reproduce this on staging too.\nThe error appears after the second retry."},
+		{ID: "2", Author: "Bob Smith", Body: "This might be related to PROJ-456."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, nil, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "## Comments")
+	assertContains(t, content, "> [Comment by Alice Jones]")
+	assertContains(t, content, "> I can reproduce this on staging too.")
+	assertContains(t, content, "> The error appears after the second retry.")
+	assertContains(t, content, "> [Comment by Bob Smith]")
+	assertContains(t, content, "> This might be related to PROJ-456.")
+}
+
+func TestWriteIssue_NoComments_NoSection(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-501", Summary: "No comments"}
+
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+	assertNotContains(t, content, "## Comments")
+}
+
+func TestWriteIssue_EmptyCommentList_NoSection(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-502", Summary: "Empty list"}
+
+	if err := writer.WriteIssue(workItem, dir, nil, []models.Comment{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+	assertNotContains(t, content, "## Comments")
+}
+
+func TestWriteIssue_CommentsSeparatedClearly(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-503", Summary: "Separation test"}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice", Body: "First comment body here."},
+		{ID: "2", Author: "Bob", Body: "Second comment body here."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, nil, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	// Comments should be separated by a blank line so they don't run together.
+	assertContains(t, content, "> First comment body here.\n\n> [Comment by Bob]")
+}
+
+func TestWriteIssue_MultilineComment(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-504", Summary: "Multiline test"}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice", Body: "Line one.\n\nLine three after blank.\nLine four."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, nil, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "> [Comment by Alice]")
+	assertContains(t, content, "> Line one.")
+	assertContains(t, content, ">\n> Line three after blank.")
+	assertContains(t, content, "> Line four.")
+}
+
+func TestWriteIssue_CommentsAfterAttachments(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{
+		Key:     "PROJ-505",
+		Summary: "Order test",
+	}
+	attachments := []string{"log.txt"}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice", Body: "This is important context."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, attachments, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	idxAttach := strings.Index(content, "## Attachments")
+	idxComments := strings.Index(content, "## Comments")
+	if idxAttach < 0 || idxComments < 0 {
+		t.Fatal("expected both Attachments and Comments sections")
+	}
+	if idxComments <= idxAttach {
+		t.Error("Comments section should appear after Attachments section")
+	}
 }
 
 // --- WriteNewTicketTask ---

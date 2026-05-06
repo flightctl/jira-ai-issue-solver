@@ -279,6 +279,10 @@ type Config struct {
 	// RetryLabel is the Jira label users add to request a retry
 	// after exhaustion. Included in the status comment hint.
 	RetryLabel string
+
+	// JiraUsername is the Jira account email used to filter out
+	// the bot's own comments when building the issue file.
+	JiraUsername string
 }
 
 // ClaudeVertexConfig holds Vertex AI authentication settings for

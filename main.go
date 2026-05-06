@@ -145,6 +145,7 @@ func main() {
 			IgnoredCheckNames:  config.GitHub.IgnoredCheckNames,
 			MaxCIFixAttempts:   config.Guardrails.MaxCIFixAttempts,
 			RetryLabel:         config.Guardrails.RetryLabel,
+			JiraUsername:       config.Jira.Username,
 			GeminiPricing: executor.GeminiPricing{
 				InputPerMTok:  config.Gemini.InputPricePerMTok,
 				OutputPerMTok: config.Gemini.OutputPricePerMTok,

@@ -24,7 +24,7 @@ func NewMarkdownWriter() *MarkdownWriter {
 	return &MarkdownWriter{}
 }
 
-func (w *MarkdownWriter) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error {
+func (w *MarkdownWriter) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# %s: %s\n", workItem.Key, workItem.Summary)
@@ -39,6 +39,16 @@ func (w *MarkdownWriter) WriteIssue(workItem models.WorkItem, dir string, attach
 		fmt.Fprintf(&b, "The following files are available in `%s/`:\n", AttachmentsDirPath)
 		for _, f := range attachmentFiles {
 			fmt.Fprintf(&b, "- `%s`\n", f)
+		}
+	}
+
+	if len(comments) > 0 {
+		b.WriteString("\n## Comments\n\n")
+		for i, c := range comments {
+			writeBlockquote(&b, "Comment by "+c.Author, c.Body)
+			if i < len(comments)-1 {
+				b.WriteString("\n")
+			}
 		}
 	}
 

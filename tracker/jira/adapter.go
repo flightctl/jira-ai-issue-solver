@@ -158,9 +158,10 @@ func (a *Adapter) GetComments(key string) ([]models.Comment, error) {
 	comments := make([]models.Comment, 0, len(jiraComments))
 	for _, jc := range jiraComments {
 		comments = append(comments, models.Comment{
-			ID:     jc.ID,
-			Body:   string(jc.Body),
-			Author: jc.Author.DisplayName,
+			ID:          jc.ID,
+			Body:        string(jc.Body),
+			Author:      jc.Author.DisplayName,
+			AuthorEmail: jc.Author.EmailAddress,
 		})
 	}
 	return comments, nil

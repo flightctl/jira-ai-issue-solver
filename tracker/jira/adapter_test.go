@@ -1002,8 +1002,8 @@ func TestAdapter_GetComments(t *testing.T) {
 		mock := &jiratest.Stub{
 			GetCommentsFunc: func(key string) ([]models.JiraComment, error) {
 				return []models.JiraComment{
-					{ID: "10", Body: "hello", Author: models.JiraUser{DisplayName: "Bot"}},
-					{ID: "20", Body: "world", Author: models.JiraUser{DisplayName: "Human"}},
+					{ID: "10", Body: "hello", Author: models.JiraUser{DisplayName: "Bot", EmailAddress: "bot@example.com"}},
+					{ID: "20", Body: "world", Author: models.JiraUser{DisplayName: "Human", EmailAddress: "human@example.com"}},
 				}, nil
 			},
 		}
@@ -1017,10 +1017,10 @@ func TestAdapter_GetComments(t *testing.T) {
 		if len(comments) != 2 {
 			t.Fatalf("got %d comments, want 2", len(comments))
 		}
-		if comments[0].ID != "10" || comments[0].Body != "hello" || comments[0].Author != "Bot" {
+		if comments[0].ID != "10" || comments[0].Body != "hello" || comments[0].Author != "Bot" || comments[0].AuthorEmail != "bot@example.com" {
 			t.Errorf("comment[0] = %+v", comments[0])
 		}
-		if comments[1].ID != "20" || comments[1].Body != "world" || comments[1].Author != "Human" {
+		if comments[1].ID != "20" || comments[1].Body != "world" || comments[1].Author != "Human" || comments[1].AuthorEmail != "human@example.com" {
 			t.Errorf("comment[1] = %+v", comments[1])
 		}
 	})
