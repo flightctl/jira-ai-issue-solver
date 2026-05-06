@@ -1271,6 +1271,41 @@ func TestMultiRepoFeedback_NoPRsFound(t *testing.T) {
 	}
 }
 
+func TestMultiRepoFeedback_SkipsSyncForReposWithoutPRs(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// Only svc-a has a PR; svc-b does not.
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		if repo == "svc-a" {
+			return &models.PRDetails{
+				Number: 10, Title: "Fix", Branch: head,
+				URL: fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+			}, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	// svc-b has no changes (AI only touched svc-a).
+	d.git.HasChangesFunc = func(dir, _ string) (bool, error) {
+		return filepath.Base(dir) == "svc-a", nil
+	}
+
+	// SyncWithRemote should only be called for svc-a. If called for
+	// svc-b it would fail because the branch was never pushed there.
+	d.git.SyncWithRemoteFunc = func(dir, _ string, _ []string) error {
+		if filepath.Base(dir) == "svc-b" {
+			t.Fatal("SyncWithRemote called for repo without a PR")
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestMultiRepoFeedback_WritesMultiRepoFeedbackTask(t *testing.T) {
 	d := newMultiRepoFeedbackDeps(t)
 

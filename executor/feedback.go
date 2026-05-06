@@ -268,7 +268,6 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 type repoPRInfo struct {
 	repo     models.RepoSettings
 	pr       *models.PRDetails
-	repoCfg  *repoconfig.Config
 	newCmts  []models.PRComment
 	addrCmts []models.PRComment
 }
@@ -324,8 +323,8 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		zap.String("path", wsPath),
 		zap.Bool("reused", reused))
 
-	// --- Step 5: Per-repo branch setup ---
-	if err := p.syncMultiRepoBranches(wsPath, branchName, settings); err != nil {
+	// --- Step 5: Per-repo branch setup (only repos with PRs) ---
+	if err := p.syncMultiRepoBranches(wsPath, branchName, settings, repoInfos); err != nil {
 		return result, err
 	}
 
@@ -358,12 +357,6 @@ func (p *Pipeline) executeMultiRepoFeedback(
 			cfg = repoconfig.Default()
 		}
 		repoConfigs[i] = cfg
-		// Attach repo config to any matching repoInfo.
-		for j := range repoInfos {
-			if repoInfos[j].repo.Name == repo.Name {
-				repoInfos[j].repoCfg = cfg
-			}
-		}
 	}
 
 	mergedImports := mergeMultiRepoImports(settings, repoConfigs)
@@ -498,21 +491,22 @@ func (p *Pipeline) executeMultiRepoFeedback(
 }
 
 // syncMultiRepoBranches sets up fork remotes, switches to the branch,
-// and syncs with the remote for each repo in the workspace.
+// and syncs with the remote for repos that have PRs.
 func (p *Pipeline) syncMultiRepoBranches(
 	wsPath, branchName string,
 	settings *models.ProjectSettings,
+	repoInfos []repoPRInfo,
 ) error {
-	for _, repo := range settings.Repos {
-		repoDir := filepath.Join(wsPath, repo.Name)
-		if err := p.ensureForkRemoteForRepo(repoDir, settings, repo); err != nil {
+	for _, ri := range repoInfos {
+		repoDir := filepath.Join(wsPath, ri.repo.Name)
+		if err := p.ensureForkRemoteForRepo(repoDir, settings, ri.repo); err != nil {
 			return err
 		}
 		if err := p.git.SwitchBranch(repoDir, branchName); err != nil {
-			return fmt.Errorf("switch to branch in %s: %w", repo.Name, err)
+			return fmt.Errorf("switch to branch in %s: %w", ri.repo.Name, err)
 		}
 		if err := p.git.SyncWithRemote(repoDir, branchName, nil); err != nil {
-			return fmt.Errorf("sync with remote for %s: %w", repo.Name, err)
+			return fmt.Errorf("sync with remote for %s: %w", ri.repo.Name, err)
 		}
 	}
 	return nil
@@ -624,13 +618,13 @@ func (p *Pipeline) commitMultiRepoFeedback(
 	logger *zap.Logger,
 	params commitMultiRepoParams,
 ) (bool, error) {
-	// Check for any changes across repos.
+	// Check for any changes across repos that have PRs.
 	anyChanges := false
-	for _, repo := range params.settings.Repos {
-		repoDir := filepath.Join(params.wsPath, repo.Name)
-		has, err := p.git.HasChanges(repoDir, repo.BaseBranch)
+	for _, ri := range params.repoInfos {
+		repoDir := filepath.Join(params.wsPath, ri.repo.Name)
+		has, err := p.git.HasChanges(repoDir, ri.repo.BaseBranch)
 		if err != nil {
-			return false, fmt.Errorf("check changes for %s: %w", repo.Name, err)
+			return false, fmt.Errorf("check changes for %s: %w", ri.repo.Name, err)
 		}
 		if has {
 			anyChanges = true
@@ -662,29 +656,29 @@ func (p *Pipeline) commitMultiRepoFeedback(
 	commitMsg := fmt.Sprintf("%s: address PR feedback", params.ticketKey)
 	var commitSHA string
 
-	for _, repo := range params.settings.Repos {
-		repoDir := filepath.Join(params.wsPath, repo.Name)
-		has, _ := p.git.HasChanges(repoDir, repo.BaseBranch)
+	for _, ri := range params.repoInfos {
+		repoDir := filepath.Join(params.wsPath, ri.repo.Name)
+		has, _ := p.git.HasChanges(repoDir, ri.repo.BaseBranch)
 		if !has {
 			continue
 		}
 
 		sha, err := p.git.CommitChanges(
-			repo.Owner, params.settings.CommitOwnerFor(repo), repo.Repo, params.branchName,
-			commitMsg, repoDir, repo.BaseBranch, params.workItem.Assignee, params.excludes,
+			ri.repo.Owner, params.settings.CommitOwnerFor(ri.repo), ri.repo.Repo, params.branchName,
+			commitMsg, repoDir, ri.repo.BaseBranch, params.workItem.Assignee, params.excludes,
 		)
 		if errors.Is(err, services.ErrNoChanges) {
 			continue
 		}
 		if err != nil {
-			return false, fmt.Errorf("commit changes for %s: %w", repo.Name, err)
+			return false, fmt.Errorf("commit changes for %s: %w", ri.repo.Name, err)
 		}
 		if commitSHA == "" {
 			commitSHA = sha
 		}
 
 		if err := p.git.SyncWithRemote(repoDir, params.branchName, params.excludes); err != nil {
-			return false, fmt.Errorf("sync with remote for %s: %w", repo.Name, err)
+			return false, fmt.Errorf("sync with remote for %s: %w", ri.repo.Name, err)
 		}
 	}
 
