@@ -1,0 +1,63 @@
+# AI development container for OSAC
+#
+# Contains: Go toolchain, buf, ginkgo, golangci-lint, Python/uv,
+# Ansible, ansible-lint, Claude Code, and Gemini CLI.
+# Used by the bot as the multi-repo container image for the OSAC workspace.
+#
+# Build:
+#   podman build -f images/osac-ai/Containerfile -t osac-ai:latest .
+#
+# The bot starts this with "sleep infinity" and execs commands into it.
+# No custom entrypoint is needed.
+
+FROM fedora:41
+
+# Layer 1 — System packages (stable, rarely changes)
+RUN dnf install -y \
+        make git unzip diffutils findutils bash coreutils grep \
+        kubectl \
+        procps-ng \
+        nodejs npm \
+    && dnf clean all
+
+# Layer 2 — Python / uv (changes with Python version bumps)
+RUN dnf install -y python3.13 python3.13-devel python3-pip \
+    && dnf clean all
+RUN curl -LsSf https://astral.sh/uv/install.sh | ENV_FILE=/dev/null sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && mv /root/.local/bin/uvx /usr/local/bin/uvx
+
+# Layer 3 — Go 1.25.0 (changes with Go version bumps)
+RUN curl -fsSL https://go.dev/dl/go1.25.0.linux-amd64.tar.gz | tar -C /usr/local -xz \
+    && ln -sf /usr/local/go/bin/go /usr/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
+
+# Layer 4 — Go tools (changes with tool version bumps)
+RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+    | sh -s -- -b /usr/local/bin v2.1.6
+RUN GOBIN=/usr/local/bin go install github.com/onsi/ginkgo/v2/ginkgo@latest
+
+# Layer 5 — buf (protobuf toolchain for fulfillment-service)
+RUN curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64 \
+        -o /usr/local/bin/buf \
+    && chmod +x /usr/local/bin/buf
+
+# Layer 6 — Node.js tools (AI CLIs, linters)
+RUN npm install -g \
+        @anthropic-ai/claude-code@latest \
+        @google/gemini-cli@0.23.0
+
+# Layer 7 — Non-root user
+RUN useradd -m -s /bin/bash builder \
+    && mkdir -p /home/builder/go/pkg/mod /home/builder/.cache/go-build \
+    && chown -R builder:builder /home/builder \
+    && echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+USER builder
+ENV PATH="/home/builder/.local/bin:${PATH}"
+
+# Layer 8 — Python tools as builder (ansible, ansible-lint via uv)
+RUN uv tool install ansible-lint \
+    && uv tool install ansible
+
+WORKDIR /workspace

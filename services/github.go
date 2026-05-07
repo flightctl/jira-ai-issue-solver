@@ -418,7 +418,7 @@ func (s *GitHubServiceImpl) getAuthTokenForRepo(owner, repo string) (string, err
 }
 
 // CreateBranch creates a new branch in a local repository based on the latest target branch
-func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
+func (s *GitHubServiceImpl) CreateBranch(directory, branchName, baseBranch string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "CreateBranch")
 
@@ -432,21 +432,21 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 	s.logger.Debug("git fetch origin", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Checkout the target branch
-	cmd = newGitCommand(s.executor("git", "checkout", s.config.GitHub.TargetBranch), directory, debugEnabled, true)
+	cmd = newGitCommand(s.executor("git", "checkout", baseBranch), directory, debugEnabled, true)
 
 	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
+		return fmt.Errorf("failed to checkout target branch %s: %w, stderr: %s", baseBranch, err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git checkout", fn, zap.String("branch", s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git checkout", fn, zap.String("branch", baseBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Reset to the latest commit on the target branch to ensure we're up to date
-	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+s.config.GitHub.TargetBranch), directory, debugEnabled, true)
+	cmd = newGitCommand(s.executor("git", "reset", "--hard", "origin/"+baseBranch), directory, debugEnabled, true)
 
 	if err := cmd.run(); err != nil {
-		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", s.config.GitHub.TargetBranch, err, cmd.getStderr())
+		return fmt.Errorf("failed to reset to latest commit on target branch %s: %w, stderr: %s", baseBranch, err, cmd.getStderr())
 	}
-	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+s.config.GitHub.TargetBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git reset --hard", fn, zap.String("ref", "origin/"+baseBranch), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
 	// Check if the branch already exists locally
 	cmd = newGitCommand(s.executor("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName), directory, debugEnabled, true)
@@ -482,7 +482,7 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName string) error {
 //
 // If coAuthor is non-nil, a Co-authored-by trailer is appended to the
 // commit message using the author's Name and Email.
-func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	// Extract co-author name/email (empty strings when nil).
 	var coAuthorName, coAuthorEmail string
 	if coAuthor != nil {
@@ -493,7 +493,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 	fn := zap.String("function", "CommitChanges")
 
 	// Check what kind of changes we have
-	hasChanges, err := s.HasChanges(dir)
+	hasChanges, err := s.HasChanges(dir, baseBranch)
 	if err != nil {
 		return "", fmt.Errorf("failed to check for changes: %w", err)
 	}
@@ -512,7 +512,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 	}
 
 	excludes := mergeExcludes(importExcludes)
-	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, coAuthorName, coAuthorEmail, excludes)
+	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthorName, coAuthorEmail, excludes)
 }
 
 // createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit.
@@ -522,7 +522,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 // "flightctl"). In non-fork workflows it equals owner. In fork
 // workflows it identifies the repo where the parent commit originated
 // so the tree can be resolved there when the fork API cannot find it.
-func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory, baseBranch string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
 	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
@@ -565,8 +565,8 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 		}
 	}
 	if err != nil {
-		remoteSHA, branchExists, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, token)
-		if remoteErr != nil || !branchExists {
+		remoteSHA, _, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
+		if remoteErr != nil {
 			return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
 		}
 		s.logger.Warn("Local parent not found on remote, falling back to remote branch HEAD",
@@ -619,7 +619,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 	// Create or update the branch reference to point to the new commit.
 	// The branch exists locally but may not have been pushed to the
 	// remote yet, so we must check before choosing the operation.
-	_, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, token)
+	_, branchExists, err := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
 	if err != nil {
 		return "", fmt.Errorf("failed to check branch existence: %w", err)
 	}
@@ -1195,7 +1195,7 @@ func (s *GitHubServiceImpl) updateReference(owner, repo, branchName, commitSHA, 
 // getBranchBaseCommit gets the base commit SHA for a branch
 // If the branch doesn't exist, falls back to the target branch
 // Returns: (baseSHA, branchExists, error)
-func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, token string) (string, bool, error) {
+func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, baseBranch, token string) (string, bool, error) {
 	// Try to get the branch reference
 	refURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, branchName)
 	req, err := http.NewRequest("GET", refURL, nil)
@@ -1229,10 +1229,10 @@ func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, token s
 		// Branch doesn't exist, fall back to target branch
 		s.logger.Info("Branch does not exist on remote, using target branch as base",
 			zap.String("branch", branchName),
-			zap.String("targetBranch", s.config.GitHub.TargetBranch))
+			zap.String("targetBranch", baseBranch))
 
 		// Get target branch reference
-		targetRefURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, s.config.GitHub.TargetBranch)
+		targetRefURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, baseBranch)
 		targetReq, err := http.NewRequest("GET", targetRefURL, nil)
 		if err != nil {
 			return "", false, fmt.Errorf("failed to create target branch request: %w", err)
@@ -1253,7 +1253,7 @@ func (s *GitHubServiceImpl) getBranchBaseCommit(owner, repo, branchName, token s
 
 		if targetResp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(targetResp.Body)
-			return "", false, fmt.Errorf("failed to get target branch %s: %s, status: %d", s.config.GitHub.TargetBranch, string(body), targetResp.StatusCode)
+			return "", false, fmt.Errorf("failed to get target branch %s: %s, status: %d", baseBranch, string(body), targetResp.StatusCode)
 		}
 
 		var targetRefResponse models.GitHubGetReferenceResponse
@@ -1423,7 +1423,7 @@ func (s *GitHubServiceImpl) SwitchBranch(directory, branchName string) error {
 
 // HasChanges checks if there are any uncommitted changes in the repository
 // Returns true if there are changes (modified, added, or deleted files)
-func (s *GitHubServiceImpl) HasChanges(directory string) (bool, error) {
+func (s *GitHubServiceImpl) HasChanges(directory, baseBranch string) (bool, error) {
 	fn := zap.String("function", "HasChanges")
 
 	// Check for working tree changes
@@ -1436,7 +1436,7 @@ func (s *GitHubServiceImpl) HasChanges(directory string) (bool, error) {
 	}
 
 	// Check for unpushed commits (e.g., merge commits created by AI)
-	hasUnpushedCommits, err := s.hasUnpushedCommits(directory, fn)
+	hasUnpushedCommits, err := s.hasUnpushedCommits(directory, baseBranch, fn)
 	if err != nil {
 		return false, err
 	}
@@ -1495,7 +1495,7 @@ func (s *GitHubServiceImpl) stageAndCommitLocal(directory string, fn zapcore.Fie
 }
 
 // hasUnpushedCommits checks if there are local commits that haven't been pushed to origin
-func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Field) (bool, error) {
+func (s *GitHubServiceImpl) hasUnpushedCommits(directory, baseBranch string, fn zapcore.Field) (bool, error) {
 	// First, check if origin remote exists
 	remoteCmd := newGitCommand(s.executor("git", "remote", "get-url", "origin"), directory, false, false)
 	if err := remoteCmd.run(); err != nil {
@@ -1525,7 +1525,7 @@ func (s *GitHubServiceImpl) hasUnpushedCommits(directory string, fn zapcore.Fiel
 	if err := remoteExistsCmd.run(); err != nil {
 		// Remote branch doesn't exist. Compare against origin/<target>
 		// to check if HEAD has diverged (i.e., the AI made local commits).
-		remoteRef = fmt.Sprintf("origin/%s", s.config.GitHub.TargetBranch)
+		remoteRef = fmt.Sprintf("origin/%s", baseBranch)
 		s.logger.Debug("Remote branch does not exist, comparing against target branch", fn,
 			zap.String("branch", branchName),
 			zap.String("targetRef", remoteRef))
@@ -1740,6 +1740,115 @@ func (s *GitHubServiceImpl) PostIssueComment(owner, repo string, prNumber int, b
 	return nil
 }
 
+// ListIssueComments returns all top-level comments on a PR (via the
+// issues endpoint). Results are ordered by creation time ascending.
+func (s *GitHubServiceImpl) ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var result []models.IssueComment
+	for {
+		comments, resp, err := ghClient.Issues.ListComments(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list issue comments: %w", err)
+		}
+		for _, c := range comments {
+			result = append(result, models.IssueComment{
+				ID:   c.GetID(),
+				Body: c.GetBody(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	if result == nil {
+		result = []models.IssueComment{}
+	}
+	return result, nil
+}
+
+// UpdateIssueComment edits an existing top-level comment on a PR.
+func (s *GitHubServiceImpl) UpdateIssueComment(owner, repo string, commentID int64, body string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	comment := &github.IssueComment{Body: github.Ptr(body)}
+	_, _, err = ghClient.Issues.EditComment(ctx, owner, repo, commentID, comment)
+	if err != nil {
+		return fmt.Errorf("failed to update issue comment: %w", err)
+	}
+
+	s.logger.Debug("Updated issue comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int64("comment_id", commentID))
+
+	return nil
+}
+
+// AddCommentReaction adds an emoji reaction to a PR comment. For review
+// comments (file-level) the pull request reactions API is used; for
+// conversation comments the issue comment reactions API is used.
+func (s *GitHubServiceImpl) AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	if comment.IsReviewComment {
+		_, _, err = ghClient.Reactions.CreatePullRequestCommentReaction(ctx, owner, repo, comment.ID, reaction)
+	} else {
+		_, _, err = ghClient.Reactions.CreateIssueCommentReaction(ctx, owner, repo, comment.ID, reaction)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to add %s reaction to comment %d: %w", reaction, comment.ID, err)
+	}
+
+	s.logger.Debug("Added reaction to comment",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int64("comment_id", comment.ID),
+		zap.String("reaction", reaction),
+		zap.Bool("is_review_comment", comment.IsReviewComment))
+
+	return nil
+}
+
 // CloneImport clones an auxiliary repository into destDir. If ref is
 // non-empty, the specified branch/tag/commit is checked out. This is a
 // shallow clone (depth 1) since import repos are read-only references.
@@ -1946,10 +2055,71 @@ func (s *GitHubServiceImpl) listPRConversationComments(owner, repo string, prNum
 	return allComments, nil
 }
 
-// GetPRComments returns all PR comments (both line-based review comments
-// and general conversation comments), converted to models.PRComment.
-// If since is non-zero, only comments created after that timestamp are
-// returned.
+// listPRReviewBodies fetches PR reviews and returns non-empty review
+// bodies as GitHubPRComment entries. Review bodies are the top-level
+// text submitted with a review (e.g., CodeRabbit's summary with
+// inline nitpicks). These are distinct from line-level review comments.
+func (s *GitHubServiceImpl) listPRReviewBodies(owner, repo string, prNumber int) ([]models.GitHubPRComment, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation ID: %w", err)
+	}
+
+	ghClient, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get installation client: %w", err)
+	}
+
+	var allReviews []*github.PullRequestReview
+	page := 1
+	perPage := 100
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		opts := &github.ListOptions{Page: page, PerPage: perPage}
+		reviews, _, err := ghClient.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list PR reviews: %w", err)
+		}
+
+		allReviews = append(allReviews, reviews...)
+		if len(reviews) < perPage {
+			break
+		}
+		page++
+		if page > maxPaginationPages {
+			break
+		}
+	}
+
+	var result []models.GitHubPRComment
+	for _, r := range allReviews {
+		body := strings.TrimSpace(r.GetBody())
+		if body == "" {
+			continue
+		}
+		user := r.GetUser()
+		login := ""
+		if user != nil {
+			login = user.GetLogin()
+		}
+		result = append(result, models.GitHubPRComment{
+			ID:        r.GetID(),
+			User:      models.GitHubUser{Login: login},
+			Body:      body,
+			HTMLURL:   r.GetHTMLURL(),
+			CreatedAt: r.GetSubmittedAt().Time,
+		})
+	}
+
+	return result, nil
+}
+
+// GetPRComments returns all PR comments (line-based review comments,
+// general conversation comments, and review bodies), converted to
+// models.PRComment. If since is non-zero, only comments created after
+// that timestamp are returned.
 func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
 	// Get line-based review comments from pulls endpoint
 	reviewComments, err := s.listPRReviewComments(owner, repo, number)
@@ -1963,18 +2133,26 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 		return nil, fmt.Errorf("failed to get conversation comments: %w", err)
 	}
 
+	// Get review bodies (top-level text submitted with PR reviews)
+	reviewBodies, err := s.listPRReviewBodies(owner, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get review bodies: %w", err)
+	}
+
 	s.logger.Debug("Retrieved PR comments",
 		zap.String("owner", owner),
 		zap.String("repo", repo),
 		zap.Int("pr_number", number),
 		zap.Int("review_comments", len(reviewComments)),
 		zap.Int("conversation_comments", len(conversationComments)),
-		zap.Int("total_comments", len(reviewComments)+len(conversationComments)))
+		zap.Int("review_bodies", len(reviewBodies)),
+		zap.Int("total_comments", len(reviewComments)+len(conversationComments)+len(reviewBodies)))
 
 	// Convert to models.PRComment and apply the since filter.
-	// Review comments and conversation comments are converted
-	// separately so IsReviewComment is set correctly.
-	result := make([]models.PRComment, 0, len(reviewComments)+len(conversationComments))
+	// Each source is converted separately so IsReviewComment is set
+	// correctly.
+	total := len(reviewComments) + len(conversationComments) + len(reviewBodies)
+	result := make([]models.PRComment, 0, total)
 	for _, c := range reviewComments {
 		if !since.IsZero() && !c.CreatedAt.After(since) {
 			continue
@@ -1988,6 +2166,7 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 			Body:            c.Body,
 			FilePath:        c.Path,
 			Line:            c.Line,
+			URL:             c.HTMLURL,
 			Timestamp:       c.CreatedAt,
 			InReplyTo:       c.InReplyToID,
 			IsReviewComment: true,
@@ -2004,6 +2183,22 @@ func (s *GitHubServiceImpl) GetPRComments(owner, repo string, number int, since 
 				Username: c.User.Login,
 			},
 			Body:      c.Body,
+			URL:       c.HTMLURL,
+			Timestamp: c.CreatedAt,
+		})
+	}
+	for _, c := range reviewBodies {
+		if !since.IsZero() && !c.CreatedAt.After(since) {
+			continue
+		}
+		result = append(result, models.PRComment{
+			ID: c.ID,
+			Author: models.Author{
+				Name:     c.User.Login,
+				Username: c.User.Login,
+			},
+			Body:      c.Body,
+			URL:       c.HTMLURL,
 			Timestamp: c.CreatedAt,
 		})
 	}
@@ -2161,6 +2356,7 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 				Branch:     pr.GetHead().GetRef(),
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
+				HeadSHA:    pr.GetHead().GetSHA(),
 			}, nil
 		}
 	}

@@ -48,17 +48,17 @@ func TestResolveProject_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" {
-		t.Errorf("owner = %q, want %q", ps.Owner, "my-org")
+	if ps.Repos[0].Owner != "my-org" {
+		t.Errorf("owner = %q, want %q", ps.Repos[0].Owner, "my-org")
 	}
-	if ps.Repo != "backend" {
-		t.Errorf("repo = %q, want %q", ps.Repo, "backend")
+	if ps.Repos[0].Repo != "backend" {
+		t.Errorf("repo = %q, want %q", ps.Repos[0].Repo, "backend")
 	}
-	if ps.CloneURL != "https://github.com/my-org/backend.git" {
-		t.Errorf("clone URL = %q, want %q", ps.CloneURL, "https://github.com/my-org/backend.git")
+	if ps.Repos[0].CloneURL != "https://github.com/my-org/backend.git" {
+		t.Errorf("clone URL = %q, want %q", ps.Repos[0].CloneURL, "https://github.com/my-org/backend.git")
 	}
-	if ps.BaseBranch != "main" {
-		t.Errorf("base branch = %q, want %q", ps.BaseBranch, "main")
+	if ps.Repos[0].BaseBranch != "main" {
+		t.Errorf("base branch = %q, want %q", ps.Repos[0].BaseBranch, "main")
 	}
 	if ps.InProgressStatus != "In Progress" {
 		t.Errorf("in-progress status = %q, want %q", ps.InProgressStatus, "In Progress")
@@ -82,9 +82,10 @@ func TestResolveProject_HappyPath(t *testing.T) {
 
 func TestResolveProject_MultipleComponents_FirstMatchUsed(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Components["frontend"] = models.ComponentConfig{
-		Repo: "https://github.com/my-org/frontend.git", Profile: "default",
+	cfg.Jira.Projects[0].Workspaces["frontend"] = models.WorkspaceConfig{
+		Repos: []models.RepoEntry{{Name: "frontend", URL: "https://github.com/my-org/frontend.git", Profile: "default"}},
 	}
+	cfg.Jira.Projects[0].Components["frontend"] = models.ComponentConfig{Workspace: "frontend"}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -103,16 +104,17 @@ func TestResolveProject_MultipleComponents_FirstMatchUsed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
 func TestResolveProject_MultipleComponents_SecondMatches(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Components["frontend"] = models.ComponentConfig{
-		Repo: "https://github.com/my-org/frontend", Profile: "default",
+	cfg.Jira.Projects[0].Workspaces["frontend"] = models.WorkspaceConfig{
+		Repos: []models.RepoEntry{{Name: "frontend", URL: "https://github.com/my-org/frontend", Profile: "default"}},
 	}
+	cfg.Jira.Projects[0].Components["frontend"] = models.ComponentConfig{Workspace: "frontend"}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -131,12 +133,12 @@ func TestResolveProject_MultipleComponents_SecondMatches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "frontend" {
-		t.Errorf("expected my-org/frontend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "frontend" {
+		t.Errorf("expected my-org/frontend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
-func TestResolveProject_NoComponents(t *testing.T) {
+func TestResolveProject_NoComponents_NoDefault(t *testing.T) {
 	cfg := minimalConfig()
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -151,12 +153,62 @@ func TestResolveProject_NoComponents(t *testing.T) {
 
 	_, err = r.ResolveProject(wi)
 	if err == nil {
-		t.Fatal("expected error for empty components")
+		t.Fatal("expected error for empty components with no default workspace")
 	}
-	assertContains(t, err.Error(), "no components")
+	assertContains(t, err.Error(), "no default_workspace")
 }
 
-func TestResolveProject_NoMatchingComponent(t *testing.T) {
+func TestResolveProject_NoComponents_UsesDefaultWorkspace(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Jira.Projects[0].DefaultWorkspace = "backend"
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-5",
+		Type:       "Bug",
+		Components: []string{},
+	}
+
+	ps, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend from default workspace, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
+	}
+}
+
+func TestResolveProject_UnmatchedComponents_UsesDefaultWorkspace(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Jira.Projects[0].DefaultWorkspace = "backend"
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-5",
+		Type:       "Bug",
+		Components: []string{"nonexistent-component"},
+	}
+
+	ps, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend from default workspace, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
+	}
+}
+
+func TestResolveProject_NoMatchingComponent_NoDefault(t *testing.T) {
 	cfg := minimalConfig()
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -171,9 +223,10 @@ func TestResolveProject_NoMatchingComponent(t *testing.T) {
 
 	_, err = r.ResolveProject(wi)
 	if err == nil {
-		t.Fatal("expected error for non-matching component")
+		t.Fatal("expected error for non-matching component with no default workspace")
 	}
 	assertContains(t, err.Error(), "no component mapping found")
+	assertContains(t, err.Error(), "no default_workspace")
 }
 
 func TestResolveProject_NoProjectConfig(t *testing.T) {
@@ -218,8 +271,8 @@ func TestResolveProject_FallbackProject(t *testing.T) {
 	}
 
 	// Falls back to the first (and only) project config.
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend from fallback, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend from fallback, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -241,15 +294,15 @@ func TestResolveProject_URLWithGitSuffix(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "backend" {
-		t.Errorf("repo = %q, want %q (should strip .git)", ps.Repo, "backend")
+	if ps.Repos[0].Repo != "backend" {
+		t.Errorf("repo = %q, want %q (should strip .git)", ps.Repos[0].Repo, "backend")
 	}
 }
 
 func TestResolveProject_URLWithoutGitSuffix(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Components["backend"] = models.ComponentConfig{
-		Repo: "https://github.com/my-org/backend", Profile: "default",
+	cfg.Jira.Projects[0].Workspaces["backend"] = models.WorkspaceConfig{
+		Repos: []models.RepoEntry{{Name: "backend", URL: "https://github.com/my-org/backend", Profile: "default"}},
 	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
@@ -268,15 +321,15 @@ func TestResolveProject_URLWithoutGitSuffix(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
 func TestResolveProject_URLWithTrailingSlash(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Components["backend"] = models.ComponentConfig{
-		Repo: "https://github.com/my-org/backend/", Profile: "default",
+	cfg.Jira.Projects[0].Workspaces["backend"] = models.WorkspaceConfig{
+		Repos: []models.RepoEntry{{Name: "backend", URL: "https://github.com/my-org/backend/", Profile: "default"}},
 	}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
@@ -295,8 +348,8 @@ func TestResolveProject_URLWithTrailingSlash(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Owner != "my-org" || ps.Repo != "backend" {
-		t.Errorf("expected my-org/backend, got %s/%s", ps.Owner, ps.Repo)
+	if ps.Repos[0].Owner != "my-org" || ps.Repos[0].Repo != "backend" {
+		t.Errorf("expected my-org/backend, got %s/%s", ps.Repos[0].Owner, ps.Repos[0].Repo)
 	}
 }
 
@@ -421,7 +474,7 @@ func TestLocateRepo_NoMatchingComponent(t *testing.T) {
 	}
 }
 
-func TestLocateRepo_NoComponents(t *testing.T) {
+func TestLocateRepo_NoComponents_NoDefault(t *testing.T) {
 	cfg := minimalConfig()
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -436,7 +489,7 @@ func TestLocateRepo_NoComponents(t *testing.T) {
 
 	_, _, err = r.LocateRepo(wi)
 	if err == nil {
-		t.Fatal("expected error for empty components")
+		t.Fatal("expected error for empty components with no default workspace")
 	}
 }
 
@@ -476,8 +529,8 @@ func TestLocateRepo_URLParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := minimalConfig()
-			cfg.Jira.Projects[0].Components["backend"] = models.ComponentConfig{
-				Repo: tt.url, Profile: "default",
+			cfg.Jira.Projects[0].Workspaces["backend"] = models.WorkspaceConfig{
+				Repos: []models.RepoEntry{{Name: "backend", URL: tt.url, Profile: "default"}},
 			}
 
 			r, err := projectresolver.NewConfigResolver(cfg)
@@ -514,9 +567,10 @@ func TestResolveProject_ComponentMatchingCaseInsensitive(t *testing.T) {
 	// original casing ("FlightCtl-Core"). Case-insensitive matching
 	// bridges this gap.
 	cfg := minimalConfig()
-	cfg.Jira.Projects[0].Components["flightctl"] = models.ComponentConfig{
-		Repo: "https://github.com/org/flightctl.git", Profile: "default",
+	cfg.Jira.Projects[0].Workspaces["flightctl"] = models.WorkspaceConfig{
+		Repos: []models.RepoEntry{{Name: "flightctl", URL: "https://github.com/org/flightctl.git", Profile: "default"}},
 	}
+	cfg.Jira.Projects[0].Components["flightctl"] = models.ComponentConfig{Workspace: "flightctl"}
 
 	r, err := projectresolver.NewConfigResolver(cfg)
 	if err != nil {
@@ -534,8 +588,8 @@ func TestResolveProject_ComponentMatchingCaseInsensitive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "flightctl" {
-		t.Errorf("repo = %q, want %q", ps.Repo, "flightctl")
+	if ps.Repos[0].Repo != "flightctl" {
+		t.Errorf("repo = %q, want %q", ps.Repos[0].Repo, "flightctl")
 	}
 }
 
@@ -543,9 +597,10 @@ func TestResolveProject_ComponentMatchingExactTakesPriority(t *testing.T) {
 	cfg := minimalConfig()
 	// Exact match for "Backend" and case-insensitive match for "backend"
 	// should both exist. Exact match should win.
-	cfg.Jira.Projects[0].Components["Backend"] = models.ComponentConfig{
-		Repo: "https://github.com/org/exact.git", Profile: "default",
+	cfg.Jira.Projects[0].Workspaces["exact"] = models.WorkspaceConfig{
+		Repos: []models.RepoEntry{{Name: "exact", URL: "https://github.com/org/exact.git", Profile: "default"}},
 	}
+	cfg.Jira.Projects[0].Components["Backend"] = models.ComponentConfig{Workspace: "exact"}
 	// "backend" already exists from minimalConfig
 
 	r, err := projectresolver.NewConfigResolver(cfg)
@@ -564,8 +619,8 @@ func TestResolveProject_ComponentMatchingExactTakesPriority(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "exact" {
-		t.Errorf("repo = %q, want %q (exact match should take priority)", ps.Repo, "exact")
+	if ps.Repos[0].Repo != "exact" {
+		t.Errorf("repo = %q, want %q (exact match should take priority)", ps.Repos[0].Repo, "exact")
 	}
 }
 
@@ -588,8 +643,8 @@ func TestResolveProject_ComponentMatchingUppercase(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Repo != "backend" {
-		t.Errorf("repo = %q, want %q", ps.Repo, "backend")
+	if ps.Repos[0].Repo != "backend" {
+		t.Errorf("repo = %q, want %q", ps.Repos[0].Repo, "backend")
 	}
 }
 
@@ -623,14 +678,14 @@ func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if ps.Container.Image != "custom-image:latest" {
-		t.Errorf("container image = %q, want %q", ps.Container.Image, "custom-image:latest")
+	if ps.Repos[0].Container.Image != "custom-image:latest" {
+		t.Errorf("container image = %q, want %q", ps.Repos[0].Container.Image, "custom-image:latest")
 	}
-	if ps.Container.ResourceLimits.Memory != "16g" {
-		t.Errorf("container memory = %q, want %q", ps.Container.ResourceLimits.Memory, "16g")
+	if ps.Repos[0].Container.ResourceLimits.Memory != "16g" {
+		t.Errorf("container memory = %q, want %q", ps.Repos[0].Container.ResourceLimits.Memory, "16g")
 	}
-	if ps.Container.ResourceLimits.CPUs != "8" {
-		t.Errorf("container cpus = %q, want %q", ps.Container.ResourceLimits.CPUs, "8")
+	if ps.Repos[0].Container.ResourceLimits.CPUs != "8" {
+		t.Errorf("container cpus = %q, want %q", ps.Repos[0].Container.ResourceLimits.CPUs, "8")
 	}
 }
 
@@ -721,17 +776,17 @@ func TestResolveProject_PropagatesImports(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(settings.Imports) != 2 {
-		t.Fatalf("len(Imports) = %d, want 2", len(settings.Imports))
+	if len(settings.Repos[0].Imports) != 2 {
+		t.Fatalf("len(Imports) = %d, want 2", len(settings.Repos[0].Imports))
 	}
-	if settings.Imports[0].Repo != "https://github.com/org/workflows" {
-		t.Errorf("Imports[0].Repo = %q, want workflows URL", settings.Imports[0].Repo)
+	if settings.Repos[0].Imports[0].Repo != "https://github.com/org/workflows" {
+		t.Errorf("Imports[0].Repo = %q, want workflows URL", settings.Repos[0].Imports[0].Repo)
 	}
-	if settings.Imports[0].Ref != "main" {
-		t.Errorf("Imports[0].Ref = %q, want %q", settings.Imports[0].Ref, "main")
+	if settings.Repos[0].Imports[0].Ref != "main" {
+		t.Errorf("Imports[0].Ref = %q, want %q", settings.Repos[0].Imports[0].Ref, "main")
 	}
-	if settings.Imports[1].Path != ".tools" {
-		t.Errorf("Imports[1].Path = %q, want %q", settings.Imports[1].Path, ".tools")
+	if settings.Repos[0].Imports[1].Path != ".tools" {
+		t.Errorf("Imports[1].Path = %q, want %q", settings.Repos[0].Imports[1].Path, ".tools")
 	}
 }
 
@@ -753,18 +808,19 @@ func TestResolveProject_NoImports_EmptySlice(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if settings.Imports == nil {
+	if settings.Repos[0].Imports == nil {
 		t.Error("Imports should be non-nil empty slice")
 	}
-	if len(settings.Imports) != 0 {
-		t.Errorf("len(Imports) = %d, want 0", len(settings.Imports))
+	if len(settings.Repos[0].Imports) != 0 {
+		t.Errorf("len(Imports) = %d, want 0", len(settings.Repos[0].Imports))
 	}
 }
 
 // --- helpers ---
 
-// minimalConfig returns a Config with a single project, one component
-// mapping, and Bug status transitions -- enough for most tests.
+// minimalConfig returns a Config with a single project, one workspace
+// with one repo, one component mapping, and Bug status transitions --
+// enough for most tests.
 func minimalConfig() *models.Config {
 	cfg := &models.Config{
 		AIProvider: "claude",
@@ -780,11 +836,15 @@ func minimalConfig() *models.Config {
 						},
 					},
 					GitPullRequestFieldName: "customfield_10100",
-					Components: models.ComponentMap{
-						"backend": models.ComponentConfig{
-							Repo:    "https://github.com/my-org/backend.git",
-							Profile: "default",
+					Workspaces: map[string]models.WorkspaceConfig{
+						"backend": {
+							Repos: []models.RepoEntry{
+								{Name: "backend", URL: "https://github.com/my-org/backend.git", Profile: "default"},
+							},
 						},
+					},
+					Components: models.ComponentMap{
+						"backend": models.ComponentConfig{Workspace: "backend"},
 					},
 					Profiles: map[string]models.Profile{
 						"default": {},
@@ -793,7 +853,6 @@ func minimalConfig() *models.Config {
 			},
 		},
 	}
-	cfg.GitHub.TargetBranch = "main"
 	return cfg
 }
 

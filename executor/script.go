@@ -21,9 +21,16 @@ type scriptParams struct {
 	Model string
 }
 
+// cliOutputPath is the path, relative to the workspace root, where the
+// wrapper script saves the raw JSON output from the AI CLI. The Go code
+// parses this to extract cost and token data — no jq required in the
+// container.
+const cliOutputPath = ".ai-bot/cli-output.json"
+
 // buildExecCommand returns the command to pass to container Exec.
-// The command runs the AI CLI, captures its exit code, writes
-// session-output.json, and exits with the CLI's exit code.
+// The command runs the AI CLI with --output-format json, saves the
+// raw JSON output for the Go code to parse, and exits with the CLI's
+// exit code.
 func buildExecCommand(params scriptParams) []string {
 	var cmd string
 
@@ -33,22 +40,18 @@ func buildExecCommand(params scriptParams) []string {
 	case "gemini":
 		cmd = buildGeminiCommand(params.Model)
 	default:
-		// Generic fallback: assume the provider CLI accepts -p
 		cmd = fmt.Sprintf("%s -p %q", params.Provider, taskPrompt)
 	}
 
 	script := fmt.Sprintf(`%s \
-    2>&1 | tee /workspace/.ai-bot/session.log
+    > /workspace/%s \
+    2> >(tee /workspace/.ai-bot/session.log >&2)
 AI_EXIT=${PIPESTATUS[0]}
 
-# Write session metadata (always, even on failure).
-cat > /workspace/%s <<'ENDJSON'
-{"exit_code": EXITCODE_PLACEHOLDER}
-ENDJSON
-sed -i "s/EXITCODE_PLACEHOLDER/${AI_EXIT}/" /workspace/%s
+printf '{"exit_code": %%d}\n' "$AI_EXIT" > /workspace/%s
 
 exit ${AI_EXIT}
-`, cmd, sessionOutputPath, sessionOutputPath)
+`, cmd, cliOutputPath, sessionOutputPath)
 
 	return []string{"bash", "-c", script}
 }
@@ -57,7 +60,7 @@ const taskPrompt = "Read /workspace/.ai-bot/task.md and complete the task descri
 
 func buildClaudeCommand(allowedTools, model string) string {
 	var parts []string
-	parts = append(parts, "claude", "--dangerously-skip-permissions")
+	parts = append(parts, "claude", "--dangerously-skip-permissions", "--output-format", "json", "--verbose")
 
 	if model != "" {
 		parts = append(parts, "--model", fmt.Sprintf("%q", model))
@@ -73,7 +76,7 @@ func buildClaudeCommand(allowedTools, model string) string {
 
 func buildGeminiCommand(model string) string {
 	var parts []string
-	parts = append(parts, "gemini", "-y")
+	parts = append(parts, "gemini", "-y", "--output-format", "json")
 
 	if model != "" {
 		parts = append(parts, "--model", fmt.Sprintf("%q", model))

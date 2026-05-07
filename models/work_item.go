@@ -60,6 +60,27 @@ type Attachment struct {
 	URL string
 }
 
+// Comment represents a comment on a work item.
+type Comment struct {
+	// ID is the tracker-specific identifier for this comment.
+	ID string
+
+	// Body is the plain-text content of the comment.
+	Body string
+
+	// Author is the display name of the comment author.
+	Author string
+
+	// AuthorEmail is the email address of the comment author.
+	AuthorEmail string
+}
+
+// RepoCoord identifies a single GitHub repository by owner and name.
+type RepoCoord struct {
+	Owner string
+	Repo  string
+}
+
 // HasSecurityLevel reports whether this work item has a security level set.
 func (w WorkItem) HasSecurityLevel() bool {
 	return w.SecurityLevel != ""

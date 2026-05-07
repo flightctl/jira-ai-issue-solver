@@ -27,6 +27,10 @@ type JiraClient interface {
 	GetTicketSecurityLevel(key string) (*models.JiraSecurity, error)
 	UpdateTicketStatus(key string, status string) error
 	AddComment(key string, comment string) error
+	GetComments(key string) ([]models.JiraComment, error)
+	UpdateComment(key, commentID, body string) error
+	DeleteComment(key, commentID string) error
+	RemoveLabel(key, label string) error
 	UpdateTicketFieldByName(key string, fieldName string, value interface{}) error
 	GetFieldIDByName(fieldName string) (string, error)
 	DownloadAttachment(url string) ([]byte, error)
@@ -145,12 +149,51 @@ func (a *Adapter) AddComment(key, body string) error {
 	return nil
 }
 
+func (a *Adapter) GetComments(key string) ([]models.Comment, error) {
+	jiraComments, err := a.jira.GetComments(key)
+	if err != nil {
+		return nil, fmt.Errorf("get comments for %s: %w", key, err)
+	}
+
+	comments := make([]models.Comment, 0, len(jiraComments))
+	for _, jc := range jiraComments {
+		comments = append(comments, models.Comment{
+			ID:          jc.ID,
+			Body:        string(jc.Body),
+			Author:      jc.Author.DisplayName,
+			AuthorEmail: jc.Author.EmailAddress,
+		})
+	}
+	return comments, nil
+}
+
+func (a *Adapter) UpdateComment(key, commentID, body string) error {
+	if err := a.jira.UpdateComment(key, commentID, body); err != nil {
+		return fmt.Errorf("update comment %s on %s: %w", commentID, key, err)
+	}
+	return nil
+}
+
+func (a *Adapter) DeleteComment(key, commentID string) error {
+	if err := a.jira.DeleteComment(key, commentID); err != nil {
+		return fmt.Errorf("delete comment %s from %s: %w", commentID, key, err)
+	}
+	return nil
+}
+
 func (a *Adapter) DownloadAttachment(url string) ([]byte, error) {
 	data, err := a.jira.DownloadAttachment(url)
 	if err != nil {
 		return nil, fmt.Errorf("download attachment: %w", err)
 	}
 	return data, nil
+}
+
+func (a *Adapter) RemoveLabel(key, label string) error {
+	if err := a.jira.RemoveLabel(key, label); err != nil {
+		return fmt.Errorf("remove label %q from %s: %w", label, key, err)
+	}
+	return nil
 }
 
 func (a *Adapter) SetFieldValue(key, field, value string) error {

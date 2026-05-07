@@ -64,6 +64,47 @@ func (m *FSManager) Create(ticketKey, repoURL string) (string, error) {
 	return dir, nil
 }
 
+func (m *FSManager) CreateMultiRepo(ticketKey string, repos []RepoEntry) (string, error) {
+	if len(repos) == 0 {
+		return "", fmt.Errorf("at least one repo entry is required")
+	}
+
+	seen := make(map[string]struct{}, len(repos))
+	for _, repo := range repos {
+		if repo.Name == "" || repo.Name == "." || repo.Name == ".." || filepath.Base(repo.Name) != repo.Name {
+			return "", fmt.Errorf("invalid repo name %q: must be a simple name without path separators", repo.Name)
+		}
+		if _, exists := seen[repo.Name]; exists {
+			return "", fmt.Errorf("duplicate repo name %q", repo.Name)
+		}
+		seen[repo.Name] = struct{}{}
+	}
+
+	dir := m.workspacePath(ticketKey)
+
+	if _, err := os.Stat(dir); err == nil {
+		return "", fmt.Errorf("workspace already exists for %s", ticketKey)
+	}
+
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", fmt.Errorf("create workspace directory: %w", err)
+	}
+
+	for _, repo := range repos {
+		repoDir := filepath.Join(dir, repo.Name)
+		if err := m.cloner.CloneRepository(repo.URL, repoDir); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("clone repository %s for %s: %w", repo.Name, ticketKey, err)
+		}
+	}
+
+	m.logger.Info("Created multi-repo workspace",
+		zap.String("ticket", ticketKey),
+		zap.Int("repos", len(repos)),
+		zap.String("path", dir))
+	return dir, nil
+}
+
 func (m *FSManager) Find(ticketKey string) (string, bool) {
 	dir := m.workspacePath(ticketKey)
 	info, err := os.Stat(dir)
@@ -82,6 +123,21 @@ func (m *FSManager) FindOrCreate(ticketKey, repoURL string) (string, bool, error
 	}
 
 	dir, err := m.Create(ticketKey, repoURL)
+	if err != nil {
+		return "", false, err
+	}
+	return dir, false, nil
+}
+
+func (m *FSManager) FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry) (string, bool, error) {
+	if dir, found := m.Find(ticketKey); found {
+		m.logger.Debug("Reusing existing workspace",
+			zap.String("ticket", ticketKey),
+			zap.String("path", dir))
+		return dir, true, nil
+	}
+
+	dir, err := m.CreateMultiRepo(ticketKey, repos)
 	if err != nil {
 		return "", false, err
 	}

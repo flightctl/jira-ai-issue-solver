@@ -17,8 +17,11 @@ var (
 	_ scanner.JobSubmitter        = (*StubJobSubmitter)(nil)
 	_ scanner.PRFetcher           = (*StubPRFetcher)(nil)
 	_ scanner.RepoLocator         = (*StubRepoLocator)(nil)
+	_ scanner.CIChecker           = (*StubCIChecker)(nil)
 	_ scanner.WorkspaceCleaner    = (*StubWorkspaceCleaner)(nil)
 	_ scanner.TicketStatusChecker = (*StubTicketStatusChecker)(nil)
+	_ scanner.LabelRemover        = (*StubLabelRemover)(nil)
+	_ scanner.RetryResetter       = (*StubRetryResetter)(nil)
 )
 
 // StubScanner is a test double for [scanner.Scanner].
@@ -70,6 +73,18 @@ func (s *StubJobSubmitter) Submit(event jobmanager.Event) (*jobmanager.Job, erro
 	return &jobmanager.Job{}, nil
 }
 
+// StubRetryResetter is a test double for [scanner.RetryResetter].
+type StubRetryResetter struct {
+	ResetRetriesFunc func(ticketKey string) error
+}
+
+func (s *StubRetryResetter) ResetRetries(ticketKey string) error {
+	if s.ResetRetriesFunc != nil {
+		return s.ResetRetriesFunc(ticketKey)
+	}
+	return nil
+}
+
 // StubPRFetcher is a test double for [scanner.PRFetcher].
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
@@ -94,10 +109,11 @@ func (s *StubPRFetcher) GetPRComments(owner, repo string, number int, since time
 
 // StubRepoLocator is a test double for [scanner.RepoLocator].
 // Set the corresponding Func field to control each method's behavior.
-// When a Func field is nil, the method returns empty strings.
+// When a Func field is nil, the method returns empty/zero values.
 type StubRepoLocator struct {
-	LocateRepoFunc func(workItem models.WorkItem) (string, string, error)
-	ForkOwnerFunc  func(workItem models.WorkItem) string
+	LocateRepoFunc  func(workItem models.WorkItem) (string, string, error)
+	LocateReposFunc func(workItem models.WorkItem) ([]models.RepoCoord, error)
+	ForkOwnerFunc   func(workItem models.WorkItem) string
 }
 
 func (s *StubRepoLocator) LocateRepo(workItem models.WorkItem) (string, string, error) {
@@ -107,11 +123,30 @@ func (s *StubRepoLocator) LocateRepo(workItem models.WorkItem) (string, string, 
 	return "", "", nil
 }
 
+func (s *StubRepoLocator) LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error) {
+	if s.LocateReposFunc != nil {
+		return s.LocateReposFunc(workItem)
+	}
+	return []models.RepoCoord{}, nil
+}
+
 func (s *StubRepoLocator) ForkOwner(workItem models.WorkItem) string {
 	if s.ForkOwnerFunc != nil {
 		return s.ForkOwnerFunc(workItem)
 	}
 	return ""
+}
+
+// StubCIChecker is a test double for [scanner.CIChecker].
+type StubCIChecker struct {
+	ListCheckRunsForRefFunc func(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+}
+
+func (s *StubCIChecker) ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+	if s.ListCheckRunsForRefFunc != nil {
+		return s.ListCheckRunsForRefFunc(owner, repo, ref)
+	}
+	return []models.CheckRunFailure{}, true, nil
 }
 
 // StubWorkspaceCleaner is a test double for [scanner.WorkspaceCleaner].
@@ -140,4 +175,16 @@ func (s *StubTicketStatusChecker) GetWorkItem(key string) (*models.WorkItem, err
 		return s.GetWorkItemFunc(key)
 	}
 	return &models.WorkItem{}, nil
+}
+
+// StubLabelRemover is a test double for [scanner.LabelRemover].
+type StubLabelRemover struct {
+	RemoveLabelFunc func(key, label string) error
+}
+
+func (s *StubLabelRemover) RemoveLabel(key, label string) error {
+	if s.RemoveLabelFunc != nil {
+		return s.RemoveLabelFunc(key, label)
+	}
+	return nil
 }

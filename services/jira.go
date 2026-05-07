@@ -281,6 +281,10 @@ func (s *JiraServiceImpl) doPut(url string, bodyReader io.Reader) ([]byte, error
 	return s.doOperation("PUT", url, bodyReader, http.StatusNoContent, http.StatusOK)
 }
 
+func (s *JiraServiceImpl) doDelete(url string) ([]byte, error) {
+	return s.doOperation("DELETE", url, nil, http.StatusNoContent, http.StatusOK)
+}
+
 func (s *JiraServiceImpl) doPost(url string, bodyReader io.Reader) ([]byte, error) {
 	return s.doOperation("POST", url, bodyReader, http.StatusNoContent, http.StatusCreated, http.StatusOK)
 }
@@ -395,6 +399,82 @@ func (s *JiraServiceImpl) AddComment(key string, comment string) error {
 
 	if _, err := s.doPost(url, bytes.NewReader(jsonPayload)); err != nil {
 		return fmt.Errorf("failed to add comment: %w", err)
+	}
+
+	return nil
+}
+
+// GetComments retrieves all comments on a ticket.
+func (s *JiraServiceImpl) GetComments(key string) ([]models.JiraComment, error) {
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s/comment", s.config.Jira.BaseURL, key)
+
+	body, err := s.doGet(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get comments: %w", err)
+	}
+
+	var result models.JiraComments
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode comments: %w", err)
+	}
+
+	if result.Comments == nil {
+		return []models.JiraComment{}, nil
+	}
+	return result.Comments, nil
+}
+
+// UpdateComment replaces the body of an existing comment.
+func (s *JiraServiceImpl) UpdateComment(key, commentID, body string) error {
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s/comment/%s", s.config.Jira.BaseURL, key, commentID)
+
+	payload := map[string]any{
+		"body": models.TextToADF(body),
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update comment payload: %w", err)
+	}
+
+	if _, err := s.doPut(url, bytes.NewReader(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to update comment: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteComment removes a comment from a ticket.
+func (s *JiraServiceImpl) DeleteComment(key, commentID string) error {
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s/comment/%s", s.config.Jira.BaseURL, key, commentID)
+
+	if _, err := s.doDelete(url); err != nil {
+		return fmt.Errorf("failed to delete comment: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveLabel removes a single label from a ticket without affecting
+// other labels. Uses the Jira update operation syntax.
+func (s *JiraServiceImpl) RemoveLabel(key, label string) error {
+	url := fmt.Sprintf("%s/rest/api/3/issue/%s", s.config.Jira.BaseURL, key)
+
+	payload := map[string]any{
+		"update": map[string]any{
+			"labels": []map[string]string{
+				{"remove": label},
+			},
+		},
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal remove label payload: %w", err)
+	}
+
+	if _, err := s.doPut(url, bytes.NewReader(jsonPayload)); err != nil {
+		return fmt.Errorf("failed to remove label: %w", err)
 	}
 
 	return nil

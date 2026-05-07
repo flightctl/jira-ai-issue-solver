@@ -276,6 +276,26 @@ func (c *Coordinator) PurgeCompleted() int {
 	return removed
 }
 
+func (c *Coordinator) ResetRetries(ticketKey string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.stopped {
+		return ErrShutdown
+	}
+
+	if ticketKey == "" {
+		return errors.New("ticket key must not be empty")
+	}
+
+	delete(c.failureCounts, ticketKey)
+
+	c.logger.Info("Retry count reset",
+		zap.String("ticket", ticketKey))
+
+	return nil
+}
+
 // --- internal ---
 
 // tryDispatch starts goroutines for pending jobs when concurrency

@@ -3,6 +3,7 @@ package executor_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,11 +11,17 @@ import (
 	"time"
 
 	"jira-ai-issue-solver/container"
+	"jira-ai-issue-solver/container/containertest"
 	"jira-ai-issue-solver/executor"
+	"jira-ai-issue-solver/executor/executortest"
 	"jira-ai-issue-solver/jobmanager"
 	"jira-ai-issue-solver/models"
 	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/taskfile"
+	"jira-ai-issue-solver/taskfile/taskfiletest"
+	"jira-ai-issue-solver/tracker/trackertest"
+	"jira-ai-issue-solver/workspace"
+	"jira-ai-issue-solver/workspace/workspacetest"
 )
 
 // --- Happy path ---
@@ -23,7 +30,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 	d := newFeedbackDeps(t)
 
 	var commitBranch string
-	d.git.CommitChangesFunc = func(_, _, _, branch, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, branch, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		commitBranch = branch
 		return "abc1234567890", nil
 	}
@@ -75,7 +82,7 @@ func TestExecuteFeedback_HappyPath(t *testing.T) {
 func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 	d := newFeedbackDeps(t)
 
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -113,7 +120,7 @@ func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 func TestExecuteFeedback_FallbackWhenNoResponsesFile(t *testing.T) {
 	d := newFeedbackDeps(t)
 
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "def5678901234", nil
 	}
 
@@ -200,7 +207,7 @@ func TestExecuteFeedback_SyncCalledBeforeAI(t *testing.T) {
 
 func TestExecuteFeedback_NoChanges(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil
 	}
 
@@ -209,6 +216,33 @@ func TestExecuteFeedback_NoChanges(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "no changes") {
 		t.Fatalf("expected no-changes error, got %v", err)
+	}
+}
+
+func TestExecuteFeedback_NoChanges_WithCommentResponses(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
+		return false, nil
+	}
+
+	writeCommentResponses(t, d.wsDir, `[
+		{"comment_id": 1, "response": "No code changes needed — this is already handled."}
+	]`)
+
+	var repliedTo []int64
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
+		repliedTo = append(repliedTo, commentID)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("expected no error when comment responses exist, got %v", err)
+	}
+	if len(repliedTo) != 1 || repliedTo[0] != 1 {
+		t.Errorf("expected reply to comment 1, got %v", repliedTo)
 	}
 }
 
@@ -305,7 +339,7 @@ func TestExecuteFeedback_NoNewComments(t *testing.T) {
 
 func TestExecuteFeedback_CommitFails(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -330,7 +364,7 @@ func TestExecuteFeedback_CommitFails(t *testing.T) {
 
 func TestExecuteFeedback_StatusNotRevertedOnFailure(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 
@@ -352,15 +386,12 @@ func TestExecuteFeedback_StatusNotRevertedOnFailure(t *testing.T) {
 
 func TestExecuteFeedback_ErrorCommentsDisabled(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
-			Owner:                "org",
-			Repo:                 "repo",
-			CloneURL:             "https://github.com/org/repo.git",
-			BaseBranch:           "main",
+			Repos:                []models.RepoSettings{{Owner: "org", Repo: "repo", CloneURL: "https://github.com/org/repo.git", BaseBranch: "main"}},
 			InProgressStatus:     "In Progress",
 			InReviewStatus:       "In Review",
 			TodoStatus:           "To Do",
@@ -406,7 +437,7 @@ func TestExecuteFeedback_ContainerStoppedOnSuccess(t *testing.T) {
 
 func TestExecuteFeedback_ContainerStoppedOnFailure(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.HasChangesFunc = func(dir string) (bool, error) {
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
 		return false, nil // trigger failure
 	}
 
@@ -466,7 +497,7 @@ func TestExecuteFeedback_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -515,7 +546,7 @@ func TestExecuteFeedback_MultipleComments(t *testing.T) {
 	}
 
 	var taskNewComments []models.PRComment
-	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _, _ string) error {
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, _ []models.CheckRunFailure, dir, _, _ string) error {
 		taskNewComments = newC
 		return nil
 	}
@@ -551,7 +582,7 @@ func TestExecuteFeedback_ConversationCommentUsesPostIssueComment(t *testing.T) {
 			{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Update docs", IsReviewComment: false},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -594,7 +625,7 @@ func TestExecuteFeedback_ReviewCommentUsesReplyToComment(t *testing.T) {
 			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this line", IsReviewComment: true},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "def5678901234", nil
 	}
 
@@ -632,7 +663,7 @@ func TestExecuteFeedback_MixedCommentTypes(t *testing.T) {
 			{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "Update readme", IsReviewComment: false},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "abc1234567890", nil
 	}
 
@@ -949,7 +980,7 @@ func TestExecuteFeedback_FilterKeepsActionableComments(t *testing.T) {
 	}
 
 	var taskNewComments []models.PRComment
-	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, dir, _, _ string) error {
+	d.taskWriter.WriteFeedbackTaskFunc = func(pr models.PRDetails, newC, addrC []models.PRComment, _ []models.CheckRunFailure, dir, _, _ string) error {
 		taskNewComments = newC
 		return nil
 	}
@@ -1038,7 +1069,7 @@ func TestExecuteFeedback_AuthRestoredOnExecFailure(t *testing.T) {
 
 func TestExecuteFeedback_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newFeedbackDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -1102,5 +1133,299 @@ func newFeedbackJob(ticketKey string) *jobmanager.Job {
 		TicketKey:  ticketKey,
 		Type:       jobmanager.JobTypeFeedback,
 		AttemptNum: 1,
+	}
+}
+
+// --- Multi-repo feedback ---
+
+func newMultiRepoFeedbackDeps(t *testing.T) *testDeps {
+	t.Helper()
+	wsDir := t.TempDir()
+
+	for _, name := range []string{"svc-a", "svc-b"} {
+		if err := os.MkdirAll(filepath.Join(wsDir, name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return &testDeps{
+		tracker: &trackertest.Stub{
+			GetWorkItemFunc: func(key string) (*models.WorkItem, error) {
+				return &models.WorkItem{
+					Key: key, Summary: "Multi-repo bug", Type: "Bug",
+					Components: []string{}, Labels: []string{},
+				}, nil
+			},
+		},
+		git: &executortest.StubGitService{
+			HasChangesFunc: func(dir, baseBranch string) (bool, error) {
+				return true, nil
+			},
+			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+				return "def456", nil
+			},
+			GetPRForBranchFunc: func(owner, repo, head string) (*models.PRDetails, error) {
+				return &models.PRDetails{
+					Number: 10, Title: "Fix", Branch: head,
+					URL: fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+				}, nil
+			},
+			GetPRCommentsFunc: func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+				if repo == "svc-a" {
+					return []models.PRComment{
+						{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Fix A", IsReviewComment: true},
+					}, nil
+				}
+				return []models.PRComment{}, nil
+			},
+		},
+		containers: &containertest.StubManager{
+			ResolveConfigFunc: func(_ string, _ *container.SettingsOverride) (*container.Config, error) {
+				return &container.Config{Image: "test:latest"}, nil
+			},
+			StartFunc: func(_ context.Context, _ *container.Config, _, _ string, _ map[string]string) (*container.Container, error) {
+				return &container.Container{ID: "c1", Name: "test-c1"}, nil
+			},
+		},
+		workspaces: &workspacetest.Stub{
+			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+				return wsDir, true, nil
+			},
+		},
+		taskWriter: &taskfiletest.Stub{},
+		projects: &executortest.StubProjectResolver{
+			ResolveProjectFunc: func(_ models.WorkItem) (*models.ProjectSettings, error) {
+				return &models.ProjectSettings{
+					Repos: []models.RepoSettings{
+						{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+						{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
+					},
+					Container:        models.ContainerSettings{Image: "fat:latest"},
+					InProgressStatus: "In Progress",
+					InReviewStatus:   "In Review",
+					TodoStatus:       "To Do",
+				}, nil
+			},
+		},
+		wsDir: wsDir,
+	}
+}
+
+func TestMultiRepoFeedback_HappyPath(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	var repliedTo []int64
+	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
+		repliedTo = append(repliedTo, commentID)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Comment 100 on svc-a should be replied to.
+	if len(repliedTo) != 1 || repliedTo[0] != 100 {
+		t.Errorf("replied to comments %v, want [100]", repliedTo)
+	}
+
+	if result.PRURL == "" {
+		t.Error("result.PRURL should not be empty")
+	}
+}
+
+func TestMultiRepoFeedback_NoNewComments(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// No new comments on any repo.
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.PRURL != "" {
+		t.Errorf("expected empty PRURL when no comments, got %q", result.PRURL)
+	}
+}
+
+func TestMultiRepoFeedback_NoPRsFound(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, fmt.Errorf("not found")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err == nil || !strings.Contains(err.Error(), "no PRs found") {
+		t.Fatalf("expected no-PRs error, got %v", err)
+	}
+}
+
+func TestMultiRepoFeedback_SkipsSyncForReposWithoutPRs(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// Only svc-a has a PR; svc-b does not.
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		if repo == "svc-a" {
+			return &models.PRDetails{
+				Number: 10, Title: "Fix", Branch: head,
+				URL: fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+			}, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	// svc-b has no changes (AI only touched svc-a).
+	d.git.HasChangesFunc = func(dir, _ string) (bool, error) {
+		return filepath.Base(dir) == "svc-a", nil
+	}
+
+	// SyncWithRemote should only be called for svc-a. If called for
+	// svc-b it would fail because the branch was never pushed there.
+	d.git.SyncWithRemoteFunc = func(dir, _ string, _ []string) error {
+		if filepath.Base(dir) == "svc-b" {
+			t.Fatal("SyncWithRemote called for repo without a PR")
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMultiRepoFeedback_WritesMultiRepoFeedbackTask(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	var taskWritten bool
+	d.taskWriter.WriteMultiRepoFeedbackTaskFunc = func(
+		_ models.PRDetails, newComments, _ []models.PRComment,
+		_ []models.CheckRunFailure,
+		_ string, repos []taskfile.RepoContext,
+	) error {
+		taskWritten = true
+		if len(repos) != 2 {
+			t.Errorf("repo contexts = %d, want 2", len(repos))
+		}
+		if len(newComments) != 1 {
+			t.Errorf("new comments = %d, want 1", len(newComments))
+		}
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !taskWritten {
+		t.Error("WriteMultiRepoFeedbackTask was not called")
+	}
+}
+
+// --- Emoji reactions ---
+
+func TestExecuteFeedback_ReactsToNewComments(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc123", nil
+	}
+
+	var reacted []int64
+	d.git.AddCommentReactionFunc = func(_, _ string, comment models.PRComment, reaction string) error {
+		if reaction != "eyes" {
+			t.Errorf("reaction = %q, want eyes", reaction)
+		}
+		reacted = append(reacted, comment.ID)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reacted) != 1 || reacted[0] != 1 {
+		t.Errorf("reacted comment IDs = %v, want [1]", reacted)
+	}
+}
+
+func TestExecuteFeedback_ReactionFailureNonFatal(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc123", nil
+	}
+
+	d.git.AddCommentReactionFunc = func(_, _ string, _ models.PRComment, _ string) error {
+		return errors.New("reaction API error")
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("reaction failure should not abort pipeline, got: %v", err)
+	}
+}
+
+func TestExecuteFeedback_NoReactionsWhenNoNewComments(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	d.git.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	d.git.AddCommentReactionFunc = func(_, _ string, _ models.PRComment, _ string) error {
+		t.Error("AddCommentReaction should not be called when there are no comments")
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, _ = p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+}
+
+func TestExecuteMultiRepoFeedback_ReactsPerRepo(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	type reactionCall struct {
+		repo      string
+		commentID int64
+	}
+	var reactions []reactionCall
+	d.git.AddCommentReactionFunc = func(_, repo string, comment models.PRComment, reaction string) error {
+		if reaction != "eyes" {
+			t.Errorf("reaction = %q, want eyes", reaction)
+		}
+		reactions = append(reactions, reactionCall{repo: repo, commentID: comment.ID})
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reactions) != 1 {
+		t.Fatalf("expected 1 reaction, got %d", len(reactions))
+	}
+	if reactions[0].repo != "svc-a" {
+		t.Errorf("reaction repo = %q, want svc-a", reactions[0].repo)
+	}
+	if reactions[0].commentID != 100 {
+		t.Errorf("reaction comment ID = %d, want 100", reactions[0].commentID)
 	}
 }

@@ -14,18 +14,27 @@ var _ workspace.Manager = (*Stub)(nil)
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type Stub struct {
-	CreateFunc          func(ticketKey, repoURL string) (string, error)
-	FindFunc            func(ticketKey string) (string, bool)
-	FindOrCreateFunc    func(ticketKey, repoURL string) (string, bool, error)
-	CleanupFunc         func(ticketKey string) error
-	CleanupStaleFunc    func(maxAge time.Duration) (int, error)
-	CleanupByFilterFunc func(shouldRemove func(ticketKey string) bool) (int, error)
-	ListFunc            func() ([]workspace.Info, error)
+	CreateFunc                func(ticketKey, repoURL string) (string, error)
+	CreateMultiRepoFunc       func(ticketKey string, repos []workspace.RepoEntry) (string, error)
+	FindFunc                  func(ticketKey string) (string, bool)
+	FindOrCreateFunc          func(ticketKey, repoURL string) (string, bool, error)
+	FindOrCreateMultiRepoFunc func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error)
+	CleanupFunc               func(ticketKey string) error
+	CleanupStaleFunc          func(maxAge time.Duration) (int, error)
+	CleanupByFilterFunc       func(shouldRemove func(ticketKey string) bool) (int, error)
+	ListFunc                  func() ([]workspace.Info, error)
 }
 
 func (s *Stub) Create(ticketKey, repoURL string) (string, error) {
 	if s.CreateFunc != nil {
 		return s.CreateFunc(ticketKey, repoURL)
+	}
+	return "", nil
+}
+
+func (s *Stub) CreateMultiRepo(ticketKey string, repos []workspace.RepoEntry) (string, error) {
+	if s.CreateMultiRepoFunc != nil {
+		return s.CreateMultiRepoFunc(ticketKey, repos)
 	}
 	return "", nil
 }
@@ -40,6 +49,13 @@ func (s *Stub) Find(ticketKey string) (string, bool) {
 func (s *Stub) FindOrCreate(ticketKey, repoURL string) (string, bool, error) {
 	if s.FindOrCreateFunc != nil {
 		return s.FindOrCreateFunc(ticketKey, repoURL)
+	}
+	return "", false, nil
+}
+
+func (s *Stub) FindOrCreateMultiRepo(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+	if s.FindOrCreateMultiRepoFunc != nil {
+		return s.FindOrCreateMultiRepoFunc(ticketKey, repos)
 	}
 	return "", false, nil
 }

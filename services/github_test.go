@@ -634,7 +634,6 @@ func TestGetBranchBaseCommit_BranchExists(t *testing.T) {
 
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
-	config.GitHub.TargetBranch = "main"
 
 	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
 		mockClient.Transport,
@@ -652,7 +651,7 @@ func TestGetBranchBaseCommit_BranchExists(t *testing.T) {
 		logger:       zap.NewNop(),
 	}
 
-	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "existing-branch", "fake-token")
+	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "existing-branch", "main", "fake-token")
 
 	if err != nil {
 		t.Fatalf("Expected no error but got: %v", err)
@@ -698,7 +697,6 @@ func TestGetBranchBaseCommit_BranchDoesNotExist(t *testing.T) {
 
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
-	config.GitHub.TargetBranch = "main"
 
 	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
 		mockClient.Transport,
@@ -716,7 +714,7 @@ func TestGetBranchBaseCommit_BranchDoesNotExist(t *testing.T) {
 		logger:       zap.NewNop(),
 	}
 
-	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "new-branch", "fake-token")
+	baseSHA, branchExists, err := service.getBranchBaseCommit("owner", "repo", "new-branch", "main", "fake-token")
 
 	if err != nil {
 		t.Fatalf("Expected no error but got: %v", err)
@@ -788,7 +786,7 @@ func TestGitHubService_HasChanges_NoChanges(t *testing.T) {
 	githubService := NewGitHubService(config, zap.NewNop())
 
 	// Test HasChanges - should return false (no changes)
-	hasChanges, err := githubService.HasChanges(tempDir)
+	hasChanges, err := githubService.HasChanges(tempDir, "main")
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}
@@ -860,7 +858,7 @@ func TestGitHubService_HasChanges_WorkingTreeChanges(t *testing.T) {
 	githubService := NewGitHubService(config, zap.NewNop())
 
 	// Test HasChanges - should return true (working tree changes)
-	hasChanges, err := githubService.HasChanges(tempDir)
+	hasChanges, err := githubService.HasChanges(tempDir, "main")
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}
@@ -970,12 +968,11 @@ func TestGitHubService_HasChanges_NewBranch(t *testing.T) {
 	config := &models.Config{}
 	config.GitHub.AppID = 123456
 	config.GitHub.PrivateKeyPath = keyPath
-	config.GitHub.TargetBranch = defaultBranch
 	githubService := NewGitHubService(config, zap.NewNop())
 
 	// A new branch with no working tree changes and no local commits
 	// relative to origin/<targetBranch> has nothing to commit.
-	hasChanges, err := githubService.HasChanges(tempDir)
+	hasChanges, err := githubService.HasChanges(tempDir, defaultBranch)
 	if err != nil {
 		t.Fatalf("HasChanges failed: %v", err)
 	}
@@ -1136,5 +1133,186 @@ func TestSyncFork_APIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "forbidden") {
 		t.Errorf("error should mention API response, got: %v", err)
+	}
+}
+
+func TestAddCommentReaction_ReviewComment(t *testing.T) {
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	var capturedPath, capturedMethod string
+	var capturedBody map[string]string
+
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/pulls/comments/") && req.Method == "POST" {
+			capturedPath = req.URL.Path
+			capturedMethod = req.Method
+			body, _ := io.ReadAll(req.Body)
+			_ = json.Unmarshal(body, &capturedBody)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":1,"content":"eyes"}`))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}, nil
+	})
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		mockClient.Transport,
+		config.GitHub.AppID,
+		keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	service := &GitHubServiceImpl{
+		config:              config,
+		client:              mockClient,
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		installationIDs:     map[string]int64{"adalton/repo": 1},
+		logger:              zap.NewNop(),
+	}
+
+	comment := models.PRComment{
+		ID:              42,
+		IsReviewComment: true,
+	}
+
+	err = service.AddCommentReaction("adalton", "repo", comment, "eyes")
+	if err != nil {
+		t.Fatalf("AddCommentReaction should succeed, got: %v", err)
+	}
+	if capturedMethod != "POST" {
+		t.Errorf("expected POST, got %s", capturedMethod)
+	}
+	if !strings.Contains(capturedPath, "/pulls/comments/42/reactions") {
+		t.Errorf("expected pull request comment reaction path, got %s", capturedPath)
+	}
+	if capturedBody["content"] != "eyes" {
+		t.Errorf("expected eyes reaction, got %s", capturedBody["content"])
+	}
+}
+
+func TestAddCommentReaction_ConversationComment(t *testing.T) {
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	var capturedPath string
+
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/issues/comments/") && req.Method == "POST" {
+			capturedPath = req.URL.Path
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":1,"content":"eyes"}`))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}, nil
+	})
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		mockClient.Transport,
+		config.GitHub.AppID,
+		keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	service := &GitHubServiceImpl{
+		config:              config,
+		client:              mockClient,
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		installationIDs:     map[string]int64{"adalton/repo": 1},
+		logger:              zap.NewNop(),
+	}
+
+	comment := models.PRComment{
+		ID:              99,
+		IsReviewComment: false,
+	}
+
+	err = service.AddCommentReaction("adalton", "repo", comment, "eyes")
+	if err != nil {
+		t.Fatalf("AddCommentReaction should succeed, got: %v", err)
+	}
+	if !strings.Contains(capturedPath, "/issues/comments/99/reactions") {
+		t.Errorf("expected issue comment reaction path, got %s", capturedPath)
+	}
+}
+
+func TestAddCommentReaction_APIError(t *testing.T) {
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/reactions") {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"message":"forbidden"}`))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}, nil
+	})
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		mockClient.Transport,
+		config.GitHub.AppID,
+		keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	service := &GitHubServiceImpl{
+		config:              config,
+		client:              mockClient,
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: make(map[int64]*github.Client),
+		installationIDs:     map[string]int64{"adalton/repo": 1},
+		logger:              zap.NewNop(),
+	}
+
+	comment := models.PRComment{ID: 42, IsReviewComment: true}
+
+	err = service.AddCommentReaction("adalton", "repo", comment, "eyes")
+	if err == nil {
+		t.Fatal("AddCommentReaction should return error for 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "eyes") {
+		t.Errorf("error should mention reaction type, got: %v", err)
 	}
 }

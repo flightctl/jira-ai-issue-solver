@@ -41,10 +41,10 @@ const (
 	InstructionsPath = ".ai-bot/instructions.md"
 
 	// PRDescriptionPath is the path, relative to the workspace root,
-	// where the AI agent may write a PR title and description. If
-	// present, the first line is used as the PR title and the
-	// remaining lines as the PR body. This file is read by the bot
-	// after the AI session completes.
+	// where the AI agent may write a PR title and description. The
+	// bot parses this file after the AI session completes, trying
+	// labeled titles ("Title: ..."), heading sections ("## Title"),
+	// and first-line fallback to extract the PR title.
 	PRDescriptionPath = ".ai-bot/pr.md"
 
 	// AttachmentsDirPath is the path, relative to the workspace
@@ -89,33 +89,74 @@ const (
 	CommentResponsesPath = ".ai-bot/comment-responses.json"
 )
 
+// RepoContext describes a repository within a multi-repo workspace.
+// The writer uses Dir to read repo-level .ai-bot/ files. Override
+// fields (from the repo's profile in the config) take precedence over
+// repo-level files, enabling prototyping without committing changes.
+type RepoContext struct {
+	// Name is the display name for this repo in the task file.
+	Name string
+
+	// Dir is the absolute path to the repo within the workspace.
+	Dir string
+
+	// OverrideInstructions from the repo's profile; takes precedence
+	// over .ai-bot/instructions.md in the repo.
+	OverrideInstructions string
+
+	// OverrideNewTicketWorkflow from the repo's profile; takes
+	// precedence over .ai-bot/new-ticket-workflow.md in the repo.
+	OverrideNewTicketWorkflow string
+
+	// OverrideFeedbackWorkflow from the repo's profile; takes
+	// precedence over .ai-bot/feedback-workflow.md in the repo.
+	OverrideFeedbackWorkflow string
+}
+
 // Writer generates task files that the AI agent reads to understand
 // what work needs to be done.
 type Writer interface {
 	// WriteIssue writes the Jira issue content to <dir>/.ai-bot/issue.md.
 	// This file contains the stable problem definition (key, summary,
-	// description) and is referenced by both new-ticket and feedback
-	// task files. attachmentFiles lists filenames downloaded to
+	// description, comments) and is referenced by both new-ticket and
+	// feedback task files. attachmentFiles lists filenames downloaded to
 	// .ai-bot/attachments/; if non-empty, an Attachments section is
-	// added referencing them.
-	WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error
+	// added referencing them. comments are human comments from the
+	// tracker; if non-empty, a Comments section is appended.
+	WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error
 
 	// WriteNewTicketTask generates a task file for implementing a new
 	// ticket. The file is written to <dir>/.ai-bot/task.md.
-	// fallbackInstructions is used when .ai-bot/instructions.md does
-	// not exist (universal guidance like validation commands).
-	// fallbackWorkflow is used when .ai-bot/new-ticket-workflow.md
-	// does not exist (multi-phase workflow for new tickets only).
-	WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
+	// overrideInstructions takes precedence over .ai-bot/instructions.md
+	// (for prototyping changes). overrideWorkflow takes precedence over
+	// .ai-bot/new-ticket-workflow.md.
+	WriteNewTicketTask(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
 
 	// WriteFeedbackTask generates a task file for addressing PR review
 	// feedback. newComments are comments requiring action;
 	// addressedComments are previously handled comments included for
-	// context. The file is written to <dir>/.ai-bot/task.md.
-	// fallbackInstructions is used when .ai-bot/instructions.md does
-	// not exist in the workspace. fallbackWorkflow is used when
-	// .ai-bot/feedback-workflow.md does not exist.
+	// context. ciFailures contains failed CI check runs with their
+	// annotations and step logs. The file is written to
+	// <dir>/.ai-bot/task.md. overrideInstructions takes precedence
+	// over .ai-bot/instructions.md. overrideWorkflow takes precedence
+	// over .ai-bot/feedback-workflow.md.
 	WriteFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
-		dir, fallbackInstructions, fallbackWorkflow string) error
+		ciFailures []models.CheckRunFailure,
+		dir, overrideInstructions, overrideWorkflow string) error
+
+	// WriteMultiRepoNewTicketTask generates a task file for a multi-repo
+	// workspace. Per-repo instruction and workflow sections use profile
+	// overrides when set, falling back to .ai-bot/ files in each repo.
+	// The task file is written to <wsDir>/.ai-bot/task.md.
+	WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []RepoContext) error
+
+	// WriteMultiRepoFeedbackTask generates a feedback task file for a
+	// multi-repo workspace. Per-repo instruction and workflow sections
+	// use profile overrides when set, falling back to .ai-bot/ files
+	// in each repo. The task file is written to <wsDir>/.ai-bot/task.md.
+	WriteMultiRepoFeedbackTask(prDetails models.PRDetails,
+		newComments, addressedComments []models.PRComment,
+		ciFailures []models.CheckRunFailure,
+		wsDir string, repos []RepoContext) error
 }

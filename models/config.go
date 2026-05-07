@@ -105,10 +105,42 @@ type Profile struct {
 	FeedbackWorkflow  string            `yaml:"feedback_workflow" mapstructure:"feedback_workflow"`
 }
 
-// ComponentConfig maps a Jira component to its repository and profile.
-type ComponentConfig struct {
-	Repo    string `yaml:"repo" mapstructure:"repo"`
+// WorkspaceConfig defines a named workspace — a group of one or more
+// repositories that constitute a working environment for AI sessions.
+// Single-repo projects are just workspaces with one entry.
+type WorkspaceConfig struct {
+	// Container holds workspace-level container settings. Required for
+	// multi-repo workspaces (the "fat container" with all toolchains).
+	// For single-repo workspaces, this may be empty — the repo's
+	// profile container is used instead.
+	Container ContainerSettings `yaml:"container" mapstructure:"container"`
+
+	// Repos lists the repositories in this workspace.
+	Repos []RepoEntry `yaml:"repos" mapstructure:"repos"`
+}
+
+// RepoEntry associates a repository with a profile within a workspace.
+type RepoEntry struct {
+	// Name is a short identifier used as the subdirectory name in
+	// multi-repo workspaces (e.g., "fulfillment-service").
+	Name string `yaml:"name" mapstructure:"name"`
+
+	// URL is the clone URL (e.g., "https://github.com/org/repo").
+	URL string `yaml:"url" mapstructure:"url"`
+
+	// Profile references a named profile in the project's Profiles
+	// map. The profile provides fallback container, imports,
+	// instructions, and workflow settings for this repo.
 	Profile string `yaml:"profile" mapstructure:"profile"`
+
+	// TargetBranch is the base branch for pull requests (e.g.,
+	// "main", "master"). Defaults to "main" when empty.
+	TargetBranch string `yaml:"target_branch" mapstructure:"target_branch"`
+}
+
+// ComponentConfig maps a Jira component to a workspace.
+type ComponentConfig struct {
+	Workspace string `yaml:"workspace" mapstructure:"workspace"`
 }
 
 // ComponentMap preserves the case of component names when parsing YAML.
@@ -272,15 +304,25 @@ type ProjectConfig struct {
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
 
+	// DefaultWorkspace is the workspace used for tickets that have
+	// no Jira component or whose component has no mapping in
+	// Components. Projects that require explicit component mapping
+	// leave this empty.
+	DefaultWorkspace string `yaml:"default_workspace" mapstructure:"default_workspace"`
+
+	// Workspaces maps workspace names to their definitions. Each
+	// workspace groups one or more repositories that form a working
+	// environment for AI sessions.
+	Workspaces map[string]WorkspaceConfig `yaml:"workspaces" mapstructure:"workspaces"`
+
 	// Profiles maps profile names to their settings. Each profile
 	// bundles container settings, imports, instructions, and
-	// workflow for a group of components. Multiple components can
+	// workflow for a repo within a workspace. Multiple repos can
 	// reference the same profile to avoid duplication.
 	Profiles map[string]Profile `yaml:"profiles" mapstructure:"profiles"`
 
-	// Components maps Jira component names to their repository URL
-	// and profile. Component names are matched case-insensitively
-	// at lookup time.
+	// Components maps Jira component names to workspace names.
+	// Component names are matched case-insensitively at lookup time.
 	Components ComponentMap `yaml:"components" mapstructure:"components"`
 }
 
@@ -345,12 +387,12 @@ type Config struct {
 		// Common fields
 		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"` // Optional: auto-constructed for GitHub App mode
-		TargetBranch      string   `yaml:"target_branch" mapstructure:"target_branch" default:"main"`
 		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
 		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
 		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
 		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`           // List of usernames whose PR comments are completely ignored
+		IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`       // Check run names excluded from CI failure detection
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
@@ -385,6 +427,12 @@ type Config struct {
 	Gemini struct {
 		APIKey string `yaml:"api_key" mapstructure:"api_key"`
 		Model  string `yaml:"model" mapstructure:"model"`
+
+		// Token pricing (USD per million tokens) for cost estimation.
+		// Defaults match gemini-2.5-flash rates as of 2026-04.
+		InputPricePerMTok  float64 `yaml:"input_price_per_mtok" mapstructure:"input_price_per_mtok"`
+		OutputPricePerMTok float64 `yaml:"output_price_per_mtok" mapstructure:"output_price_per_mtok"`
+		CachedPricePerMTok float64 `yaml:"cached_price_per_mtok" mapstructure:"cached_price_per_mtok"`
 	} `yaml:"gemini" mapstructure:"gemini"`
 
 	// Workspaces configuration for ticket-scoped workspace lifecycle
@@ -509,6 +557,22 @@ type GuardrailsConfig struct {
 	// CircuitBreakerCooldownMinutes is how long (in minutes) the circuit
 	// breaker stays open before automatically resetting.
 	CircuitBreakerCooldownMinutes int `yaml:"circuit_breaker_cooldown_minutes" mapstructure:"circuit_breaker_cooldown_minutes" default:"5"`
+
+	// MaxCIFixAttempts limits how many times the bot will attempt to
+	// fix CI failures on a single PR. Zero disables CI failure
+	// detection entirely. Negative means unlimited attempts.
+	MaxCIFixAttempts int `yaml:"max_ci_fix_attempts" mapstructure:"max_ci_fix_attempts" default:"3"`
+
+	// RetryLabel is the Jira label that users can add to a ticket to
+	// trigger a retry after the bot has exhausted its retry limit.
+	// The scanner detects the label, resets the retry count, removes
+	// the label, and resubmits the ticket. Empty disables the feature.
+	RetryLabel string `yaml:"retry_label" mapstructure:"retry_label" default:"ai-retry"`
+
+	// MinCommentLength is the minimum character length for Jira ticket
+	// comments to be included in AI task files. Comments shorter than
+	// this are filtered as noise. Zero disables length filtering.
+	MinCommentLength int `yaml:"min_comment_length" mapstructure:"min_comment_length" default:"20"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -603,12 +667,12 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.private_key_path")
 	bindEnv("github.bot_username")
 	bindEnv("github.bot_email")
-	bindEnv("github.target_branch")
 	bindEnv("github.pr_label")
 	bindEnv("github.ssh_key_path")
 	bindEnv("github.max_thread_depth")
 	bindEnv("github.known_bot_usernames")
 	bindEnv("github.ignored_usernames")
+	bindEnv("github.ignored_check_names")
 
 	// AI configuration
 	bindEnv("ai_provider")
@@ -621,6 +685,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("claude.vertex_credentials_file")
 	bindEnv("gemini.api_key")
 	bindEnv("gemini.model")
+	bindEnv("gemini.input_price_per_mtok")
+	bindEnv("gemini.output_price_per_mtok")
+	bindEnv("gemini.cached_price_per_mtok")
 
 	// Server configuration
 	bindEnv("server.port")
@@ -647,6 +714,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.circuit_breaker_threshold")
 	bindEnv("guardrails.circuit_breaker_window_minutes")
 	bindEnv("guardrails.circuit_breaker_cooldown_minutes")
+	bindEnv("guardrails.max_ci_fix_attempts")
+	bindEnv("guardrails.min_comment_length")
+	bindEnv("guardrails.retry_label")
 
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
@@ -699,25 +769,33 @@ func LoadConfig(configPath string) (*Config, error) {
 		defaultProject := ProjectConfig{}
 
 		// Handle component_to_repo from environment. Creates a
-		// "default" profile with no container/imports/instructions
-		// and maps each component to that profile. Operators who need
-		// profiles must use a YAML config file.
+		// "default" profile, one workspace per component, and maps
+		// each component to its workspace. Operators who need
+		// multi-repo workspaces must use a YAML config file.
 		componentToRepoStr := v.GetString("component_to_repo")
 		if componentToRepoStr != "" {
 			pairs := strings.Split(componentToRepoStr, ",")
 			components := make(ComponentMap)
+			workspaces := make(map[string]WorkspaceConfig)
 
 			for _, pair := range pairs {
 				parts := strings.SplitN(pair, "=", 2)
 				if len(parts) == 2 {
-					components[parts[0]] = ComponentConfig{
-						Repo:    parts[1],
-						Profile: "default",
+					compName := parts[0]
+					repoURL := parts[1]
+					repoName := repoNameFromURL(repoURL)
+
+					components[compName] = ComponentConfig{
+						Workspace: compName,
+					}
+					workspaces[compName] = WorkspaceConfig{
+						Repos: []RepoEntry{{Name: repoName, URL: repoURL, Profile: "default"}},
 					}
 				}
 			}
 
 			defaultProject.Components = components
+			defaultProject.Workspaces = workspaces
 			defaultProject.Profiles = map[string]Profile{
 				"default": {},
 			}
@@ -829,7 +907,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jira.disable_error_comments", false)
 
 	// GitHub defaults
-	v.SetDefault("github.target_branch", "main")
 	v.SetDefault("github.pr_label", "ai-pr")
 	v.SetDefault("github.max_thread_depth", 5)
 	v.SetDefault("github.known_bot_usernames", []string{
@@ -847,6 +924,11 @@ func setDefaults(v *viper.Viper) {
 	// AI Provider defaults
 	v.SetDefault("ai_provider", "claude")
 
+	// Gemini pricing defaults (USD per million tokens, gemini-2.5-flash rates)
+	v.SetDefault("gemini.input_price_per_mtok", 0.15)
+	v.SetDefault("gemini.output_price_per_mtok", 0.60)
+	v.SetDefault("gemini.cached_price_per_mtok", 0.0375)
+
 	// Workspace defaults
 	v.SetDefault("workspaces.ttl_days", 7)
 
@@ -860,6 +942,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.circuit_breaker_threshold", 5)
 	v.SetDefault("guardrails.circuit_breaker_window_minutes", 10)
 	v.SetDefault("guardrails.circuit_breaker_cooldown_minutes", 5)
+	v.SetDefault("guardrails.max_ci_fix_attempts", 3)
+	v.SetDefault("guardrails.retry_label", "ai-retry")
+	v.SetDefault("guardrails.min_comment_length", 20)
 }
 
 // validate validates the entire configuration
@@ -989,39 +1074,99 @@ func (p *ProjectConfig) validate(index int) error {
 		return fmt.Errorf("%s.status_transitions: at least one ticket type must be configured", prefix)
 	}
 
-	if len(p.Components) == 0 {
-		return fmt.Errorf("%s.components: at least one component mapping is required", prefix)
+	if len(p.Workspaces) == 0 {
+		return fmt.Errorf("%s.workspaces: at least one workspace must be configured", prefix)
 	}
 
 	if len(p.Profiles) == 0 {
 		return fmt.Errorf("%s.profiles: at least one profile must be configured", prefix)
 	}
 
-	// Verify every component references a valid profile.
-	for name, comp := range p.Components {
-		if comp.Repo == "" {
-			return fmt.Errorf("%s.components.%s.repo is required", prefix, name)
+	// Validate each workspace.
+	for wsName, ws := range p.Workspaces {
+		if len(ws.Repos) == 0 {
+			return fmt.Errorf("%s.workspaces.%s: at least one repo is required", prefix, wsName)
 		}
-		if comp.Profile == "" {
-			return fmt.Errorf("%s.components.%s.profile is required", prefix, name)
-		}
-		if _, ok := p.Profiles[comp.Profile]; !ok {
-			// Case-insensitive fallback.
-			found := false
-			lower := strings.ToLower(comp.Profile)
-			for key := range p.Profiles {
-				if strings.ToLower(key) == lower {
-					found = true
-					break
+		seenRepoNames := make(map[string]struct{}, len(ws.Repos))
+		for i, repo := range ws.Repos {
+			if repo.Name == "" {
+				return fmt.Errorf("%s.workspaces.%s.repos[%d].name is required", prefix, wsName, i)
+			}
+			if _, exists := seenRepoNames[repo.Name]; exists {
+				return fmt.Errorf("%s.workspaces.%s.repos[%d].name: duplicate repo name %q", prefix, wsName, i, repo.Name)
+			}
+			seenRepoNames[repo.Name] = struct{}{}
+			if repo.URL == "" {
+				return fmt.Errorf("%s.workspaces.%s.repos[%d].url is required", prefix, wsName, i)
+			}
+			if repo.Profile != "" {
+				if _, ok := p.Profiles[repo.Profile]; !ok {
+					if !profileExistsCaseInsensitive(p.Profiles, repo.Profile) {
+						return fmt.Errorf("%s.workspaces.%s.repos[%d].profile: profile %q does not exist", prefix, wsName, i, repo.Profile)
+					}
 				}
 			}
-			if !found {
-				return fmt.Errorf("%s.components.%s.profile: profile %q does not exist", prefix, name, comp.Profile)
+		}
+	}
+
+	// Either components or default_workspace must be configured.
+	if len(p.Components) == 0 && p.DefaultWorkspace == "" {
+		return fmt.Errorf("%s: either components or default_workspace must be configured", prefix)
+	}
+
+	// Validate default_workspace references a valid workspace.
+	if p.DefaultWorkspace != "" {
+		if _, ok := p.Workspaces[p.DefaultWorkspace]; !ok {
+			if !workspaceExistsCaseInsensitive(p.Workspaces, p.DefaultWorkspace) {
+				return fmt.Errorf("%s.default_workspace: workspace %q does not exist", prefix, p.DefaultWorkspace)
+			}
+		}
+	}
+
+	// Verify every component references a valid workspace.
+	for name, comp := range p.Components {
+		if comp.Workspace == "" {
+			return fmt.Errorf("%s.components.%s.workspace is required", prefix, name)
+		}
+		if _, ok := p.Workspaces[comp.Workspace]; !ok {
+			if !workspaceExistsCaseInsensitive(p.Workspaces, comp.Workspace) {
+				return fmt.Errorf("%s.components.%s.workspace: workspace %q does not exist", prefix, name, comp.Workspace)
 			}
 		}
 	}
 
 	return nil
+}
+
+func profileExistsCaseInsensitive(profiles map[string]Profile, name string) bool {
+	lower := strings.ToLower(name)
+	for key := range profiles {
+		if strings.ToLower(key) == lower {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceExistsCaseInsensitive(workspaces map[string]WorkspaceConfig, name string) bool {
+	lower := strings.ToLower(name)
+	for key := range workspaces {
+		if strings.ToLower(key) == lower {
+			return true
+		}
+	}
+	return false
+}
+
+// repoNameFromURL extracts a short repo name from a clone URL.
+// e.g., "https://github.com/org/backend.git" -> "backend"
+func repoNameFromURL(rawURL string) string {
+	trimmed := strings.TrimRight(rawURL, "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 0 {
+		return rawURL
+	}
+	return strings.TrimSuffix(parts[len(parts)-1], ".git")
 }
 
 // validate checks guardrails configuration values.

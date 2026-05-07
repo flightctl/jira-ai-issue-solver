@@ -159,6 +159,44 @@ def fetch_ci_status(prs):
     return results
 
 
+COST_MARKER = "<!-- AI-BOT-COST -->"
+
+
+def fetch_pr_cost(repo, pr_number):
+    """Fetch the AI session cost from a PR's issue comments.
+
+    Looks for a comment containing the AI-BOT-COST marker and parses
+    the total from the markdown table. Returns 0.0 if no cost comment
+    is found or parsing fails.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments",
+             "--paginate", "--jq", "[.[].body]"],
+            capture_output=True, text=True, check=True,
+        )
+        bodies = []
+        for line in result.stdout.strip().split("\n"):
+            if line:
+                bodies.extend(json.loads(line))
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return 0.0
+
+    for body in bodies:
+        if COST_MARKER not in body:
+            continue
+        for line in body.split("\n"):
+            if "**Total**" in line:
+                parts = line.split("|")
+                if len(parts) >= 3:
+                    cost_str = parts[2].strip().strip("*").strip("$").strip("*")
+                    try:
+                        return float(cost_str)
+                    except ValueError:
+                        pass
+    return 0.0
+
+
 def filter_and_split(prs):
     """Exclude test tickets, apply project filter, and split into legacy/redesigned."""
     excluded_count = 0
@@ -190,10 +228,12 @@ def filter_and_split(prs):
     return legacy, redesigned, excluded_count, filtered_count
 
 
-def compute_metrics(prs, ci_status):
+def compute_metrics(prs, ci_status, pr_costs=None):
     """Compute adoption metrics from a list of PRs. Returns None if empty."""
     if not prs:
         return None
+    if pr_costs is None:
+        pr_costs = {}
 
     total = len(prs)
     merged = [p for p in prs if p["state"] == "MERGED"]
@@ -245,6 +285,7 @@ def compute_metrics(prs, ci_status):
 
     # -- Per-ticket detail --
     ticket_rows = []
+    total_cost = 0.0
     for ticket, t_prs in sorted(tickets.items()):
         m = sum(1 for p in t_prs if p["state"] == "MERGED")
         c = sum(1 for p in t_prs if p["state"] == "CLOSED")
@@ -257,6 +298,10 @@ def compute_metrics(prs, ci_status):
             1 for p in t_prs
             if ci_passed(ci_status.get((p["_repo"], p["number"]))) is not None
         )
+        ticket_cost = sum(
+            pr_costs.get((p["_repo"], p["number"]), 0.0) for p in t_prs
+        )
+        total_cost += ticket_cost
         # Show repo if multiple target repos
         repo_suffix = ""
         if len(TARGET_REPOS) > 1:
@@ -270,6 +315,7 @@ def compute_metrics(prs, ci_status):
             "open": o,
             "resolved": ticket in resolved,
             "ci_pass": f"{ci_ok}/{ci_total}" if ci_total else "n/a",
+            "cost": ticket_cost,
         })
 
     prs_per_ticket_vals = [len(t_prs) for t_prs in tickets.values()]
@@ -287,6 +333,7 @@ def compute_metrics(prs, ci_status):
                     "merge_rate": repo_merged / len(repo_prs) * 100,
                 }
 
+    tickets_with_cost = [t for t in ticket_rows if t["cost"] > 0]
     return {
         "total_prs": total,
         "merged": len(merged),
@@ -316,6 +363,10 @@ def compute_metrics(prs, ci_status):
         "monthly_trend": dict(monthly),
         "ticket_details": ticket_rows,
         "repo_breakdown": repo_breakdown,
+        "total_cost": total_cost,
+        "avg_cost_per_ticket": (
+            total_cost / len(tickets_with_cost) if tickets_with_cost else 0
+        ),
     }
 
 
@@ -368,6 +419,8 @@ def format_comparison_table(legacy, redesigned):
     lines.append(f"| Avg time to merge | {format_merge_time(legacy['avg_merge_hours'] if legacy else None)} | {format_merge_time(redesigned['avg_merge_hours'] if redesigned else None)} |")
     lines.append(f"| Lines added (merged) | {val(legacy, 'merged_additions', lambda v: f'+{v}')} | {val(redesigned, 'merged_additions', lambda v: f'+{v}')} |")
     lines.append(f"| Lines removed (merged) | {val(legacy, 'merged_deletions', lambda v: f'-{v}')} | {val(redesigned, 'merged_deletions', lambda v: f'-{v}')} |")
+    lines.append(f"| **Total AI cost** | **{val(legacy, 'total_cost', lambda v: f'${v:.2f}')}** | **{val(redesigned, 'total_cost', lambda v: f'${v:.2f}')}** |")
+    lines.append(f"| Avg cost per ticket | {val(legacy, 'avg_cost_per_ticket', lambda v: f'${v:.2f}')} | {val(redesigned, 'avg_cost_per_ticket', lambda v: f'${v:.2f}')} |")
     lines.append("")
 
     return lines
@@ -422,13 +475,14 @@ def format_section_detail(label, m):
     # -- Per-ticket breakdown --
     lines.append(f"### {label}: Per-Ticket Breakdown")
     lines.append("")
-    lines.append("| Ticket | PRs | Merged | Closed | Open | CI Pass | Resolved |")
-    lines.append("|--------|-----|--------|--------|------|---------|----------|")
+    lines.append("| Ticket | PRs | Merged | Closed | Open | CI Pass | Cost | Resolved |")
+    lines.append("|--------|-----|--------|--------|------|---------|------|----------|")
     for t in sorted(m["ticket_details"], key=lambda x: x["total"], reverse=True):
         resolved = "Yes" if t["resolved"] else "No"
+        cost_str = f"${t['cost']:.2f}" if t.get("cost", 0) > 0 else "—"
         lines.append(
             f"| {t['ticket']} | {t['total']} | {t['merged']} "
-            f"| {t['closed']} | {t['open']} | {t['ci_pass']} | {resolved} |"
+            f"| {t['closed']} | {t['open']} | {t['ci_pass']} | {cost_str} | {resolved} |"
         )
     lines.append("")
 
@@ -512,8 +566,27 @@ def main():
     )
     ci_status = fetch_ci_status(all_filtered)
 
-    legacy_metrics = compute_metrics(legacy_prs, ci_status)
-    redesigned_metrics = compute_metrics(redesigned_prs, ci_status)
+    # Fetch cost data from PR comments
+    print(
+        f"Fetching AI cost data for {len(all_filtered)} PRs...",
+        file=sys.stderr,
+    )
+    pr_costs = {}
+    for pr in all_filtered:
+        repo = pr["_repo"]
+        num = pr["number"]
+        cost = fetch_pr_cost(repo, num)
+        if cost > 0:
+            pr_costs[(repo, num)] = cost
+    if pr_costs:
+        print(
+            f"Found cost data for {len(pr_costs)} PRs "
+            f"(total: ${sum(pr_costs.values()):.2f})",
+            file=sys.stderr,
+        )
+
+    legacy_metrics = compute_metrics(legacy_prs, ci_status, pr_costs)
+    redesigned_metrics = compute_metrics(redesigned_prs, ci_status, pr_costs)
 
     report = format_report(
         legacy_metrics, redesigned_metrics, excluded_count, filtered_count
@@ -536,12 +609,14 @@ def main():
         write_output("resolution_rate", f"{redesigned_metrics['resolution_rate']:.1f}")
         write_output("unique_tickets", redesigned_metrics["unique_tickets"])
         write_output("resolved_tickets", redesigned_metrics["resolved_tickets"])
+        write_output("total_cost", f"{redesigned_metrics['total_cost']:.2f}")
     else:
         write_output("total_prs", 0)
         write_output("merge_rate", "0.0")
         write_output("resolution_rate", "0.0")
         write_output("unique_tickets", 0)
         write_output("resolved_tickets", 0)
+        write_output("total_cost", "0.00")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ The application uses consumer-defined interfaces and clear package boundaries:
 - **`tracker/`** — `IssueTracker` interface for work item operations; `jira/` sub-package adapts `services.JiraService` to this interface
 - **`workspace/`** — `Manager` interface for ticket-scoped workspace lifecycle (clone, cleanup, TTL); `FSManager` implementation
 - **`container/`** — `Manager` interface for container lifecycle; `Runner` (CLI executor), `Resolver` (image/config resolution), `RuntimeManager` (orchestration)
-- **`taskfile/`** — `Writer` interface for generating AI task files; `MarkdownWriter` implementation; appends universal instructions and (for new tickets only) workflow from repo-level files or project-config fallback
+- **`taskfile/`** — `Writer` interface for generating AI task files; `MarkdownWriter` implementation; appends universal instructions and (for new tickets only) workflow from project-config overrides or repo-level files
 - **`repoconfig/`** — Parses `.ai-bot/config.yaml` from target repositories for per-repo AI/container settings and repo imports
 - **`projectresolver/`** — `Resolver` interface mapping ticket keys to project settings (component-to-repo, status transitions, imports)
 - **`executor/`** — `Pipeline` implementing new-ticket and PR-feedback execution flows
@@ -49,26 +49,32 @@ Multi-project configuration system (`models/config.go`):
 Key configuration features:
 - `GetProjectConfigForTicket()` retrieves the appropriate project config based on ticket key
 - `StatusTransitions` maps ticket types to their workflow statuses (todo, in_progress, in_review)
-- `ComponentToRepo` maps Jira components to GitHub repository URLs (case-insensitive; viper lowercases YAML map keys)
-- `Imports` (project-level) declares auxiliary repos to clone into the workspace; merged with repo-level imports from `.ai-bot/config.yaml`; optional `install` command runs inside the container after cloning
-- `Instructions` (project-level) provides universal fallback instructions (validation commands, coding standards); appended to all task types; repo-level `.ai-bot/instructions.md` takes precedence
-- `NewTicketWorkflow` (project-level) provides workflow instructions appended only to new-ticket task files; repo-level `.ai-bot/new-ticket-workflow.md` takes precedence
+- **Workspaces** group one or more repos into a named working environment. A single-repo project is a workspace with one entry. Multi-repo workspaces clone all repos into subdirectories and run one AI session against the whole workspace.
+- **Profiles** bundle container, imports, instructions, and workflow settings. Repos within workspaces reference profiles by name. Profile settings override repo-level `.ai-bot/` files when set, enabling prototyping without committing to the source repo.
+- `Components` maps Jira component names to workspaces (case-insensitive). `DefaultWorkspace` is used when tickets have no matching component.
+- **Container resolution**: workspace-level container overrides per-repo profile containers. Multi-repo workspaces require a workspace-level container (fat container with all toolchains).
+- `Imports` (per-repo profile) declares auxiliary repos to clone into the workspace; merged with repo-level imports from `.ai-bot/config.yaml`; optional `install` command runs inside the container after cloning
+- `Instructions` (per-repo profile) provides universal instructions (validation commands, coding standards); appended to all task types; overrides `.ai-bot/instructions.md` when set
+- `NewTicketWorkflow` (per-repo profile) provides workflow instructions appended only to new-ticket task files; overrides `.ai-bot/new-ticket-workflow.md` when set
+- `FeedbackWorkflow` (per-repo profile) provides workflow instructions appended only to feedback task files; overrides `.ai-bot/feedback-workflow.md` when set
 
 ### Workflow
 
 1. **Ticket Discovery**: `WorkItemScanner` polls for tickets in "todo" status via the `IssueTracker` interface
 2. **Job Submission**: Scanner submits jobs to `Coordinator`, which enforces concurrency, retry, and circuit breaker limits
 3. **Execution Pipeline** (`executor.Pipeline`):
-   - Resolves project config and maps ticket component to target repository
-   - Creates/reuses a workspace (clone + branch)
-   - Loads repo config (`.ai-bot/config.yaml`) and clones any declared imports into the workspace
-   - Generates a task file describing the work (appends project instructions from `.ai-bot/instructions.md` or project-config fallback)
-   - Resolves container image from repo-level config (`.ai-bot/container.json`, `.devcontainer/`) or global default
+   - Resolves project config and maps ticket component to workspace
+   - Creates/reuses a workspace (single-repo clone or multi-repo subdirectory layout)
+   - Creates branches in each repo
+   - Loads repo config (`.ai-bot/config.yaml`) per repo and clones any declared imports
+   - Generates a task file describing the work (per-repo instructions sections for multi-repo)
+   - Resolves container image (workspace-level for multi-repo, profile for single-repo)
    - Starts a container, runs import install commands (if configured), then runs the AI provider
    - Reads AI-generated PR description (`.ai-bot/pr.md`) if present; falls back to Jira-derived content
-   - Commits changes, pushes, and creates a PR
-   - Transitions the ticket through configured statuses and posts PR link
-4. **PR Feedback Processing**: `FeedbackScanner` monitors "in review" tickets, finds unaddressed review comments (filtering bots and ignored users), and submits feedback jobs through the same `Coordinator` → `Pipeline` path
+   - For single-repo: commits changes and creates one PR
+   - For multi-repo: fans out commit + PR creation per repo with changes (N repos → up to N PRs)
+   - Transitions the ticket through configured statuses and posts PR link(s)
+4. **PR Feedback Processing**: `FeedbackScanner` monitors "in review" tickets, checks all repos for PRs with unaddressed review comments (filtering bots and ignored users), and submits feedback jobs through the same `Coordinator` → `Pipeline` path. Multi-repo feedback aggregates comments across repos' PRs into one AI session, then fans out commits and replies.
 5. **Crash Recovery**: On startup, `StartupRunner` cleans up orphan containers, resets stuck "in progress" tickets, and purges expired workspaces
 
 ### Bot-Loop Prevention
@@ -272,7 +278,7 @@ See `models/config.go` LoadConfig() for complete environment variable binding.
 - `recovery/`: Crash recovery and startup cleanup
 - `costtracker/`: Daily AI cost tracking
 - `projectresolver/`: Ticket-to-project-config mapping
-- `taskfile/`: AI task file generation (universal instructions + new-ticket workflow from repo files or project-config fallback)
+- `taskfile/`: AI task file generation (universal instructions + new-ticket workflow from project-config overrides or repo files)
 - `repoconfig/`: Per-repo `.ai-bot/config.yaml` parsing (PR, AI, imports)
 - `config.example.yaml`: Complete configuration reference with comments
 - `docs/`: Architecture, debugging, setup guides, and [repo-level configuration](docs/repo-configuration.md)

@@ -13,28 +13,44 @@ var _ taskfile.Writer = (*Stub)(nil)
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns nil.
 type Stub struct {
-	WriteIssueFunc         func(workItem models.WorkItem, dir string, attachmentFiles []string) error
-	WriteNewTicketTaskFunc func(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error
-	WriteFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error
+	WriteIssueFunc                  func(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error
+	WriteNewTicketTaskFunc          func(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
+	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, dir, overrideInstructions, overrideWorkflow string) error
+	WriteMultiRepoNewTicketTaskFunc func(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error
+	WriteMultiRepoFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error
 }
 
-func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string) error {
+func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error {
 	if s.WriteIssueFunc != nil {
-		return s.WriteIssueFunc(workItem, dir, attachmentFiles)
+		return s.WriteIssueFunc(workItem, dir, attachmentFiles, comments)
 	}
 	return nil
 }
 
-func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, fallbackInstructions, fallbackWorkflow string) error {
+func (s *Stub) WriteNewTicketTask(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error {
 	if s.WriteNewTicketTaskFunc != nil {
-		return s.WriteNewTicketTaskFunc(workItem, dir, fallbackInstructions, fallbackWorkflow)
+		return s.WriteNewTicketTaskFunc(workItem, dir, overrideInstructions, overrideWorkflow)
 	}
 	return nil
 }
 
-func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, dir, fallbackInstructions, fallbackWorkflow string) error {
+func (s *Stub) WriteFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, dir, overrideInstructions, overrideWorkflow string) error {
 	if s.WriteFeedbackTaskFunc != nil {
-		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, dir, fallbackInstructions, fallbackWorkflow)
+		return s.WriteFeedbackTaskFunc(prDetails, newComments, addressedComments, ciFailures, dir, overrideInstructions, overrideWorkflow)
+	}
+	return nil
+}
+
+func (s *Stub) WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error {
+	if s.WriteMultiRepoNewTicketTaskFunc != nil {
+		return s.WriteMultiRepoNewTicketTaskFunc(workItem, wsDir, repos)
+	}
+	return nil
+}
+
+func (s *Stub) WriteMultiRepoFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error {
+	if s.WriteMultiRepoFeedbackTaskFunc != nil {
+		return s.WriteMultiRepoFeedbackTaskFunc(prDetails, newComments, addressedComments, ciFailures, wsDir, repos)
 	}
 	return nil
 }

@@ -44,14 +44,19 @@ jira:
           todo: "To Do"
           in_progress: "In Progress"
           in_review: "In Review"
-      component_to_repo:
-        backend: https://github.com/your-org/backend.git
+      workspaces:
+        default:
+          repos:
+            - name: backend
+              url: https://github.com/your-org/backend.git
+      components:
+        backend:
+          workspace: default
 
 github:
   app_id: 2591456                    # From administrator
   private_key_path: "/etc/bot/github-app.private-key.pem"  # Path INSIDE the container
   bot_username: bugs-buddy           # App name, no [bot] suffix
-  target_branch: main
   pr_label: ai-pr
   max_thread_depth: 5
   # Do NOT include [bot] suffixes — they are handled automatically
@@ -129,7 +134,7 @@ curl http://localhost:8080/health
 ## Step 5: Test with a Jira Ticket
 
 1. Create a test ticket in the configured project (e.g., PROJ1)
-2. Set the **Components** field to match a `component_to_repo` key (e.g., "backend")
+2. Set the **Components** field to match a `components` key (e.g., "backend")
 3. Set the ticket status to the configured "todo" status (e.g., "To Do")
 4. Add the bot's Jira username as a contributor on the ticket
 5. Wait for the scanner to pick it up (up to `interval_seconds`)
@@ -191,7 +196,7 @@ podman (preferred) or docker on the host.
 
 ### Tickets not being picked up
 
-1. Ticket **Components** field must match a `component_to_repo` key (case-sensitive)
+1. Ticket **Components** field must match a `components` key (case-insensitive)
 2. Bot's Jira username must be a contributor on the ticket
 3. Ticket must be in the configured "todo" status
 4. Check `jira.assignee_to_github_username` has the assignee's mapping
