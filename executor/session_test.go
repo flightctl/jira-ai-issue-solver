@@ -95,3 +95,114 @@ func writeCommentResponsesFile(t *testing.T, dir, content string) {
 		t.Fatal(err)
 	}
 }
+
+func writeAIBotFile(t *testing.T, dir, filename, content string) {
+	t.Helper()
+	aiBotDir := filepath.Join(dir, ".ai-bot")
+	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(aiBotDir, filename), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnrichFromCLIOutput_Claude(t *testing.T) {
+	dir := t.TempDir()
+	writeAIBotFile(t, dir, "cli-output.json", `{
+		"type": "result",
+		"total_cost_usd": 0.36888,
+		"is_error": false
+	}`)
+
+	var output SessionOutput
+	enrichFromCLIOutput(&output, dir)
+
+	if output.CostUSD != 0.36888 {
+		t.Errorf("CostUSD = %v, want 0.36888", output.CostUSD)
+	}
+	if output.InputTokens != 0 {
+		t.Error("InputTokens should be zero for Claude output")
+	}
+}
+
+func TestEnrichFromCLIOutput_Gemini(t *testing.T) {
+	dir := t.TempDir()
+	writeAIBotFile(t, dir, "cli-output.json", `{
+		"session_id": "abc",
+		"stats": {
+			"models": {
+				"gemini-2.5-flash-lite": {
+					"tokens": {
+						"input": 825,
+						"candidates": 52,
+						"cached": 0
+					}
+				},
+				"gemini-3-flash-preview": {
+					"tokens": {
+						"input": 25617,
+						"candidates": 771,
+						"cached": 16265
+					}
+				}
+			}
+		}
+	}`)
+
+	var output SessionOutput
+	enrichFromCLIOutput(&output, dir)
+
+	if output.CostUSD != 0 {
+		t.Error("CostUSD should be zero for Gemini (computed later)")
+	}
+	wantInput := 825 + 25617
+	if output.InputTokens != wantInput {
+		t.Errorf("InputTokens = %d, want %d", output.InputTokens, wantInput)
+	}
+	wantOutput := 52 + 771
+	if output.OutputTokens != wantOutput {
+		t.Errorf("OutputTokens = %d, want %d", output.OutputTokens, wantOutput)
+	}
+	if output.CachedTokens != 16265 {
+		t.Errorf("CachedTokens = %d, want 16265", output.CachedTokens)
+	}
+}
+
+func TestEnrichFromCLIOutput_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+
+	var output SessionOutput
+	enrichFromCLIOutput(&output, dir)
+
+	if output.CostUSD != 0 || output.InputTokens != 0 {
+		t.Error("should leave output unchanged when file is missing")
+	}
+}
+
+func TestEnrichFromCLIOutput_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	writeAIBotFile(t, dir, "cli-output.json", "not json at all")
+
+	var output SessionOutput
+	enrichFromCLIOutput(&output, dir)
+
+	if output.CostUSD != 0 || output.InputTokens != 0 {
+		t.Error("should leave output unchanged on invalid JSON")
+	}
+}
+
+func TestReadSessionOutput_WithCLIOutput(t *testing.T) {
+	dir := t.TempDir()
+	writeAIBotFile(t, dir, "session-output.json", `{"exit_code": 0}`)
+	writeAIBotFile(t, dir, "cli-output.json", `{"total_cost_usd": 1.23}`)
+
+	output := readSessionOutput(dir)
+
+	if output.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", output.ExitCode)
+	}
+	if output.CostUSD != 1.23 {
+		t.Errorf("CostUSD = %v, want 1.23", output.CostUSD)
+	}
+}

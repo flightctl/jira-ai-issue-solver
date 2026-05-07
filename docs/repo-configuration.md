@@ -38,7 +38,7 @@ commits at the GitHub API level.
 
 | File | Written by | Purpose | Session type |
 |------|-----------|---------|--------------|
-| `.ai-bot/pr.md` | AI | PR title (first line) and description (remaining lines) | Both |
+| `.ai-bot/pr.md` | AI | PR title and description (see [format](#pr-description-format)) | Both |
 | `.ai-bot/comment-responses.json` | AI | Per-comment response summaries (see format below) | Feedback only |
 | `.ai-bot/session-output.json` | Wrapper script | Session metadata (cost, exit code, validation status) | Both |
 
@@ -72,6 +72,32 @@ the bot falls back to generic "Addressed in \<commit\>" replies.
 The `comment_id` values correspond to the IDs included in the task file's
 review comment headers (e.g., `> [@reviewer, line 42, comment_id 123]`).
 Keep responses concise (1-2 sentences).
+
+#### PR Description Format
+
+The bot reads `.ai-bot/pr.md` after AI sessions to extract a PR title
+and body. The parser supports three formats (tried in order):
+
+1. **Labeled title** (scanned in first 10 lines):
+   `**Title:** Fix the thing` or `Title: Fix the thing`
+
+2. **Heading section** (recommended):
+   ```markdown
+   ## Title
+
+   [ISSUE_KEY]: short description in lowercase
+
+   ## Summary
+   ...PR body...
+   ```
+
+3. **Fallback**: The first non-empty line is used as the title (heading
+   prefixes and bold markers are stripped). If the first line is a generic
+   heading like "Summary" or "Description", the title is empty and the
+   bot derives it from the Jira ticket.
+
+The `## Title` heading format is recommended because it aligns with the
+`/document` phase output in the bugfix workflow and is unambiguous.
 
 These files live in the **target repository** (the repo the bot clones and
 works on), not in the bot's own repository.
@@ -272,7 +298,7 @@ Do not modify generated files.
   `instructions.md`.
 - **Prototyping**: Admins can set `instructions` in the bot's project
   config to prototype content before committing the file to the repo.
-  The repo-level file takes precedence when present.
+  The config value takes precedence over the repo-level file when set.
 
 ## New-Ticket Workflow (`.ai-bot/new-ticket-workflow.md`)
 
@@ -303,7 +329,7 @@ Each phase is defined in the corresponding skill file.
    retest, and re-review (up to 4 iterations).
 
 6. Write a PR title and description to .ai-bot/pr.md.
-   First line is the title. Remaining lines are the body.
+   Use the ## Title heading format (see PR Description Format below).
    Include a Root Cause section from .ai-bot/diagnosis.md.
 ```
 
@@ -319,7 +345,7 @@ Each phase is defined in the corresponding skill file.
   to prevent the AI from burning tokens in circles.
 - **Prototyping**: Admins can set `new_ticket_workflow` in the bot's
   project config to iterate on workflow content before committing the
-  file. The repo-level file takes precedence when present.
+  file. The config value takes precedence over the repo-level file when set.
 
 ### Why not put workflows in `instructions.md`?
 
@@ -503,7 +529,7 @@ Each phase is defined in the corresponding skill file.
    retest, and re-review (up to 4 iterations).
 
 6. Write a PR title and description to .ai-bot/pr.md.
-   First line is the title. Remaining lines are the body.
+   Use the ## Title heading format (see PR Description Format below).
    Include a Root Cause section from .ai-bot/diagnosis.md.
 ```
 

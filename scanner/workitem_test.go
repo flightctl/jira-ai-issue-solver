@@ -68,7 +68,7 @@ func TestNewWorkItemScanner_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := scanner.NewWorkItemScanner(tt.searcher, tt.submitter, tt.cfg, tt.logger)
+			_, err := scanner.NewWorkItemScanner(tt.searcher, tt.submitter, nil, nil, "", tt.cfg, tt.logger)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -83,6 +83,7 @@ func TestNewWorkItemScanner_ValidConfig(t *testing.T) {
 	s, err := scanner.NewWorkItemScanner(
 		&scannertest.StubIssueSearcher{},
 		&scannertest.StubJobSubmitter{},
+		nil, nil, "",
 		scanner.WorkItemScannerConfig{PollInterval: time.Minute},
 		zap.NewNop(),
 	)
@@ -292,7 +293,7 @@ func TestWorkItemScanner_SearchErrorContinues(t *testing.T) {
 	}
 
 	// Use short interval so second scan fires after first fails.
-	s, err := scanner.NewWorkItemScanner(searcher, submitter,
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, nil, nil, "",
 		scanner.WorkItemScannerConfig{PollInterval: 10 * time.Millisecond},
 		zap.NewNop())
 	if err != nil {
@@ -488,7 +489,7 @@ func TestWorkItemScanner_PassesCriteria(t *testing.T) {
 		PollInterval: time.Hour,
 	}
 
-	s, err := scanner.NewWorkItemScanner(searcher, &scannertest.StubJobSubmitter{}, cfg, zap.NewNop())
+	s, err := scanner.NewWorkItemScanner(searcher, &scannertest.StubJobSubmitter{}, nil, nil, "", cfg, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,11 +503,269 @@ func TestWorkItemScanner_PassesCriteria(t *testing.T) {
 	}
 }
 
+// --- retry label ---
+
+func TestWorkItemScanner_RetryLabel_ResetsAndResubmits(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1", Labels: []string{"ai-retry"}},
+			}, nil
+		},
+	}
+
+	submitCalls := 0
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
+			submitCalls++
+			if submitCalls == 1 {
+				return nil, jobmanager.ErrRetriesExhausted
+			}
+			return &jobmanager.Job{}, nil
+		},
+	}
+
+	resetCalled := false
+	resetter := &scannertest.StubRetryResetter{
+		ResetRetriesFunc: func(ticketKey string) error {
+			resetCalled = true
+			if ticketKey != "PROJ-1" {
+				t.Errorf("reset key = %q, want PROJ-1", ticketKey)
+			}
+			return nil
+		},
+	}
+
+	var removedKey, removedLabel string
+	labelRemover := &scannertest.StubLabelRemover{
+		RemoveLabelFunc: func(key, label string) error {
+			removedKey = key
+			removedLabel = label
+			return nil
+		},
+	}
+
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, resetter, labelRemover, "ai-retry",
+		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
+		zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOneScan(t, s)
+
+	if !resetCalled {
+		t.Error("expected ResetRetries to be called")
+	}
+	if submitCalls != 2 {
+		t.Errorf("submit calls = %d, want 2 (initial + resubmit)", submitCalls)
+	}
+	if removedKey != "PROJ-1" {
+		t.Errorf("removed key = %q, want PROJ-1", removedKey)
+	}
+	if removedLabel != "ai-retry" {
+		t.Errorf("removed label = %q, want ai-retry", removedLabel)
+	}
+}
+
+func TestWorkItemScanner_RetryLabel_IgnoredWhenNotPresent(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1", Labels: []string{}},
+			}, nil
+		},
+	}
+
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
+			return nil, jobmanager.ErrRetriesExhausted
+		},
+	}
+
+	resetCalled := false
+	resetter := &scannertest.StubRetryResetter{
+		ResetRetriesFunc: func(ticketKey string) error {
+			resetCalled = true
+			return nil
+		},
+	}
+
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, resetter, &scannertest.StubLabelRemover{}, "ai-retry",
+		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
+		zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOneScan(t, s)
+
+	if resetCalled {
+		t.Error("ResetRetries should not be called when label is absent")
+	}
+}
+
+func TestWorkItemScanner_RetryLabel_DisabledWhenEmpty(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1", Labels: []string{"ai-retry"}},
+			}, nil
+		},
+	}
+
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
+			return nil, jobmanager.ErrRetriesExhausted
+		},
+	}
+
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, nil, nil, "",
+		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
+		zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOneScan(t, s)
+}
+
+func TestWorkItemScanner_RetryLabel_ResetFails(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1", Labels: []string{"ai-retry"}},
+			}, nil
+		},
+	}
+
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
+			return nil, jobmanager.ErrRetriesExhausted
+		},
+	}
+
+	resetter := &scannertest.StubRetryResetter{
+		ResetRetriesFunc: func(ticketKey string) error {
+			return errors.New("reset failed")
+		},
+	}
+
+	labelRemoveCalled := false
+	labelRemover := &scannertest.StubLabelRemover{
+		RemoveLabelFunc: func(key, label string) error {
+			labelRemoveCalled = true
+			return nil
+		},
+	}
+
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, resetter, labelRemover, "ai-retry",
+		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
+		zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOneScan(t, s)
+
+	if labelRemoveCalled {
+		t.Error("RemoveLabel should not be called when ResetRetries fails")
+	}
+}
+
+func TestWorkItemScanner_RetryLabel_RemoveLabelFails(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1", Labels: []string{"ai-retry"}},
+			}, nil
+		},
+	}
+
+	submitCalls := 0
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
+			submitCalls++
+			if submitCalls == 1 {
+				return nil, jobmanager.ErrRetriesExhausted
+			}
+			return &jobmanager.Job{}, nil
+		},
+	}
+
+	resetter := &scannertest.StubRetryResetter{
+		ResetRetriesFunc: func(ticketKey string) error {
+			return nil
+		},
+	}
+
+	labelRemover := &scannertest.StubLabelRemover{
+		RemoveLabelFunc: func(key, label string) error {
+			return errors.New("label removal failed")
+		},
+	}
+
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, resetter, labelRemover, "ai-retry",
+		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
+		zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOneScan(t, s)
+
+	if submitCalls != 1 {
+		t.Errorf("submit calls = %d, want 1 (no resubmit when label removal fails)", submitCalls)
+	}
+}
+
+func TestWorkItemScanner_RetryLabel_ResubmitFails(t *testing.T) {
+	searcher := &scannertest.StubIssueSearcher{
+		SearchWorkItemsFunc: func(criteria models.SearchCriteria) ([]models.WorkItem, error) {
+			return []models.WorkItem{
+				{Key: "PROJ-1", Labels: []string{"ai-retry"}},
+			}, nil
+		},
+	}
+
+	submitter := &scannertest.StubJobSubmitter{
+		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
+			return nil, jobmanager.ErrRetriesExhausted
+		},
+	}
+
+	resetCalled := false
+	resetter := &scannertest.StubRetryResetter{
+		ResetRetriesFunc: func(ticketKey string) error {
+			resetCalled = true
+			return nil
+		},
+	}
+
+	labelRemoveCalled := false
+	labelRemover := &scannertest.StubLabelRemover{
+		RemoveLabelFunc: func(key, label string) error {
+			labelRemoveCalled = true
+			return nil
+		},
+	}
+
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, resetter, labelRemover, "ai-retry",
+		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
+		zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOneScan(t, s)
+
+	if !resetCalled {
+		t.Error("expected ResetRetries to be called before resubmit")
+	}
+	if !labelRemoveCalled {
+		t.Error("expected RemoveLabel to be called before resubmit")
+	}
+}
+
 // --- helpers ---
 
 func newWorkItemScanner(t *testing.T, searcher scanner.IssueSearcher, submitter scanner.JobSubmitter) *scanner.WorkItemScanner {
 	t.Helper()
-	s, err := scanner.NewWorkItemScanner(searcher, submitter,
+	s, err := scanner.NewWorkItemScanner(searcher, submitter, nil, nil, "",
 		scanner.WorkItemScannerConfig{PollInterval: time.Hour},
 		zap.NewNop())
 	if err != nil {

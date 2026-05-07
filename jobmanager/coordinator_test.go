@@ -448,6 +448,80 @@ func TestRetry_NegativeMaxRetriesDisablesLimit(t *testing.T) {
 	}
 }
 
+// --- ResetRetries ---
+
+func TestResetRetries_AllowsResubmission(t *testing.T) {
+	coord := mustCoordinator(t, jobmanager.Config{
+		MaxConcurrent: 1,
+		MaxRetries:    0,
+	}, failExecute)
+	defer coord.Shutdown()
+
+	job, _ := coord.Submit(jobmanager.Event{
+		Type: jobmanager.JobTypeNewTicket, TicketKey: "PROJ-1",
+	})
+	waitForTerminal(t, coord, job.ID)
+
+	// Retries exhausted.
+	_, err := coord.Submit(jobmanager.Event{
+		Type: jobmanager.JobTypeNewTicket, TicketKey: "PROJ-1",
+	})
+	if !errors.Is(err, jobmanager.ErrRetriesExhausted) {
+		t.Fatalf("want ErrRetriesExhausted, got %v", err)
+	}
+
+	// Reset allows resubmission.
+	if err := coord.ResetRetries("PROJ-1"); err != nil {
+		t.Fatalf("ResetRetries: %v", err)
+	}
+
+	job, err = coord.Submit(jobmanager.Event{
+		Type: jobmanager.JobTypeNewTicket, TicketKey: "PROJ-1",
+	})
+	if err != nil {
+		t.Fatalf("submit after reset: %v", err)
+	}
+	if job.AttemptNum != 1 {
+		t.Errorf("attempt = %d, want 1 after reset", job.AttemptNum)
+	}
+}
+
+func TestResetRetries_RejectsEmptyKey(t *testing.T) {
+	coord := mustCoordinator(t, jobmanager.Config{
+		MaxConcurrent: 1,
+		MaxRetries:    3,
+	}, failExecute)
+	defer coord.Shutdown()
+
+	if err := coord.ResetRetries(""); err == nil {
+		t.Fatal("expected error for empty key")
+	}
+}
+
+func TestResetRetries_RejectsAfterShutdown(t *testing.T) {
+	coord := mustCoordinator(t, jobmanager.Config{
+		MaxConcurrent: 1,
+		MaxRetries:    3,
+	}, failExecute)
+	coord.Shutdown()
+
+	if err := coord.ResetRetries("PROJ-1"); !errors.Is(err, jobmanager.ErrShutdown) {
+		t.Fatalf("want ErrShutdown, got %v", err)
+	}
+}
+
+func TestResetRetries_NoopForUnknownTicket(t *testing.T) {
+	coord := mustCoordinator(t, jobmanager.Config{
+		MaxConcurrent: 1,
+		MaxRetries:    3,
+	}, failExecute)
+	defer coord.Shutdown()
+
+	if err := coord.ResetRetries("UNKNOWN-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // --- Complete / Fail ---
 
 func TestComplete_UpdatesJobState(t *testing.T) {

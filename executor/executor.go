@@ -92,8 +92,9 @@ type GitService interface {
 	SyncFork(forkOwner, repo, branch string) error
 
 	// CreateBranch creates a new git branch in the workspace and
-	// switches to it.
-	CreateBranch(dir, name string) error
+	// switches to it. baseBranch is the branch to fork from (e.g.,
+	// "main").
+	CreateBranch(dir, name, baseBranch string) error
 
 	// SwitchBranch switches to an existing branch. Used when a
 	// workspace is reused on retry or when checking out a PR branch
@@ -107,7 +108,9 @@ type GitService interface {
 
 	// HasChanges reports whether the workspace has uncommitted
 	// changes (modified, added, or deleted tracked files).
-	HasChanges(dir string) (bool, error)
+	// baseBranch is used as a comparison ref when the remote
+	// branch does not exist.
+	HasChanges(dir, baseBranch string) (bool, error)
 
 	// CommitChanges creates a verified commit via the GitHub API
 	// from local workspace changes. Returns the commit SHA.
@@ -121,7 +124,7 @@ type GitService interface {
 	// importExcludes lists additional directories (from import
 	// config) to exclude from commits beyond the built-in .ai-bot/
 	// exclusion.
-	CommitChanges(upstreamOwner, owner, repo, branch, message, dir string,
+	CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string,
 		coAuthor *models.Author, importExcludes []string) (string, error)
 
 	// StripRemoteAuth removes authentication credentials from the
@@ -168,11 +171,34 @@ type GitService interface {
 	PostIssueComment(owner, repo string, prNumber int,
 		body string) error
 
+	// ListIssueComments returns all top-level comments on a PR.
+	// Used to find existing bot comments for update-in-place.
+	ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error)
+
+	// UpdateIssueComment edits an existing top-level comment on a PR.
+	UpdateIssueComment(owner, repo string, commentID int64, body string) error
+
+	// AddCommentReaction adds an emoji reaction to a PR comment. Uses
+	// the pull request reactions API for review comments and the issue
+	// comment reactions API for conversation comments.
+	AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error
+
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after
 	// cloning. Used to make shared resources (workflow skills,
 	// scripts) available in the workspace before AI execution.
 	CloneImport(url, destDir, ref string) error
+
+	// ListCheckRunsForRef returns failed check runs for a commit ref.
+	// The second return value is true when all checks have completed.
+	ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+
+	// ListCheckRunAnnotations returns annotations for a check run.
+	ListCheckRunAnnotations(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
+
+	// GetFailedJobLogs returns truncated log output from failed
+	// workflow job steps, keyed by job name.
+	GetFailedJobLogs(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
 }
 
 // ProjectResolver maps work items to their project-specific settings.
@@ -237,6 +263,30 @@ type Config struct {
 	// address" reply on the final attempt instead of failing
 	// silently and looping.
 	MaxRetries int
+
+	// GeminiPricing holds per-million-token prices for computing
+	// Gemini session costs from token counts.
+	GeminiPricing GeminiPricing
+
+	// IgnoredCheckNames lists check run names excluded from CI
+	// failure detection (case-insensitive).
+	IgnoredCheckNames []string
+
+	// MaxCIFixAttempts limits CI fix attempts per PR. Zero
+	// disables CI failure detection. Negative means unlimited.
+	MaxCIFixAttempts int
+
+	// RetryLabel is the Jira label users add to request a retry
+	// after exhaustion. Included in the status comment hint.
+	RetryLabel string
+
+	// JiraUsername is the Jira account email used to filter out
+	// the bot's own comments when building the issue file.
+	JiraUsername string
+
+	// MinCommentLength is the minimum character length for Jira
+	// ticket comments to be included in the AI task file.
+	MinCommentLength int
 }
 
 // ClaudeVertexConfig holds Vertex AI authentication settings for

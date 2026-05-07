@@ -7,13 +7,14 @@ IMAGE_NAME := jira-ai-issue-solver
 TAG        := latest
 REGISTRY   ?=
 
-.PHONY: build build-flightctl-ai push clean run stop logs help debug debug-tests fmt lint tidy unit-test
+.PHONY: build build-flightctl-ai build-osac-ai push clean run stop logs help debug debug-tests fmt lint tidy unit-test compose-up compose-down compose-logs
 
 # Default target
 help:
 	@echo "Available targets:"
 	@echo "  build              - Build the bot container image"
 	@echo "  build-flightctl-ai - Build the flightctl AI dev container"
+	@echo "  build-osac-ai      - Build the OSAC AI dev container"
 	@echo "  push               - Push to registry (REGISTRY=quay.io/myorg)"
 	@echo "  unit-test   - Run unit tests with race detector"
 	@echo "  fmt         - Auto-format code (gofmt, gci)"
@@ -36,6 +37,11 @@ build:
 build-flightctl-ai:
 	@echo "Building flightctl-ai:$(TAG)..."
 	$(CONTAINER_RUNTIME) build --tag flightctl-ai:$(TAG) --file images/flightctl-ai/Containerfile .
+
+# Build the OSAC AI dev container
+build-osac-ai:
+	@echo "Building osac-ai:$(TAG)..."
+	$(CONTAINER_RUNTIME) build --tag osac-ai:$(TAG) --file images/osac-ai/Containerfile .
 
 # Push the image to a remote registry
 # Usage: make push REGISTRY=quay.io/myorg

@@ -163,13 +163,16 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 		return
 	}
 
+	if settings.IsMultiRepo() {
+		r.recoverMultiRepoTicket(logger, item, settings)
+		return
+	}
+
 	branchName := fmt.Sprintf("%s/%s", r.cfg.BotUsername, item.Key)
 
 	// Check for an existing PR.
-	pr, err := r.git.GetPRForBranch(settings.Owner, settings.Repo, settings.PRHead(branchName))
+	pr, err := r.git.GetPRForBranch(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
 	if err == nil && pr != nil {
-		// Case 1: PR exists but ticket still "In Progress".
-		// The status transition was interrupted — complete it.
 		logger.Info("Found PR for stuck ticket, completing transition",
 			zap.String("case", "pr_exists"),
 			zap.String("pr_url", pr.URL),
@@ -180,10 +183,8 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 
 	// No PR found. Check if the branch has commits beyond base.
 	hasCommits, err := r.git.BranchHasCommits(
-		settings.CommitOwner(), settings.Repo, branchName, settings.BaseBranch)
+		settings.CommitOwner(), settings.Repos[0].Repo, branchName, settings.Repos[0].BaseBranch)
 	if err != nil {
-		// Can't determine branch state. Revert to todo so it can be
-		// retried cleanly by the normal pipeline.
 		logger.Warn("Failed to check branch commits, reverting to todo",
 			zap.Error(err))
 		r.revertAndRequeue(logger, item, settings)
@@ -191,19 +192,100 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 	}
 
 	if hasCommits {
-		// Case 2: Branch has commits but no PR.
-		// AI work completed but the bot crashed before creating the PR.
 		logger.Info("Found commits without PR, creating PR directly",
 			zap.String("case", "commits_no_pr"))
 		r.createPRFromCommits(logger, item, settings, branchName)
 		return
 	}
 
-	// Case 3: No PR and no branch commits.
-	// The job was interrupted mid-execution. Revert and re-queue.
 	logger.Info("No PR and no commits, reverting to todo and re-queuing",
 		zap.String("case", "no_pr_no_commits"))
 	r.revertAndRequeue(logger, item, settings)
+}
+
+// recoverMultiRepoTicket handles recovery for multi-repo workspaces.
+// It checks all repos for PRs and branch commits. For repos with
+// commits but no PR, it creates a PR. If no work is found in any
+// repo, the ticket is reverted and re-queued.
+func (r *StartupRunner) recoverMultiRepoTicket(
+	logger *zap.Logger,
+	item models.WorkItem,
+	settings *models.ProjectSettings,
+) {
+	branchName := fmt.Sprintf("%s/%s", r.cfg.BotUsername, item.Key)
+	head := settings.PRHead(branchName)
+
+	var prURLs []string
+
+	for _, repo := range settings.Repos {
+		// Check for an existing PR.
+		pr, err := r.git.GetPRForBranch(repo.Owner, repo.Repo, head)
+		if err == nil && pr != nil {
+			logger.Info("Found PR for repo",
+				zap.String("repo", repo.Name),
+				zap.String("pr_url", pr.URL))
+			prURLs = append(prURLs, pr.URL)
+			continue
+		}
+
+		// Check for branch commits without a PR.
+		hasCommits, err := r.git.BranchHasCommits(
+			settings.CommitOwnerFor(repo), repo.Repo, branchName, repo.BaseBranch)
+		if err != nil {
+			logger.Warn("Failed to check branch commits for repo",
+				zap.String("repo", repo.Name), zap.Error(err))
+			continue
+		}
+		if !hasCommits {
+			continue
+		}
+
+		// Create PR for this repo.
+		logger.Info("Found commits without PR, creating PR",
+			zap.String("repo", repo.Name))
+		title, body := buildRecoveryPRContent(item)
+		var assignees []string
+		if settings.GitHubUsername != "" {
+			assignees = []string{settings.GitHubUsername}
+		}
+		created, createErr := r.git.CreatePR(models.PRParams{
+			Owner: repo.Owner, Repo: repo.Repo,
+			Title: title, Body: body,
+			Head: head, Base: repo.BaseBranch,
+			Assignees: assignees,
+		})
+		if createErr != nil {
+			logger.Error("Failed to create PR from commits for repo",
+				zap.String("repo", repo.Name), zap.Error(createErr))
+			continue
+		}
+		prURLs = append(prURLs, created.URL)
+		logger.Info("PR created from recovered commits",
+			zap.String("repo", repo.Name),
+			zap.String("pr_url", created.URL))
+	}
+
+	if len(prURLs) == 0 {
+		logger.Info("No PRs or commits found in any repo, reverting to todo")
+		r.revertAndRequeue(logger, item, settings)
+		return
+	}
+
+	// Post all PR URLs, set the field once, and transition once.
+	for _, url := range prURLs {
+		comment := fmt.Sprintf("[AI-BOT-PR] %s", url)
+		if err := r.tracker.AddComment(item.Key, comment); err != nil {
+			logger.Warn("Failed to add PR URL comment", zap.Error(err))
+		}
+	}
+	if settings.PRURLFieldName != "" {
+		if err := r.tracker.SetFieldValue(item.Key, settings.PRURLFieldName, prURLs[0]); err != nil {
+			logger.Warn("Failed to set PR URL field", zap.Error(err))
+		}
+	}
+	if err := r.tracker.TransitionStatus(item.Key, settings.InReviewStatus); err != nil {
+		logger.Warn("Failed to transition to in-review", zap.Error(err))
+	}
 }
 
 // completeTransition finishes the interrupted status transition by
@@ -248,12 +330,12 @@ func (r *StartupRunner) createPRFromCommits(
 	}
 
 	pr, err := r.git.CreatePR(models.PRParams{
-		Owner:     settings.Owner,
-		Repo:      settings.Repo,
+		Owner:     settings.Repos[0].Owner,
+		Repo:      settings.Repos[0].Repo,
 		Title:     title,
 		Body:      body,
 		Head:      settings.PRHead(branchName),
-		Base:      settings.BaseBranch,
+		Base:      settings.Repos[0].BaseBranch,
 		Assignees: assignees,
 	})
 	if err != nil {

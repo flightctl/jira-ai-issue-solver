@@ -23,7 +23,7 @@ func TestWriteIssue_BasicTicket(t *testing.T) {
 		Type:        "Bug",
 	}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestWriteIssue_EmptyDescription(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-456", Summary: "Quick fix"}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestWriteIssue_MultilineDescription(t *testing.T) {
 		Description: "Line one.\n\nLine three after blank.\nLine four.",
 	}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestWriteIssue_CreatesDirectory(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-300", Summary: "Test dir creation"}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestWriteIssue_WithAttachments(t *testing.T) {
 	}
 
 	attachments := []string{"crash.log", "config.yaml"}
-	if err := writer.WriteIssue(workItem, dir, attachments); err != nil {
+	if err := writer.WriteIssue(workItem, dir, attachments, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestWriteIssue_NoAttachments_NoSection(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-401", Summary: "No attachments"}
 
-	if err := writer.WriteIssue(workItem, dir, nil); err != nil {
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -130,12 +130,138 @@ func TestWriteIssue_EmptyAttachmentList_NoSection(t *testing.T) {
 
 	workItem := models.WorkItem{Key: "PROJ-402", Summary: "Empty list"}
 
-	if err := writer.WriteIssue(workItem, dir, []string{}); err != nil {
+	if err := writer.WriteIssue(workItem, dir, []string{}, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readIssueFile(t, dir)
 	assertNotContains(t, content, "## Attachments")
+}
+
+func TestWriteIssue_WithComments(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{
+		Key:         "PROJ-500",
+		Summary:     "Bug report",
+		Description: "Something is broken.",
+	}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice Jones", Body: "I can reproduce this on staging too.\nThe error appears after the second retry."},
+		{ID: "2", Author: "Bob Smith", Body: "This might be related to PROJ-456."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, nil, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "## Comments")
+	assertContains(t, content, "> [Comment by Alice Jones]")
+	assertContains(t, content, "> I can reproduce this on staging too.")
+	assertContains(t, content, "> The error appears after the second retry.")
+	assertContains(t, content, "> [Comment by Bob Smith]")
+	assertContains(t, content, "> This might be related to PROJ-456.")
+}
+
+func TestWriteIssue_NoComments_NoSection(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-501", Summary: "No comments"}
+
+	if err := writer.WriteIssue(workItem, dir, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+	assertNotContains(t, content, "## Comments")
+}
+
+func TestWriteIssue_EmptyCommentList_NoSection(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-502", Summary: "Empty list"}
+
+	if err := writer.WriteIssue(workItem, dir, nil, []models.Comment{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+	assertNotContains(t, content, "## Comments")
+}
+
+func TestWriteIssue_CommentsSeparatedClearly(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-503", Summary: "Separation test"}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice", Body: "First comment body here."},
+		{ID: "2", Author: "Bob", Body: "Second comment body here."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, nil, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	// Comments should be separated by a blank line so they don't run together.
+	assertContains(t, content, "> First comment body here.\n\n> [Comment by Bob]")
+}
+
+func TestWriteIssue_MultilineComment(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{Key: "PROJ-504", Summary: "Multiline test"}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice", Body: "Line one.\n\nLine three after blank.\nLine four."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, nil, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	assertContains(t, content, "> [Comment by Alice]")
+	assertContains(t, content, "> Line one.")
+	assertContains(t, content, ">\n> Line three after blank.")
+	assertContains(t, content, "> Line four.")
+}
+
+func TestWriteIssue_CommentsAfterAttachments(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	workItem := models.WorkItem{
+		Key:     "PROJ-505",
+		Summary: "Order test",
+	}
+	attachments := []string{"log.txt"}
+	comments := []models.Comment{
+		{ID: "1", Author: "Alice", Body: "This is important context."},
+	}
+
+	if err := writer.WriteIssue(workItem, dir, attachments, comments); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readIssueFile(t, dir)
+
+	idxAttach := strings.Index(content, "## Attachments")
+	idxComments := strings.Index(content, "## Comments")
+	if idxAttach < 0 || idxComments < 0 {
+		t.Fatal("expected both Attachments and Comments sections")
+	}
+	if idxComments <= idxAttach {
+		t.Error("Comments section should appear after Attachments section")
+	}
 }
 
 // --- WriteNewTicketTask ---
@@ -299,7 +425,7 @@ func TestWriteFeedbackTask_SingleNewComment(t *testing.T) {
 		Line:     145,
 	}}
 
-	if err := writer.WriteFeedbackTask(pr, newComments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, newComments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -328,7 +454,7 @@ func TestWriteFeedbackTask_CommentsGroupedByFile(t *testing.T) {
 		{Author: models.Author{Username: "r3"}, Body: "Fix C", FilePath: "file_a.go", Line: 30},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, newComments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, newComments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -359,7 +485,7 @@ func TestWriteFeedbackTask_GeneralComments(t *testing.T) {
 		{Author: models.Author{Username: "r2"}, Body: "General comment"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, newComments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, newComments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -389,7 +515,7 @@ func TestWriteFeedbackTask_NewAndAddressedComments(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Old feedback", FilePath: "main.go", Line: 5},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, newComments, addressedComments, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, newComments, addressedComments, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -417,7 +543,7 @@ func TestWriteFeedbackTask_OnlyAddressedComments(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Already fixed"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, nil, addressedComments, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, nil, addressedComments, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -437,7 +563,7 @@ func TestWriteFeedbackTask_CommentWithNoLine(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "File-level comment", FilePath: "main.go"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, newComments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, newComments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -460,7 +586,7 @@ func TestWriteFeedbackTask_MultilineCommentBody(t *testing.T) {
 		Line:     10,
 	}}
 
-	if err := writer.WriteFeedbackTask(pr, newComments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, newComments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -479,7 +605,7 @@ func TestWriteFeedbackTask_CreatesDirectory(t *testing.T) {
 		{Author: models.Author{Username: "r"}, Body: "c"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -497,7 +623,7 @@ func TestWriteFeedbackTask_ReferencesSessionContext(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this", FilePath: "main.go", Line: 10},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -525,7 +651,7 @@ func TestWriteFeedbackTask_RequiredOutputSection(t *testing.T) {
 		{ID: 99, Author: models.Author{Username: "r1"}, Body: "Fix this", FilePath: "main.go", Line: 10},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -550,7 +676,7 @@ func TestWriteFeedbackTask_NoComments(t *testing.T) {
 
 	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
 
-	if err := writer.WriteFeedbackTask(pr, nil, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, nil, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -561,6 +687,129 @@ func TestWriteFeedbackTask_NoComments(t *testing.T) {
 	assertContains(t, content, "## Instructions")
 	assertNotContains(t, content, "## Review Comments")
 	assertNotContains(t, content, "## Previously Addressed")
+}
+
+// --- WriteFeedbackTask with CI failures ---
+
+func TestWriteFeedbackTask_WithCIFailures(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+	pr := models.PRDetails{Number: 10, Title: "Fix things", Branch: "fix/branch"}
+
+	ciFailures := []models.CheckRunFailure{
+		{
+			ID:         1,
+			Name:       "lint",
+			HTMLURL:    "https://github.com/test/repo/runs/1",
+			Conclusion: "failure",
+			Annotations: []models.CheckAnnotation{
+				{Path: "main.go", StartLine: 42, EndLine: 42, Level: "failure", Message: "undefined: Foo"},
+			},
+			FailedSteps: []models.FailedStep{
+				{JobName: "lint", StepName: "Run golangci-lint", Log: "Error: unused variable\n"},
+			},
+		},
+	}
+
+	err := writer.WriteFeedbackTask(pr, nil, nil, ciFailures, dir, "", "")
+	if err != nil {
+		t.Fatalf("WriteFeedbackTask failed: %v", err)
+	}
+
+	content := readTaskFile(t, dir)
+	assertContains(t, content, "## CI Failures")
+	assertContains(t, content, "### Check: lint (failure)")
+	assertContains(t, content, "#### Annotations")
+	assertContains(t, content, "main.go")
+	assertContains(t, content, "undefined: Foo")
+	assertContains(t, content, "#### Failed Step: Run golangci-lint")
+	assertContains(t, content, "unused variable")
+	assertContains(t, content, "Fix each CI failure")
+	assertNotContains(t, content, "## Required Output")
+	assertNotContains(t, content, "comment-responses.json")
+}
+
+func TestWriteFeedbackTask_NoCIFailures_BackwardCompatible(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this", FilePath: "main.go", Line: 1, IsReviewComment: true},
+	}
+
+	err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", "")
+	if err != nil {
+		t.Fatalf("WriteFeedbackTask failed: %v", err)
+	}
+
+	content := readTaskFile(t, dir)
+	assertContains(t, content, "## Review Comments")
+	assertNotContains(t, content, "## CI Failures")
+	assertNotContains(t, content, "Fix each CI failure")
+}
+
+func TestWriteFeedbackTask_CIAnnotationsGroupedByFile(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
+
+	ciFailures := []models.CheckRunFailure{
+		{
+			Name:       "build",
+			Conclusion: "failure",
+			Annotations: []models.CheckAnnotation{
+				{Path: "z.go", StartLine: 10, EndLine: 10, Level: "failure", Message: "err z"},
+				{Path: "a.go", StartLine: 5, EndLine: 5, Level: "failure", Message: "err a"},
+				{Path: "a.go", StartLine: 20, EndLine: 20, Level: "warning", Message: "warn a"},
+			},
+		},
+	}
+
+	err := writer.WriteFeedbackTask(pr, nil, nil, ciFailures, dir, "", "")
+	if err != nil {
+		t.Fatalf("WriteFeedbackTask failed: %v", err)
+	}
+
+	content := readTaskFile(t, dir)
+	// a.go should appear before z.go (sorted)
+	aIdx := strings.Index(content, "a.go")
+	zIdx := strings.Index(content, "z.go")
+	if aIdx < 0 || zIdx < 0 {
+		t.Fatal("expected both file paths in content")
+	}
+	if aIdx >= zIdx {
+		t.Error("annotations should be sorted by file path (a.go before z.go)")
+	}
+}
+
+func TestWriteFeedbackTask_CIAndReviewComments(t *testing.T) {
+	dir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
+
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this", FilePath: "main.go", Line: 1, IsReviewComment: true},
+	}
+	ciFailures := []models.CheckRunFailure{
+		{Name: "test", Conclusion: "failure"},
+	}
+
+	err := writer.WriteFeedbackTask(pr, comments, nil, ciFailures, dir, "", "")
+	if err != nil {
+		t.Fatalf("WriteFeedbackTask failed: %v", err)
+	}
+
+	content := readTaskFile(t, dir)
+	assertContains(t, content, "## Review Comments")
+	assertContains(t, content, "## CI Failures")
+	assertContains(t, content, "Fix each CI failure")
+
+	// CI Failures section should come after review comments
+	commentIdx := strings.Index(content, "## Review Comments")
+	ciIdx := strings.Index(content, "## CI Failures")
+	if ciIdx <= commentIdx {
+		t.Error("CI Failures section should come after Review Comments")
+	}
 }
 
 // --- WriteNewTicketTask with instructions.md ---
@@ -677,7 +926,7 @@ func TestWriteFeedbackTask_WithInstructionsMd(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -697,7 +946,7 @@ func TestWriteFeedbackTask_NoInstructionsMd(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -707,7 +956,7 @@ func TestWriteFeedbackTask_NoInstructionsMd(t *testing.T) {
 
 // --- Fallback instructions (project config) ---
 
-func TestWriteNewTicketTask_FallbackInstructions(t *testing.T) {
+func TestWriteNewTicketTask_OverrideInstructions_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -726,7 +975,7 @@ func TestWriteNewTicketTask_FallbackInstructions(t *testing.T) {
 	assertContains(t, content, "Run `make check` before committing.")
 }
 
-func TestWriteNewTicketTask_RepoFileOverridesFallback(t *testing.T) {
+func TestWriteNewTicketTask_ConfigOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -737,18 +986,18 @@ func TestWriteNewTicketTask_RepoFileOverridesFallback(t *testing.T) {
 		Summary: "Override test",
 	}
 
-	if err := writer.WriteNewTicketTask(workItem, dir, "Fallback guidance.", ""); err != nil {
+	if err := writer.WriteNewTicketTask(workItem, dir, "Config guidance.", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
 	assertContains(t, content, "## Project Instructions")
-	assertContains(t, content, "Repo-level guidance.")
-	assertNotContains(t, content, "Fallback guidance.")
+	assertContains(t, content, "Config guidance.")
+	assertNotContains(t, content, "Repo-level guidance.")
 }
 
-func TestWriteNewTicketTask_EmptyFallbackIsNoOp(t *testing.T) {
+func TestWriteNewTicketTask_EmptyOverrideIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -765,7 +1014,7 @@ func TestWriteNewTicketTask_EmptyFallbackIsNoOp(t *testing.T) {
 	assertNotContains(t, content, "## Project Instructions")
 }
 
-func TestWriteFeedbackTask_FallbackInstructions(t *testing.T) {
+func TestWriteFeedbackTask_OverrideInstructions_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -774,7 +1023,7 @@ func TestWriteFeedbackTask_FallbackInstructions(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "Always run lint.", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "Always run lint.", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -784,30 +1033,30 @@ func TestWriteFeedbackTask_FallbackInstructions(t *testing.T) {
 	assertContains(t, content, "Always run lint.")
 }
 
-func TestWriteFeedbackTask_RepoFileOverridesFallback(t *testing.T) {
+func TestWriteFeedbackTask_ConfigOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
-	writeInstructions(t, dir, "Repo instructions win.")
+	writeInstructions(t, dir, "Repo instructions lose.")
 
 	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
 	comments := []models.PRComment{
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "Fallback instructions lose.", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "Config instructions win.", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
-	assertContains(t, content, "Repo instructions win.")
-	assertNotContains(t, content, "Fallback instructions lose.")
+	assertContains(t, content, "Config instructions win.")
+	assertNotContains(t, content, "Repo instructions lose.")
 }
 
 // --- Workflow (new-ticket-only) ---
 
-func TestWriteNewTicketTask_FallbackWorkflow(t *testing.T) {
+func TestWriteNewTicketTask_OverrideWorkflow_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -843,22 +1092,22 @@ func TestWriteNewTicketTask_WorkflowFile(t *testing.T) {
 	assertContains(t, content, "Read assess.md, then fix.md.")
 }
 
-func TestWriteNewTicketTask_WorkflowFileOverridesFallback(t *testing.T) {
+func TestWriteNewTicketTask_ConfigWorkflowOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
-	writeWorkflow(t, dir, "Repo workflow wins.")
+	writeWorkflow(t, dir, "Repo workflow loses.")
 
 	workItem := models.WorkItem{Key: "PROJ-702", Summary: "Override test"}
 
-	if err := writer.WriteNewTicketTask(workItem, dir, "", "Fallback workflow loses."); err != nil {
+	if err := writer.WriteNewTicketTask(workItem, dir, "", "Config workflow wins."); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
-	assertContains(t, content, "Repo workflow wins.")
-	assertNotContains(t, content, "Fallback workflow loses.")
+	assertContains(t, content, "Config workflow wins.")
+	assertNotContains(t, content, "Repo workflow loses.")
 }
 
 func TestWriteNewTicketTask_NoWorkflow(t *testing.T) {
@@ -911,7 +1160,7 @@ func TestWriteFeedbackTask_NewTicketWorkflowNotIncluded(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -932,7 +1181,7 @@ func TestWriteFeedbackTask_FeedbackWorkflowFile(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -942,7 +1191,7 @@ func TestWriteFeedbackTask_FeedbackWorkflowFile(t *testing.T) {
 	assertContains(t, content, "Read session-context.md, address comments, update artifacts.")
 }
 
-func TestWriteFeedbackTask_FallbackFeedbackWorkflow(t *testing.T) {
+func TestWriteFeedbackTask_OverrideFeedbackWorkflow_NoRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
@@ -951,7 +1200,7 @@ func TestWriteFeedbackTask_FallbackFeedbackWorkflow(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", "Fallback feedback workflow."); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", "Fallback feedback workflow."); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -961,25 +1210,25 @@ func TestWriteFeedbackTask_FallbackFeedbackWorkflow(t *testing.T) {
 	assertContains(t, content, "Fallback feedback workflow.")
 }
 
-func TestWriteFeedbackTask_FeedbackWorkflowFileOverridesFallback(t *testing.T) {
+func TestWriteFeedbackTask_ConfigFeedbackWorkflowOverridesRepoFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := taskfile.NewMarkdownWriter()
 
-	writeFeedbackWorkflow(t, dir, "Repo feedback workflow wins.")
+	writeFeedbackWorkflow(t, dir, "Repo feedback workflow loses.")
 
 	pr := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
 	comments := []models.PRComment{
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", "Fallback feedback workflow loses."); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", "Config feedback workflow wins."); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	content := readTaskFile(t, dir)
 
-	assertContains(t, content, "Repo feedback workflow wins.")
-	assertNotContains(t, content, "Fallback feedback workflow loses.")
+	assertContains(t, content, "Config feedback workflow wins.")
+	assertNotContains(t, content, "Repo feedback workflow loses.")
 }
 
 func TestWriteFeedbackTask_NoFeedbackWorkflow(t *testing.T) {
@@ -991,7 +1240,7 @@ func TestWriteFeedbackTask_NoFeedbackWorkflow(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1011,7 +1260,7 @@ func TestWriteFeedbackTask_WorkflowAfterProjectInstructions(t *testing.T) {
 		{Author: models.Author{Username: "r1"}, Body: "Fix this"},
 	}
 
-	if err := writer.WriteFeedbackTask(pr, comments, nil, dir, "", ""); err != nil {
+	if err := writer.WriteFeedbackTask(pr, comments, nil, nil, dir, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1039,6 +1288,227 @@ func writeFeedbackWorkflow(t *testing.T, dir, content string) {
 		t.Fatal(err)
 	}
 }
+
+// --- WriteMultiRepoNewTicketTask ---
+
+func TestWriteMultiRepoNewTicketTask_PerRepoSections(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repo1Dir := filepath.Join(wsDir, "frontend")
+	repo2Dir := filepath.Join(wsDir, "backend")
+	if err := os.MkdirAll(repo1Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo2Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	writeInstructions(t, repo1Dir, "Run npm test")
+	writeInstructions(t, repo2Dir, "Run go test ./...")
+
+	workItem := models.WorkItem{Key: "PROJ-1", Summary: "Multi-repo fix"}
+	repos := []taskfile.RepoContext{
+		{Name: "frontend", Dir: repo1Dir},
+		{Name: "backend", Dir: repo2Dir},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "# Task: PROJ-1")
+	assertContains(t, content, "## Repository: frontend")
+	assertContains(t, content, "Run npm test")
+	assertContains(t, content, "## Repository: backend")
+	assertContains(t, content, "Run go test ./...")
+}
+
+func TestWriteMultiRepoNewTicketTask_OverrideInstructions(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "svc")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	workItem := models.WorkItem{Key: "PROJ-2", Summary: "Profile override test"}
+	repos := []taskfile.RepoContext{
+		{Name: "svc", Dir: repoDir, OverrideInstructions: "Profile instructions here"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Repository: svc")
+	assertContains(t, content, "Profile instructions here")
+}
+
+func TestWriteMultiRepoNewTicketTask_ProfileOverridesRepoFile(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "api")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeInstructions(t, repoDir, "Repo-level instructions lose")
+
+	workItem := models.WorkItem{Key: "PROJ-3", Summary: "Override test"}
+	repos := []taskfile.RepoContext{
+		{Name: "api", Dir: repoDir, OverrideInstructions: "Profile instructions win"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "Profile instructions win")
+	assertNotContains(t, content, "Repo-level instructions lose")
+}
+
+func TestWriteMultiRepoNewTicketTask_WorkflowOverride(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "core")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	workItem := models.WorkItem{Key: "PROJ-4", Summary: "Workflow test"}
+	repos := []taskfile.RepoContext{
+		{Name: "core", Dir: repoDir, OverrideNewTicketWorkflow: "1. Assess\n2. Fix\n3. Test"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "### Workflow")
+	assertNotContains(t, content, "\n## Workflow\n")
+	assertContains(t, content, "1. Assess")
+}
+
+func TestWriteMultiRepoNewTicketTask_SubHeadingLevels(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "svc")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeInstructions(t, repoDir, "Repo instructions")
+
+	workItem := models.WorkItem{Key: "PROJ-5", Summary: "Heading level test"}
+	repos := []taskfile.RepoContext{
+		{Name: "svc", Dir: repoDir, OverrideNewTicketWorkflow: "Do the workflow"},
+	}
+
+	if err := writer.WriteMultiRepoNewTicketTask(workItem, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Repository: svc")
+	assertContains(t, content, "### Project Instructions")
+	assertNotContains(t, content, "\n## Project Instructions\n")
+	assertContains(t, content, "### Workflow")
+	assertNotContains(t, content, "\n## Workflow\n")
+}
+
+// --- WriteMultiRepoFeedbackTask ---
+
+func TestWriteMultiRepoFeedbackTask_PerRepoSections(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repo1Dir := filepath.Join(wsDir, "frontend")
+	repo2Dir := filepath.Join(wsDir, "backend")
+	if err := os.MkdirAll(repo1Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo2Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	writeInstructions(t, repo1Dir, "Frontend validation")
+	writeInstructions(t, repo2Dir, "Backend validation")
+
+	prDetails := models.PRDetails{Number: 42, Title: "Fix things", Branch: "ai-bot/PROJ-1"}
+	comments := []models.PRComment{{
+		ID:       1,
+		Body:     "Please fix",
+		Author:   models.Author{Username: "reviewer"},
+		FilePath: "main.go",
+	}}
+
+	repos := []taskfile.RepoContext{
+		{Name: "frontend", Dir: repo1Dir},
+		{Name: "backend", Dir: repo2Dir, OverrideFeedbackWorkflow: "Feedback workflow steps"},
+	}
+
+	if err := writer.WriteMultiRepoFeedbackTask(prDetails, comments, nil, nil, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "# Task: Address PR Review Feedback")
+	assertContains(t, content, "PR #42: Fix things")
+	assertContains(t, content, "## Repository: frontend")
+	assertContains(t, content, "Frontend validation")
+	assertContains(t, content, "## Repository: backend")
+	assertContains(t, content, "Backend validation")
+	assertContains(t, content, "Feedback workflow steps")
+}
+
+func TestWriteMultiRepoFeedbackTask_SubHeadingLevels(t *testing.T) {
+	wsDir := t.TempDir()
+	writer := taskfile.NewMarkdownWriter()
+
+	repoDir := filepath.Join(wsDir, "api")
+	if err := os.MkdirAll(repoDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeInstructions(t, repoDir, "API instructions")
+
+	prDetails := models.PRDetails{Number: 10, Title: "PR", Branch: "b"}
+	comments := []models.PRComment{{
+		ID:     1,
+		Body:   "Fix this",
+		Author: models.Author{Username: "reviewer"},
+	}}
+
+	repos := []taskfile.RepoContext{
+		{Name: "api", Dir: repoDir, OverrideFeedbackWorkflow: "Feedback steps"},
+	}
+
+	if err := writer.WriteMultiRepoFeedbackTask(prDetails, comments, nil, nil, wsDir, repos); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := readTaskFile(t, wsDir)
+
+	assertContains(t, content, "## Repository: api")
+	assertContains(t, content, "### Project Instructions")
+	assertNotContains(t, content, "\n## Project Instructions\n")
+	assertContains(t, content, "### Workflow")
+	assertNotContains(t, content, "\n## Workflow\n")
+}
+
+// --- helpers ---
 
 func writeWorkflow(t *testing.T, dir, content string) {
 	t.Helper()

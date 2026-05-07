@@ -35,22 +35,28 @@ func (s *Stub) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager.Job
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubGitService struct {
-	SyncForkFunc           func(forkOwner, repo, branch string) error
-	CreateBranchFunc       func(dir, name string) error
-	SwitchBranchFunc       func(dir, name string) error
-	RemoteBranchExistsFunc func(owner, repo, branch string) (bool, error)
-	HasChangesFunc         func(dir string) (bool, error)
-	CommitChangesFunc      func(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error)
-	StripRemoteAuthFunc    func(dir string) error
-	RestoreRemoteAuthFunc  func(dir, owner, repo string) error
-	FetchRemoteFunc        func(dir string) error
-	SyncWithRemoteFunc     func(dir, branch string, importExcludes []string) error
-	CreatePRFunc           func(params models.PRParams) (*models.PR, error)
-	GetPRForBranchFunc     func(owner, repo, head string) (*models.PRDetails, error)
-	GetPRCommentsFunc      func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
-	ReplyToCommentFunc     func(owner, repo string, prNumber int, commentID int64, body string) error
-	PostIssueCommentFunc   func(owner, repo string, prNumber int, body string) error
-	CloneImportFunc        func(url, destDir, ref string) error
+	SyncForkFunc                func(forkOwner, repo, branch string) error
+	CreateBranchFunc            func(dir, name, baseBranch string) error
+	SwitchBranchFunc            func(dir, name string) error
+	RemoteBranchExistsFunc      func(owner, repo, branch string) (bool, error)
+	HasChangesFunc              func(dir, baseBranch string) (bool, error)
+	CommitChangesFunc           func(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error)
+	StripRemoteAuthFunc         func(dir string) error
+	RestoreRemoteAuthFunc       func(dir, owner, repo string) error
+	FetchRemoteFunc             func(dir string) error
+	SyncWithRemoteFunc          func(dir, branch string, importExcludes []string) error
+	CreatePRFunc                func(params models.PRParams) (*models.PR, error)
+	GetPRForBranchFunc          func(owner, repo, head string) (*models.PRDetails, error)
+	GetPRCommentsFunc           func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
+	ReplyToCommentFunc          func(owner, repo string, prNumber int, commentID int64, body string) error
+	PostIssueCommentFunc        func(owner, repo string, prNumber int, body string) error
+	ListIssueCommentsFunc       func(owner, repo string, prNumber int) ([]models.IssueComment, error)
+	UpdateIssueCommentFunc      func(owner, repo string, commentID int64, body string) error
+	CloneImportFunc             func(url, destDir, ref string) error
+	ListCheckRunsForRefFunc     func(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
+	ListCheckRunAnnotationsFunc func(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
+	GetFailedJobLogsFunc        func(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
+	AddCommentReactionFunc      func(owner, repo string, comment models.PRComment, reaction string) error
 }
 
 func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
@@ -60,9 +66,9 @@ func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
 	return nil
 }
 
-func (s *StubGitService) CreateBranch(dir, name string) error {
+func (s *StubGitService) CreateBranch(dir, name, baseBranch string) error {
 	if s.CreateBranchFunc != nil {
-		return s.CreateBranchFunc(dir, name)
+		return s.CreateBranchFunc(dir, name, baseBranch)
 	}
 	return nil
 }
@@ -81,16 +87,16 @@ func (s *StubGitService) RemoteBranchExists(owner, repo, branch string) (bool, e
 	return false, nil
 }
 
-func (s *StubGitService) HasChanges(dir string) (bool, error) {
+func (s *StubGitService) HasChanges(dir, baseBranch string) (bool, error) {
 	if s.HasChangesFunc != nil {
-		return s.HasChangesFunc(dir)
+		return s.HasChangesFunc(dir, baseBranch)
 	}
 	return false, nil
 }
 
-func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error) {
 	if s.CommitChangesFunc != nil {
-		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, coAuthor, importExcludes)
+		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthor, importExcludes)
 	}
 	return "", nil
 }
@@ -158,9 +164,51 @@ func (s *StubGitService) PostIssueComment(owner, repo string, prNumber int, body
 	return nil
 }
 
+func (s *StubGitService) ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error) {
+	if s.ListIssueCommentsFunc != nil {
+		return s.ListIssueCommentsFunc(owner, repo, prNumber)
+	}
+	return []models.IssueComment{}, nil
+}
+
+func (s *StubGitService) UpdateIssueComment(owner, repo string, commentID int64, body string) error {
+	if s.UpdateIssueCommentFunc != nil {
+		return s.UpdateIssueCommentFunc(owner, repo, commentID, body)
+	}
+	return nil
+}
+
 func (s *StubGitService) CloneImport(url, destDir, ref string) error {
 	if s.CloneImportFunc != nil {
 		return s.CloneImportFunc(url, destDir, ref)
+	}
+	return nil
+}
+
+func (s *StubGitService) ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+	if s.ListCheckRunsForRefFunc != nil {
+		return s.ListCheckRunsForRefFunc(owner, repo, ref)
+	}
+	return []models.CheckRunFailure{}, true, nil
+}
+
+func (s *StubGitService) ListCheckRunAnnotations(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error) {
+	if s.ListCheckRunAnnotationsFunc != nil {
+		return s.ListCheckRunAnnotationsFunc(owner, repo, checkRunID)
+	}
+	return []models.CheckAnnotation{}, nil
+}
+
+func (s *StubGitService) GetFailedJobLogs(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error) {
+	if s.GetFailedJobLogsFunc != nil {
+		return s.GetFailedJobLogsFunc(owner, repo, headSHA, maxBytesPerStep)
+	}
+	return map[string][]models.FailedStep{}, nil
+}
+
+func (s *StubGitService) AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error {
+	if s.AddCommentReactionFunc != nil {
+		return s.AddCommentReactionFunc(owner, repo, comment, reaction)
 	}
 	return nil
 }
@@ -176,5 +224,5 @@ func (s *StubProjectResolver) ResolveProject(workItem models.WorkItem) (*models.
 	if s.ResolveProjectFunc != nil {
 		return s.ResolveProjectFunc(workItem)
 	}
-	return &models.ProjectSettings{}, nil
+	return &models.ProjectSettings{Repos: []models.RepoSettings{{}}}, nil
 }

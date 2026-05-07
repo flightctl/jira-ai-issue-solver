@@ -60,6 +60,17 @@ type JobSubmitter interface {
 	Submit(event jobmanager.Event) (*jobmanager.Job, error)
 }
 
+// RetryResetter clears a ticket's failure count so it can be
+// resubmitted after exhausting the retry limit.
+type RetryResetter interface {
+	ResetRetries(ticketKey string) error
+}
+
+// LabelRemover removes labels from work items.
+type LabelRemover interface {
+	RemoveLabel(key, label string) error
+}
+
 // PRFetcher retrieves PR details and comments from GitHub.
 type PRFetcher interface {
 	// GetPRForBranch finds the open pull request whose head
@@ -74,13 +85,24 @@ type PRFetcher interface {
 // RepoLocator maps work items to their GitHub repository coordinates.
 type RepoLocator interface {
 	// LocateRepo returns the GitHub owner and repo name for the
-	// given work item's component-to-repo mapping.
+	// given work item's component-to-repo mapping. For multi-repo
+	// workspaces, returns the first repo.
 	LocateRepo(workItem models.WorkItem) (owner, repo string, err error)
+
+	// LocateRepos returns all repositories for the given work item.
+	// For single-repo workspaces this returns one entry; for multi-repo
+	// workspaces it returns all repos in the workspace.
+	LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error)
 
 	// ForkOwner returns the GitHub username that owns the fork where
 	// the bot pushes branches. Returns empty string when the assignee
 	// has no mapping (no fork-based workflow).
 	ForkOwner(workItem models.WorkItem) string
+}
+
+// CIChecker checks the CI status of a commit.
+type CIChecker interface {
+	ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
 }
 
 // WorkspaceCleaner removes workspaces matching a caller-provided

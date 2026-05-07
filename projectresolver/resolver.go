@@ -34,76 +34,125 @@ func NewConfigResolver(config *models.Config) (*ConfigResolver, error) {
 }
 
 // ResolveProject returns project-specific settings for the work item.
-// It locates the project configuration, resolves the component to a
-// repository and profile, and maps status transitions for the work
-// item's type.
+// It locates the project configuration, resolves the component (or
+// default workspace) to a workspace, and maps status transitions for
+// the work item's type. Each repo in the workspace gets its own
+// RepoSettings entry populated from its profile.
 func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.ProjectSettings, error) {
 	pc, err := r.findProjectConfig(workItem)
 	if err != nil {
 		return nil, err
 	}
 
-	repoURL, profile, err := r.resolveComponent(workItem, pc)
+	wsName, err := r.findWorkspaceName(workItem, pc)
 	if err != nil {
 		return nil, err
 	}
 
-	owner, repo, err := parseRepoURL(repoURL)
+	ws, ok := lookupWorkspace(pc.Workspaces, wsName)
+	if !ok {
+		return nil, fmt.Errorf("workspace %q does not exist in project config for %s", wsName, workItem.Key)
+	}
+	if len(ws.Repos) == 0 {
+		return nil, fmt.Errorf("workspace %q has no repos configured for %s", wsName, workItem.Key)
+	}
+
+	repos, err := r.buildRepoSettings(workItem, pc, ws)
 	if err != nil {
-		return nil, fmt.Errorf("parsing repo URL %q for %s: %w", repoURL, workItem.Key, err)
+		return nil, err
 	}
 
 	transitions := pc.StatusTransitions.GetStatusTransitions(workItem.Type)
 
-	imports := profile.Imports
-	if imports == nil {
-		imports = []models.ImportConfig{}
-	}
-
-	// Resolve the assignee's GitHub username from the config mapping.
 	var ghUsername string
 	if workItem.Assignee != nil {
 		ghUsername = r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
 	}
 
 	return &models.ProjectSettings{
-		Owner:                owner,
-		Repo:                 repo,
-		CloneURL:             repoURL,
-		BaseBranch:           r.config.GitHub.TargetBranch,
+		Repos:                repos,
 		InProgressStatus:     transitions.InProgress,
 		InReviewStatus:       transitions.InReview,
 		TodoStatus:           transitions.Todo,
 		PRURLFieldName:       pc.GitPullRequestFieldName,
 		DisableErrorComments: pc.DisableErrorComments,
 		AIProvider:           r.config.AIProvider,
-		Container:            profile.Container,
-		Imports:              imports,
-		Instructions:         profile.Instructions,
-		NewTicketWorkflow:    profile.NewTicketWorkflow,
-		FeedbackWorkflow:     profile.FeedbackWorkflow,
+		Container:            ws.Container,
 		GitHubUsername:       ghUsername,
 	}, nil
 }
 
+// buildRepoSettings constructs a RepoSettings entry for each repo
+// in the workspace, resolving the profile for each.
+func (r *ConfigResolver) buildRepoSettings(workItem models.WorkItem, pc *models.ProjectConfig, ws models.WorkspaceConfig) ([]models.RepoSettings, error) {
+	repos := make([]models.RepoSettings, 0, len(ws.Repos))
+	for _, entry := range ws.Repos {
+		owner, repo, err := parseRepoURL(entry.URL)
+		if err != nil {
+			return nil, fmt.Errorf("parsing repo URL %q for %s: %w", entry.URL, workItem.Key, err)
+		}
+
+		baseBranch := entry.TargetBranch
+		if baseBranch == "" {
+			baseBranch = "main"
+		}
+
+		rs := models.RepoSettings{
+			Name:       entry.Name,
+			Owner:      owner,
+			Repo:       repo,
+			CloneURL:   entry.URL,
+			BaseBranch: baseBranch,
+		}
+
+		if entry.Profile != "" {
+			profile, ok := lookupProfile(pc.Profiles, entry.Profile)
+			if !ok {
+				return nil, fmt.Errorf("profile %q referenced by repo %q does not exist in project config for %s", entry.Profile, entry.Name, workItem.Key)
+			}
+			rs.Container = profile.Container
+			rs.Imports = profile.Imports
+			if rs.Imports == nil {
+				rs.Imports = []models.ImportConfig{}
+			}
+			rs.Instructions = profile.Instructions
+			rs.NewTicketWorkflow = profile.NewTicketWorkflow
+			rs.FeedbackWorkflow = profile.FeedbackWorkflow
+		} else {
+			rs.Imports = []models.ImportConfig{}
+		}
+
+		repos = append(repos, rs)
+	}
+	return repos, nil
+}
+
 // LocateRepo returns the GitHub owner and repo for the work item.
+// For multi-repo workspaces, returns the first repo.
 func (r *ConfigResolver) LocateRepo(workItem models.WorkItem) (string, string, error) {
-	pc, err := r.findProjectConfig(workItem)
+	settings, err := r.ResolveProject(workItem)
 	if err != nil {
 		return "", "", err
 	}
-
-	repoURL, _, err := r.resolveComponent(workItem, pc)
-	if err != nil {
-		return "", "", err
+	if len(settings.Repos) == 0 {
+		return "", "", fmt.Errorf("no repos configured for %s", workItem.Key)
 	}
+	return settings.Repos[0].Owner, settings.Repos[0].Repo, nil
+}
 
-	owner, repo, err := parseRepoURL(repoURL)
+// LocateRepos returns all repositories for the work item's resolved
+// workspace. For single-repo workspaces this returns one entry; for
+// multi-repo workspaces it returns all repos.
+func (r *ConfigResolver) LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error) {
+	settings, err := r.ResolveProject(workItem)
 	if err != nil {
-		return "", "", fmt.Errorf("parsing repo URL %q for %s: %w", repoURL, workItem.Key, err)
+		return nil, err
 	}
-
-	return owner, repo, nil
+	results := make([]models.RepoCoord, len(settings.Repos))
+	for i, rs := range settings.Repos {
+		results[i] = models.RepoCoord{Owner: rs.Owner, Repo: rs.Repo}
+	}
+	return results, nil
 }
 
 // ForkOwner returns the GitHub username that owns the assignee's fork.
@@ -126,64 +175,66 @@ func (r *ConfigResolver) findProjectConfig(workItem models.WorkItem) (*models.Pr
 	return pc, nil
 }
 
-// resolveComponent finds the first work item component that has a
-// mapping in the project's Components, then looks up the referenced
-// profile. Returns the repo URL and profile. Returns an error if
-// the work item has no components, none match, or the referenced
-// profile does not exist.
-//
-// Matching is case-insensitive because viper lowercases YAML map keys
-// internally, so configured keys like "FlightCtl" become "flightctl"
-// in the loaded config regardless of the original YAML casing.
-func (r *ConfigResolver) resolveComponent(workItem models.WorkItem, pc *models.ProjectConfig) (string, *models.Profile, error) {
+// findWorkspaceName returns the workspace name for a work item by
+// checking component mappings first, then falling back to
+// DefaultWorkspace.
+func (r *ConfigResolver) findWorkspaceName(workItem models.WorkItem, pc *models.ProjectConfig) (string, error) {
+	// Try component matching if the work item has components.
+	if len(workItem.Components) > 0 {
+		for _, component := range workItem.Components {
+			// Exact match first.
+			if comp, ok := pc.Components[component]; ok {
+				return comp.Workspace, nil
+			}
+			// Case-insensitive fallback.
+			lower := strings.ToLower(component)
+			for key, comp := range pc.Components {
+				if strings.ToLower(key) == lower {
+					return comp.Workspace, nil
+				}
+			}
+		}
+	}
+
+	// Fall back to default workspace.
+	if pc.DefaultWorkspace != "" {
+		return pc.DefaultWorkspace, nil
+	}
+
 	if len(workItem.Components) == 0 {
-		return "", nil, fmt.Errorf("work item %s has no components; cannot resolve repository", workItem.Key)
+		return "", fmt.Errorf("work item %s has no components and no default_workspace is configured", workItem.Key)
 	}
+	return "", fmt.Errorf(
+		"no component mapping found for %s; components %v do not match any configured mapping and no default_workspace is configured",
+		workItem.Key, workItem.Components)
+}
 
-	var comp *models.ComponentConfig
-	for _, component := range workItem.Components {
-		// Try exact match first.
-		if c, ok := pc.Components[component]; ok {
-			comp = &c
-			break
-		}
-		// Fall back to case-insensitive match (viper lowercases map keys).
-		lower := strings.ToLower(component)
-		for key, c := range pc.Components {
-			if strings.ToLower(key) == lower {
-				cc := c
-				comp = &cc
-				break
-			}
-		}
-		if comp != nil {
-			break
+// lookupWorkspace finds a workspace by name with case-insensitive fallback.
+func lookupWorkspace(workspaces map[string]models.WorkspaceConfig, name string) (models.WorkspaceConfig, bool) {
+	if ws, ok := workspaces[name]; ok {
+		return ws, true
+	}
+	lower := strings.ToLower(name)
+	for key, ws := range workspaces {
+		if strings.ToLower(key) == lower {
+			return ws, true
 		}
 	}
+	return models.WorkspaceConfig{}, false
+}
 
-	if comp == nil {
-		return "", nil, fmt.Errorf(
-			"no component mapping found for %s; components %v do not match any configured mapping",
-			workItem.Key, workItem.Components)
+// lookupProfile finds a profile by name with case-insensitive fallback.
+func lookupProfile(profiles map[string]models.Profile, name string) (models.Profile, bool) {
+	if p, ok := profiles[name]; ok {
+		return p, true
 	}
-
-	// Look up profile (case-insensitive).
-	profile, ok := pc.Profiles[comp.Profile]
-	if !ok {
-		lower := strings.ToLower(comp.Profile)
-		for key, p := range pc.Profiles {
-			if strings.ToLower(key) == lower {
-				profile = p
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return "", nil, fmt.Errorf("profile %q referenced by component does not exist in project config for %s", comp.Profile, workItem.Key)
+	lower := strings.ToLower(name)
+	for key, p := range profiles {
+		if strings.ToLower(key) == lower {
+			return p, true
 		}
 	}
-
-	return comp.Repo, &profile, nil
+	return models.Profile{}, false
 }
 
 // parseRepoURL extracts the owner and repository name from a GitHub

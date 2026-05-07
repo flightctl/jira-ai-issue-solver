@@ -18,6 +18,10 @@ type Stub struct {
 	GetTicketSecurityLevelFunc  func(key string) (*models.JiraSecurity, error)
 	UpdateTicketStatusFunc      func(key string, status string) error
 	AddCommentFunc              func(key string, comment string) error
+	GetCommentsFunc             func(key string) ([]models.JiraComment, error)
+	UpdateCommentFunc           func(key, commentID, body string) error
+	DeleteCommentFunc           func(key, commentID string) error
+	RemoveLabelFunc             func(key, label string) error
 	UpdateTicketFieldByNameFunc func(key string, fieldName string, value interface{}) error
 	GetFieldIDByNameFunc        func(fieldName string) (string, error)
 	DownloadAttachmentFunc      func(url string) ([]byte, error)
@@ -54,6 +58,34 @@ func (s *Stub) UpdateTicketStatus(key string, status string) error {
 func (s *Stub) AddComment(key string, comment string) error {
 	if s.AddCommentFunc != nil {
 		return s.AddCommentFunc(key, comment)
+	}
+	return nil
+}
+
+func (s *Stub) GetComments(key string) ([]models.JiraComment, error) {
+	if s.GetCommentsFunc != nil {
+		return s.GetCommentsFunc(key)
+	}
+	return []models.JiraComment{}, nil
+}
+
+func (s *Stub) UpdateComment(key, commentID, body string) error {
+	if s.UpdateCommentFunc != nil {
+		return s.UpdateCommentFunc(key, commentID, body)
+	}
+	return nil
+}
+
+func (s *Stub) DeleteComment(key, commentID string) error {
+	if s.DeleteCommentFunc != nil {
+		return s.DeleteCommentFunc(key, commentID)
+	}
+	return nil
+}
+
+func (s *Stub) RemoveLabel(key, label string) error {
+	if s.RemoveLabelFunc != nil {
+		return s.RemoveLabelFunc(key, label)
 	}
 	return nil
 }

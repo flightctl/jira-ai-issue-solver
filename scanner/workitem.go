@@ -3,6 +3,8 @@ package scanner
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,10 +29,13 @@ type WorkItemScannerConfig struct {
 // WorkItemScanner polls the issue tracker for tickets matching the
 // configured criteria and emits [jobmanager.JobTypeNewTicket] events.
 type WorkItemScanner struct {
-	searcher  IssueSearcher
-	submitter JobSubmitter
-	cfg       WorkItemScannerConfig
-	logger    *zap.Logger
+	searcher      IssueSearcher
+	submitter     JobSubmitter
+	retryResetter RetryResetter
+	labelRemover  LabelRemover
+	retryLabel    string
+	cfg           WorkItemScannerConfig
+	logger        *zap.Logger
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -39,9 +44,17 @@ type WorkItemScanner struct {
 
 // NewWorkItemScanner creates a WorkItemScanner with the given
 // dependencies. Returns an error if any required parameter is invalid.
+//
+// The retryResetter, labelRemover, and retryLabel parameters enable
+// the retry label feature. When all are set, the scanner resets
+// retry counts and resubmits tickets that carry the configured label.
+// Pass nil, nil, "" to disable the feature.
 func NewWorkItemScanner(
 	searcher IssueSearcher,
 	submitter JobSubmitter,
+	retryResetter RetryResetter,
+	labelRemover LabelRemover,
+	retryLabel string,
 	cfg WorkItemScannerConfig,
 	logger *zap.Logger,
 ) (*WorkItemScanner, error) {
@@ -59,10 +72,13 @@ func NewWorkItemScanner(
 	}
 
 	return &WorkItemScanner{
-		searcher:  searcher,
-		submitter: submitter,
-		cfg:       cfg,
-		logger:    logger,
+		searcher:      searcher,
+		submitter:     submitter,
+		retryResetter: retryResetter,
+		labelRemover:  labelRemover,
+		retryLabel:    retryLabel,
+		cfg:           cfg,
+		logger:        logger,
 	}, nil
 }
 
@@ -157,6 +173,9 @@ func (s *WorkItemScanner) submitEvent(item models.WorkItem) bool {
 		s.logger.Debug("Skipping duplicate",
 			zap.String("ticket", item.Key))
 	case errors.Is(err, jobmanager.ErrRetriesExhausted):
+		if s.handleRetryLabel(item) {
+			return false
+		}
 		s.logger.Debug("Skipping exhausted ticket",
 			zap.String("ticket", item.Key))
 	case errors.Is(err, jobmanager.ErrCircuitOpen):
@@ -175,4 +194,53 @@ func (s *WorkItemScanner) submitEvent(item models.WorkItem) bool {
 	}
 
 	return false
+}
+
+// handleRetryLabel checks whether an exhausted ticket has the retry
+// label. If so, it resets the retry count, removes the label, and
+// resubmits the ticket. Returns true if the ticket was resubmitted.
+func (s *WorkItemScanner) handleRetryLabel(item models.WorkItem) bool {
+	if s.retryLabel == "" || s.labelRemover == nil || s.retryResetter == nil {
+		return false
+	}
+
+	hasLabel := slices.ContainsFunc(item.Labels, func(l string) bool {
+		return strings.EqualFold(l, s.retryLabel)
+	})
+	if !hasLabel {
+		return false
+	}
+
+	s.logger.Info("Retry label detected, resetting retry count",
+		zap.String("ticket", item.Key),
+		zap.String("label", s.retryLabel))
+
+	if err := s.retryResetter.ResetRetries(item.Key); err != nil {
+		s.logger.Error("Failed to reset retries",
+			zap.String("ticket", item.Key),
+			zap.Error(err))
+		return false
+	}
+
+	if err := s.labelRemover.RemoveLabel(item.Key, s.retryLabel); err != nil {
+		s.logger.Error("Failed to remove retry label, skipping resubmit to avoid retry loop",
+			zap.String("ticket", item.Key),
+			zap.Error(err))
+		return false
+	}
+
+	event := jobmanager.Event{
+		Type:      jobmanager.JobTypeNewTicket,
+		TicketKey: item.Key,
+	}
+	if _, err := s.submitter.Submit(event); err != nil {
+		s.logger.Error("Failed to resubmit after retry reset",
+			zap.String("ticket", item.Key),
+			zap.Error(err))
+		return false
+	}
+
+	s.logger.Info("Resubmitted ticket after retry reset",
+		zap.String("ticket", item.Key))
+	return true
 }

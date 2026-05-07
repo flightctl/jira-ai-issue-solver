@@ -88,7 +88,7 @@ func main() {
 		containerRunner,
 		containerResolver,
 		container.RuntimeManagerConfig{
-			NamePrefix: "ai-bot",
+			NamePrefix: config.GitHub.BotUsername,
 		},
 		logger)
 	if err != nil {
@@ -142,6 +142,16 @@ func main() {
 			DefaultClaudeModel: config.Claude.Model,
 			DefaultGeminiModel: config.Gemini.Model,
 			MaxRetries:         config.Guardrails.MaxRetries,
+			IgnoredCheckNames:  config.GitHub.IgnoredCheckNames,
+			MaxCIFixAttempts:   config.Guardrails.MaxCIFixAttempts,
+			RetryLabel:         config.Guardrails.RetryLabel,
+			JiraUsername:       config.Jira.Username,
+			MinCommentLength:   config.Guardrails.MinCommentLength,
+			GeminiPricing: executor.GeminiPricing{
+				InputPerMTok:  config.Gemini.InputPricePerMTok,
+				OutputPerMTok: config.Gemini.OutputPricePerMTok,
+				CachedPerMTok: config.Gemini.CachedPricePerMTok,
+			},
 		},
 		issueTracker,
 		gitService,
@@ -179,7 +189,7 @@ func main() {
 
 	startupRunner, err := recovery.NewStartupRunner(
 		recovery.Config{
-			ContainerPrefix:    "ai-bot",
+			ContainerPrefix:    config.GitHub.BotUsername,
 			WorkspaceTTL:       time.Duration(config.Workspaces.TTLDays) * 24 * time.Hour,
 			BotUsername:        config.GitHub.BotUsername,
 			InProgressCriteria: buildInProgressCriteria(config),
@@ -210,6 +220,9 @@ func main() {
 	ticketScanner, err := scanner.NewWorkItemScanner(
 		issueTracker,
 		coordinator,
+		coordinator,
+		issueTracker,
+		config.Guardrails.RetryLabel,
 		scanner.WorkItemScannerConfig{
 			Criteria:     todoCriteria,
 			PollInterval: time.Duration(config.Jira.IntervalSeconds) * time.Second,
@@ -225,6 +238,7 @@ func main() {
 		coordinator,
 		gitService,
 		resolver,
+		gitService,
 		scanner.FeedbackScannerConfig{
 			Criteria:          inReviewCriteria,
 			PollInterval:      time.Duration(config.Jira.IntervalSeconds) * time.Second,
@@ -232,6 +246,8 @@ func main() {
 			IgnoredUsernames:  config.GitHub.IgnoredUsernames,
 			KnownBotUsernames: config.GitHub.KnownBotUsernames,
 			MaxThreadDepth:    config.GitHub.MaxThreadDepth,
+			IgnoredCheckNames: config.GitHub.IgnoredCheckNames,
+			MaxCIFixAttempts:  config.Guardrails.MaxCIFixAttempts,
 		},
 		logger,
 	)

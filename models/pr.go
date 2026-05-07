@@ -11,6 +11,7 @@ type PRDetails struct {
 	Branch     string
 	BaseBranch string
 	URL        string
+	HeadSHA    string
 }
 
 // PRComment represents a single comment on a pull request.
@@ -21,6 +22,7 @@ type PRComment struct {
 	Body            string
 	FilePath        string // Empty for general (non-file-specific) comments.
 	Line            int    // Zero for general comments.
+	URL             string // HTML URL for linking back to the comment.
 	Timestamp       time.Time
 	InReplyTo       int64 // Zero if this is not a reply to another comment.
 	IsReviewComment bool  // True for file-level review comments, false for conversation comments.
@@ -53,4 +55,11 @@ type PR struct {
 	Number int
 	URL    string
 	State  string
+}
+
+// IssueComment represents a top-level comment on a pull request
+// (via the GitHub Issues API, as distinct from review comments).
+type IssueComment struct {
+	ID   int64
+	Body string
 }

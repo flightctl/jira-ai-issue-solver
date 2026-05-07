@@ -198,4 +198,9 @@ type Manager interface {
 
 	// ActiveJobs returns snapshots of all jobs in Running state.
 	ActiveJobs() []*Job
+
+	// ResetRetries clears the failure count for a ticket, allowing
+	// it to be resubmitted even after exhausting the retry limit.
+	// Returns [ErrShutdown] if the manager has been shut down.
+	ResetRetries(ticketKey string) error
 }

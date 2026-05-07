@@ -24,6 +24,9 @@ func TestBuildExecCommand_Claude_Default(t *testing.T) {
 	if !strings.Contains(script, "--dangerously-skip-permissions") {
 		t.Error("script should contain --dangerously-skip-permissions")
 	}
+	if !strings.Contains(script, "--output-format json") {
+		t.Error("script should contain --output-format json")
+	}
 	if !strings.Contains(script, taskPrompt) {
 		t.Error("script should contain task prompt")
 	}
@@ -59,6 +62,15 @@ func TestBuildExecCommand_Claude_NoAllowedTools(t *testing.T) {
 	}
 }
 
+func TestBuildExecCommand_Claude_SavesRawOutput(t *testing.T) {
+	cmd := buildExecCommand(scriptParams{Provider: "claude"})
+
+	script := cmd[2]
+	if !strings.Contains(script, "cli-output.json") {
+		t.Error("script should capture JSON output to cli-output.json")
+	}
+}
+
 func TestBuildExecCommand_Gemini_Default(t *testing.T) {
 	cmd := buildExecCommand(scriptParams{Provider: "gemini"})
 
@@ -68,6 +80,9 @@ func TestBuildExecCommand_Gemini_Default(t *testing.T) {
 	}
 	if !strings.Contains(script, "-y") {
 		t.Error("script should contain -y flag for non-interactive mode")
+	}
+	if !strings.Contains(script, "--output-format json") {
+		t.Error("script should contain --output-format json")
 	}
 	if !strings.Contains(script, taskPrompt) {
 		t.Error("script should contain task prompt")
@@ -92,6 +107,15 @@ func TestBuildExecCommand_Gemini_WithModel(t *testing.T) {
 	}
 }
 
+func TestBuildExecCommand_Gemini_SavesRawOutput(t *testing.T) {
+	cmd := buildExecCommand(scriptParams{Provider: "gemini"})
+
+	script := cmd[2]
+	if !strings.Contains(script, "cli-output.json") {
+		t.Error("script should capture JSON output to cli-output.json")
+	}
+}
+
 func TestBuildExecCommand_GenericProvider(t *testing.T) {
 	cmd := buildExecCommand(scriptParams{Provider: "custom-ai"})
 
@@ -104,12 +128,36 @@ func TestBuildExecCommand_GenericProvider(t *testing.T) {
 	}
 }
 
+func TestBuildExecCommand_GenericProvider_WritesSessionOutput(t *testing.T) {
+	cmd := buildExecCommand(scriptParams{Provider: "custom-ai"})
+
+	script := cmd[2]
+	if !strings.Contains(script, "exit_code") {
+		t.Error("generic provider should write exit_code")
+	}
+	if !strings.Contains(script, sessionOutputPath) {
+		t.Error("generic provider should write session output file")
+	}
+}
+
 func TestBuildExecCommand_SessionLogRedirect(t *testing.T) {
 	cmd := buildExecCommand(scriptParams{Provider: "claude"})
 
 	script := cmd[2]
 	if !strings.Contains(script, "tee /workspace/.ai-bot/session.log") {
-		t.Error("script should tee output to session.log")
+		t.Error("script should tee stderr to session.log")
+	}
+}
+
+func TestBuildExecCommand_JSONOutputCapture(t *testing.T) {
+	for _, provider := range []string{"claude", "gemini"} {
+		t.Run(provider, func(t *testing.T) {
+			cmd := buildExecCommand(scriptParams{Provider: provider})
+			script := cmd[2]
+			if !strings.Contains(script, "cli-output.json") {
+				t.Error("script should capture stdout to cli-output.json")
+			}
+		})
 	}
 }
 
@@ -125,6 +173,18 @@ func TestBuildExecCommand_ExitCodePreservation(t *testing.T) {
 	}
 }
 
+func TestBuildExecCommand_NoJqRequired(t *testing.T) {
+	for _, provider := range []string{"claude", "gemini"} {
+		t.Run(provider, func(t *testing.T) {
+			cmd := buildExecCommand(scriptParams{Provider: provider})
+			script := cmd[2]
+			if strings.Contains(script, "jq") {
+				t.Error("script should not require jq in the container")
+			}
+		})
+	}
+}
+
 func TestBuildClaudeCommand(t *testing.T) {
 	cmd := buildClaudeCommand("", "")
 	if !strings.HasPrefix(cmd, "claude ") {
@@ -132,6 +192,9 @@ func TestBuildClaudeCommand(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "--dangerously-skip-permissions") {
 		t.Error("missing --dangerously-skip-permissions")
+	}
+	if !strings.Contains(cmd, "--output-format json") {
+		t.Error("missing --output-format json")
 	}
 	if !strings.Contains(cmd, "-p") {
 		t.Error("missing -p flag")
@@ -162,6 +225,9 @@ func TestBuildGeminiCommand(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "-y") {
 		t.Error("missing -y flag")
+	}
+	if !strings.Contains(cmd, "--output-format json") {
+		t.Error("missing --output-format json")
 	}
 	if !strings.Contains(cmd, "-p") {
 		t.Error("missing -p flag")

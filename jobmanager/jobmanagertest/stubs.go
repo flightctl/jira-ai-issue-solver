@@ -10,11 +10,12 @@ var _ jobmanager.Manager = (*Stub)(nil)
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type Stub struct {
-	SubmitFunc     func(event jobmanager.Event) (*jobmanager.Job, error)
-	CompleteFunc   func(jobID string, result jobmanager.JobResult) error
-	FailFunc       func(jobID string, err error) error
-	GetJobFunc     func(jobID string) (*jobmanager.Job, error)
-	ActiveJobsFunc func() []*jobmanager.Job
+	SubmitFunc       func(event jobmanager.Event) (*jobmanager.Job, error)
+	CompleteFunc     func(jobID string, result jobmanager.JobResult) error
+	FailFunc         func(jobID string, err error) error
+	GetJobFunc       func(jobID string) (*jobmanager.Job, error)
+	ActiveJobsFunc   func() []*jobmanager.Job
+	ResetRetriesFunc func(ticketKey string) error
 }
 
 func (s *Stub) Submit(event jobmanager.Event) (*jobmanager.Job, error) {
@@ -48,6 +49,13 @@ func (s *Stub) GetJob(jobID string) (*jobmanager.Job, error) {
 func (s *Stub) ActiveJobs() []*jobmanager.Job {
 	if s.ActiveJobsFunc != nil {
 		return s.ActiveJobsFunc()
+	}
+	return nil
+}
+
+func (s *Stub) ResetRetries(ticketKey string) error {
+	if s.ResetRetriesFunc != nil {
+		return s.ResetRetriesFunc(ticketKey)
 	}
 	return nil
 }
