@@ -3079,7 +3079,7 @@ func newMultiRepoTestDeps(t *testing.T) *testDeps {
 			},
 		},
 		workspaces: &workspacetest.Stub{
-			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error) {
 				return wsDir, false, nil
 			},
 		},

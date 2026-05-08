@@ -816,6 +816,60 @@ func TestResolveProject_NoImports_EmptySlice(t *testing.T) {
 	}
 }
 
+// --- RootRepo propagation ---
+
+func TestResolveProject_PropagatesRootRepoURL(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Jira.Projects[0].Workspaces["backend"] = models.WorkspaceConfig{
+		RootRepo: "https://github.com/osac-project/osac-workspace",
+		Repos: []models.RepoEntry{
+			{Name: "backend", URL: "https://github.com/my-org/backend.git", Profile: "default"},
+		},
+	}
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"backend"},
+	}
+	settings, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if settings.RootRepoURL != "https://github.com/osac-project/osac-workspace" {
+		t.Errorf("RootRepoURL = %q, want osac-workspace URL", settings.RootRepoURL)
+	}
+}
+
+func TestResolveProject_EmptyRootRepoURL(t *testing.T) {
+	cfg := minimalConfig()
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"backend"},
+	}
+	settings, err := r.ResolveProject(wi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if settings.RootRepoURL != "" {
+		t.Errorf("RootRepoURL = %q, want empty string", settings.RootRepoURL)
+	}
+}
+
 // --- helpers ---
 
 // minimalConfig returns a Config with a single project, one workspace

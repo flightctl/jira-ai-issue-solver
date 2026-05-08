@@ -798,7 +798,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	for i, r := range settings.Repos {
 		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
 	}
-	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries)
+	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries, settings.RootRepoURL)
 	if err != nil {
 		return result, fmt.Errorf("prepare workspace: %w", err)
 	}

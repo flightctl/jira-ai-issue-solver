@@ -71,6 +71,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 
 	return &models.ProjectSettings{
 		Repos:                repos,
+		RootRepoURL:          ws.RootRepo,
 		InProgressStatus:     transitions.InProgress,
 		InReviewStatus:       transitions.InReview,
 		TodoStatus:           transitions.Todo,

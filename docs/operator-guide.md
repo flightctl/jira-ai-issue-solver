@@ -365,6 +365,10 @@ jira:
       # Multiple components can share a workspace.
       workspaces:
         default:
+          # Optional scaffold repo cloned as the workspace root before
+          # child repos. Provides context files (e.g., CLAUDE.md) but
+          # is never branched, committed to, or PR'd.
+          # root_repo: https://github.com/your-org/workspace-root.git
           repos:
             - name: your-repo
               url: https://github.com/your-org/your-repo.git

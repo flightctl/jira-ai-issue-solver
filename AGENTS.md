@@ -49,7 +49,7 @@ Multi-project configuration system (`models/config.go`):
 Key configuration features:
 - `GetProjectConfigForTicket()` retrieves the appropriate project config based on ticket key
 - `StatusTransitions` maps ticket types to their workflow statuses (todo, in_progress, in_review)
-- **Workspaces** group one or more repos into a named working environment. A single-repo project is a workspace with one entry. Multi-repo workspaces clone all repos into subdirectories and run one AI session against the whole workspace.
+- **Workspaces** group one or more repos into a named working environment. A single-repo project is a workspace with one entry. Multi-repo workspaces clone all repos into subdirectories and run one AI session against the whole workspace. An optional `root_repo` URL clones a scaffold repo as the workspace root before child repos are placed inside it; the scaffold provides context files (e.g., CLAUDE.md) but is never branched, committed to, or PR'd.
 - **Profiles** bundle container, imports, instructions, and workflow settings. Repos within workspaces reference profiles by name. Profile settings override repo-level `.ai-bot/` files when set, enabling prototyping without committing to the source repo.
 - `Components` maps Jira component names to workspaces (case-insensitive). `DefaultWorkspace` is used when tickets have no matching component.
 - **Container resolution**: workspace-level container overrides per-repo profile containers. Multi-repo workspaces require a workspace-level container (fat container with all toolchains).
