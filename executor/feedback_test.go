@@ -1188,7 +1188,7 @@ func newMultiRepoFeedbackDeps(t *testing.T) *testDeps {
 			},
 		},
 		workspaces: &workspacetest.Stub{
-			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error) {
 				return wsDir, true, nil
 			},
 		},
@@ -1333,6 +1333,42 @@ func TestMultiRepoFeedback_WritesMultiRepoFeedbackTask(t *testing.T) {
 
 	if !taskWritten {
 		t.Error("WriteMultiRepoFeedbackTask was not called")
+	}
+}
+
+func TestMultiRepoFeedback_ForwardsRootRepoURL(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	const wantRootURL = "https://github.com/org/workspace-root.git"
+
+	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
+			},
+			RootRepoURL:      wantRootURL,
+			Container:        models.ContainerSettings{Image: "fat:latest"},
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	var gotRootURL string
+	d.workspaces.FindOrCreateMultiRepoFunc = func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error) {
+		gotRootURL = rootRepoURL
+		return d.wsDir, true, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotRootURL != wantRootURL {
+		t.Errorf("rootRepoURL = %q, want %q", gotRootURL, wantRootURL)
 	}
 }
 

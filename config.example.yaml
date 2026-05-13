@@ -92,6 +92,23 @@ jira:
         #       url: https://github.com/your-org/frontend.git
         #       profile: node-dev
 
+        # Multi-repo workspace with a scaffold (root) repo:
+        # The root_repo is cloned first as the workspace root, then
+        # child repos are cloned as subdirectories inside it. The
+        # scaffold provides context files (CLAUDE.md, AI skills) but
+        # is never branched, committed to, or PR'd.
+        # osac:
+        #   root_repo: https://github.com/osac-project/osac-workspace
+        #   container:
+        #     image: "your-org/osac-dev:latest"
+        #   repos:
+        #     - name: fulfillment-service
+        #       url: https://github.com/osac-project/fulfillment-service
+        #       profile: go-dev
+        #     - name: osac-operator
+        #       url: https://github.com/osac-project/osac-operator
+        #       profile: go-dev
+
       # Profiles bundle container, imports, instructions, and workflow
       # settings. Repos within workspaces reference profiles by name.
       # Multiple repos can reference the same profile to avoid

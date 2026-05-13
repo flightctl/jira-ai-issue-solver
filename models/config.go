@@ -115,6 +115,13 @@ type WorkspaceConfig struct {
 	// profile container is used instead.
 	Container ContainerSettings `yaml:"container" mapstructure:"container"`
 
+	// RootRepo is an optional clone URL for a scaffold repository that
+	// is cloned as the workspace root before child repos are cloned
+	// into subdirectories. The scaffold provides context files
+	// (e.g., CLAUDE.md, AI skills) but is never branched, committed
+	// to, or PR'd.
+	RootRepo string `yaml:"root_repo" mapstructure:"root_repo"`
+
 	// Repos lists the repositories in this workspace.
 	Repos []RepoEntry `yaml:"repos" mapstructure:"repos"`
 }

@@ -39,6 +39,8 @@ import "time"
 // manager during workspace creation. The existing GitHubServiceImpl
 // satisfies this interface.
 type Cloner interface {
+	// CloneRepository clones the repository at repoURL into directory.
+	// The implementation must create the target directory.
 	CloneRepository(repoURL, directory string) error
 }
 
@@ -60,10 +62,12 @@ type Manager interface {
 
 	// CreateMultiRepo clones multiple repositories into subdirectories
 	// of a new workspace for the given ticket. Each repo is cloned into
-	// wsPath/repo.Name. Returns the workspace root path. Returns an
-	// error if a workspace already exists or if any clone fails (partial
-	// clones are cleaned up).
-	CreateMultiRepo(ticketKey string, repos []RepoEntry) (string, error)
+	// wsPath/repo.Name. When rootRepoURL is non-empty, it is cloned
+	// first as the workspace root (scaffold); child repos are then
+	// placed as subdirectories inside it. Returns the workspace root
+	// path. Returns an error if a workspace already exists or if any
+	// clone fails (partial clones are cleaned up).
+	CreateMultiRepo(ticketKey string, repos []RepoEntry, rootRepoURL string) (string, error)
 
 	// Find returns the workspace path for the given ticket and true if
 	// the workspace exists, or empty string and false if it does not.
@@ -77,8 +81,9 @@ type Manager interface {
 	// FindOrCreateMultiRepo returns an existing workspace or creates a
 	// new multi-repo workspace. The bool return value indicates whether
 	// an existing workspace was reused (true) or a new one was created
-	// (false).
-	FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry) (string, bool, error)
+	// (false). When reusing an existing workspace, rootRepoURL is
+	// ignored (the scaffold is not re-cloned).
+	FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry, rootRepoURL string) (string, bool, error)
 
 	// Cleanup removes the workspace directory for the given ticket.
 	// Returns nil if the workspace does not exist.

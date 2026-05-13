@@ -15,10 +15,10 @@ var _ workspace.Manager = (*Stub)(nil)
 // When a Func field is nil, the method returns zero values.
 type Stub struct {
 	CreateFunc                func(ticketKey, repoURL string) (string, error)
-	CreateMultiRepoFunc       func(ticketKey string, repos []workspace.RepoEntry) (string, error)
+	CreateMultiRepoFunc       func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, error)
 	FindFunc                  func(ticketKey string) (string, bool)
 	FindOrCreateFunc          func(ticketKey, repoURL string) (string, bool, error)
-	FindOrCreateMultiRepoFunc func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error)
+	FindOrCreateMultiRepoFunc func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error)
 	CleanupFunc               func(ticketKey string) error
 	CleanupStaleFunc          func(maxAge time.Duration) (int, error)
 	CleanupByFilterFunc       func(shouldRemove func(ticketKey string) bool) (int, error)
@@ -32,9 +32,9 @@ func (s *Stub) Create(ticketKey, repoURL string) (string, error) {
 	return "", nil
 }
 
-func (s *Stub) CreateMultiRepo(ticketKey string, repos []workspace.RepoEntry) (string, error) {
+func (s *Stub) CreateMultiRepo(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, error) {
 	if s.CreateMultiRepoFunc != nil {
-		return s.CreateMultiRepoFunc(ticketKey, repos)
+		return s.CreateMultiRepoFunc(ticketKey, repos, rootRepoURL)
 	}
 	return "", nil
 }
@@ -53,9 +53,9 @@ func (s *Stub) FindOrCreate(ticketKey, repoURL string) (string, bool, error) {
 	return "", false, nil
 }
 
-func (s *Stub) FindOrCreateMultiRepo(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+func (s *Stub) FindOrCreateMultiRepo(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error) {
 	if s.FindOrCreateMultiRepoFunc != nil {
-		return s.FindOrCreateMultiRepoFunc(ticketKey, repos)
+		return s.FindOrCreateMultiRepoFunc(ticketKey, repos, rootRepoURL)
 	}
 	return "", false, nil
 }

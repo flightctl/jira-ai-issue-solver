@@ -64,7 +64,7 @@ func (m *FSManager) Create(ticketKey, repoURL string) (string, error) {
 	return dir, nil
 }
 
-func (m *FSManager) CreateMultiRepo(ticketKey string, repos []RepoEntry) (string, error) {
+func (m *FSManager) CreateMultiRepo(ticketKey string, repos []RepoEntry, rootRepoURL string) (string, error) {
 	if len(repos) == 0 {
 		return "", fmt.Errorf("at least one repo entry is required")
 	}
@@ -86,8 +86,18 @@ func (m *FSManager) CreateMultiRepo(ticketKey string, repos []RepoEntry) (string
 		return "", fmt.Errorf("workspace already exists for %s", ticketKey)
 	}
 
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", fmt.Errorf("create workspace directory: %w", err)
+	if rootRepoURL != "" {
+		if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
+			return "", fmt.Errorf("create workspace parent directory: %w", err)
+		}
+		if err := m.cloner.CloneRepository(rootRepoURL, dir); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("clone root repo for %s: %w", ticketKey, err)
+		}
+	} else {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return "", fmt.Errorf("create workspace directory: %w", err)
+		}
 	}
 
 	for _, repo := range repos {
@@ -98,10 +108,15 @@ func (m *FSManager) CreateMultiRepo(ticketKey string, repos []RepoEntry) (string
 		}
 	}
 
-	m.logger.Info("Created multi-repo workspace",
+	fields := []zap.Field{
 		zap.String("ticket", ticketKey),
 		zap.Int("repos", len(repos)),
-		zap.String("path", dir))
+		zap.String("path", dir),
+	}
+	if rootRepoURL != "" {
+		fields = append(fields, zap.String("root_repo", rootRepoURL))
+	}
+	m.logger.Info("Created multi-repo workspace", fields...)
 	return dir, nil
 }
 
@@ -129,7 +144,7 @@ func (m *FSManager) FindOrCreate(ticketKey, repoURL string) (string, bool, error
 	return dir, false, nil
 }
 
-func (m *FSManager) FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry) (string, bool, error) {
+func (m *FSManager) FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry, rootRepoURL string) (string, bool, error) {
 	if dir, found := m.Find(ticketKey); found {
 		m.logger.Debug("Reusing existing workspace",
 			zap.String("ticket", ticketKey),
@@ -137,7 +152,7 @@ func (m *FSManager) FindOrCreateMultiRepo(ticketKey string, repos []RepoEntry) (
 		return dir, true, nil
 	}
 
-	dir, err := m.CreateMultiRepo(ticketKey, repos)
+	dir, err := m.CreateMultiRepo(ticketKey, repos, rootRepoURL)
 	if err != nil {
 		return "", false, err
 	}

@@ -515,7 +515,7 @@ func TestCreateMultiRepo_ClonesAllRepos(t *testing.T) {
 		{Name: "shared", URL: "https://github.com/org/shared.git"},
 	}
 
-	path, err := mgr.CreateMultiRepo("PROJ-100", repos)
+	path, err := mgr.CreateMultiRepo("PROJ-100", repos, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestCreateMultiRepo_ErrorsWhenWorkspaceExists(t *testing.T) {
 	}
 
 	repos := []workspace.RepoEntry{{Name: "repo1", URL: "https://github.com/org/repo1.git"}}
-	_, err := mgr.CreateMultiRepo("PROJ-200", repos)
+	_, err := mgr.CreateMultiRepo("PROJ-200", repos, "")
 	if err == nil {
 		t.Fatal("expected error for existing workspace, got nil")
 	}
@@ -558,7 +558,7 @@ func TestCreateMultiRepo_ErrorsOnEmptyRepos(t *testing.T) {
 	cloner := &stubCloner{}
 	mgr := mustNewManager(t, baseDir, cloner)
 
-	_, err := mgr.CreateMultiRepo("PROJ-300", nil)
+	_, err := mgr.CreateMultiRepo("PROJ-300", nil, "")
 	if err == nil {
 		t.Fatal("expected error for empty repos, got nil")
 	}
@@ -582,7 +582,7 @@ func TestCreateMultiRepo_RejectsInvalidRepoNames(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := mgr.CreateMultiRepo("PROJ-INV-"+tc.name, tc.repos)
+			_, err := mgr.CreateMultiRepo("PROJ-INV-"+tc.name, tc.repos, "")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("got error %v, want substring %q", err, tc.want)
 			}
@@ -612,7 +612,7 @@ func TestCreateMultiRepo_CleansUpOnPartialCloneFailure(t *testing.T) {
 		{Name: "repo3", URL: "https://github.com/org/repo3.git"},
 	}
 
-	_, err := mgr.CreateMultiRepo("PROJ-400", repos)
+	_, err := mgr.CreateMultiRepo("PROJ-400", repos, "")
 	if err == nil {
 		t.Fatal("expected error from failed clone, got nil")
 	}
@@ -620,6 +620,115 @@ func TestCreateMultiRepo_CleansUpOnPartialCloneFailure(t *testing.T) {
 	wsDir := filepath.Join(baseDir, "PROJ-400")
 	if _, statErr := os.Stat(wsDir); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("expected entire workspace to be cleaned up after partial failure")
+	}
+}
+
+// --- CreateMultiRepo with root repo ---
+
+func TestCreateMultiRepo_WithRootRepo_ClonesRootFirst(t *testing.T) {
+	baseDir := t.TempDir()
+
+	var cloneOrder []string
+	cloner := &stubCloner{
+		cloneFunc: func(repoURL, directory string) error {
+			cloneOrder = append(cloneOrder, repoURL)
+			return os.MkdirAll(filepath.Join(directory, ".git"), 0o750)
+		},
+	}
+
+	mgr := mustNewManager(t, baseDir, cloner)
+
+	repos := []workspace.RepoEntry{
+		{Name: "svc-a", URL: "https://github.com/org/svc-a.git"},
+		{Name: "svc-b", URL: "https://github.com/org/svc-b.git"},
+	}
+	rootURL := "https://github.com/org/workspace-root.git"
+
+	path, err := mgr.CreateMultiRepo("PROJ-ROOT-1", repos, rootURL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := filepath.Join(baseDir, "PROJ-ROOT-1")
+	if path != expected {
+		t.Errorf("path = %q, want %q", path, expected)
+	}
+
+	if len(cloneOrder) != 3 {
+		t.Fatalf("cloned %d repos, want 3", len(cloneOrder))
+	}
+	if cloneOrder[0] != rootURL {
+		t.Errorf("first clone = %q, want root repo %q", cloneOrder[0], rootURL)
+	}
+	if cloneOrder[1] != repos[0].URL {
+		t.Errorf("second clone = %q, want %q", cloneOrder[1], repos[0].URL)
+	}
+	if cloneOrder[2] != repos[1].URL {
+		t.Errorf("third clone = %q, want %q", cloneOrder[2], repos[1].URL)
+	}
+
+	for _, repo := range repos {
+		repoDir := filepath.Join(path, repo.Name)
+		if _, err := os.Stat(repoDir); err != nil {
+			t.Errorf("repo dir %s does not exist: %v", repo.Name, err)
+		}
+	}
+}
+
+func TestCreateMultiRepo_WithRootRepo_RootCloneFailure(t *testing.T) {
+	baseDir := t.TempDir()
+
+	cloner := &stubCloner{
+		cloneFunc: func(repoURL, directory string) error {
+			return errors.New("auth error")
+		},
+	}
+
+	mgr := mustNewManager(t, baseDir, cloner)
+
+	repos := []workspace.RepoEntry{{Name: "svc-a", URL: "https://github.com/org/svc-a.git"}}
+	_, err := mgr.CreateMultiRepo("PROJ-ROOT-2", repos, "https://github.com/org/root.git")
+	if err == nil {
+		t.Fatal("expected error from root clone failure")
+	}
+	if !strings.Contains(err.Error(), "clone root repo") {
+		t.Errorf("error = %q, want substring %q", err, "clone root repo")
+	}
+
+	wsDir := filepath.Join(baseDir, "PROJ-ROOT-2")
+	if _, statErr := os.Stat(wsDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("expected workspace to be cleaned up after root clone failure")
+	}
+}
+
+func TestCreateMultiRepo_WithRootRepo_ChildCloneFailure(t *testing.T) {
+	baseDir := t.TempDir()
+
+	callCount := 0
+	cloner := &stubCloner{
+		cloneFunc: func(repoURL, directory string) error {
+			callCount++
+			if callCount == 2 {
+				return errors.New("child clone failed")
+			}
+			return os.MkdirAll(filepath.Join(directory, ".git"), 0o750)
+		},
+	}
+
+	mgr := mustNewManager(t, baseDir, cloner)
+
+	repos := []workspace.RepoEntry{
+		{Name: "svc-a", URL: "https://github.com/org/svc-a.git"},
+		{Name: "svc-b", URL: "https://github.com/org/svc-b.git"},
+	}
+	_, err := mgr.CreateMultiRepo("PROJ-ROOT-3", repos, "https://github.com/org/root.git")
+	if err == nil {
+		t.Fatal("expected error from child clone failure")
+	}
+
+	wsDir := filepath.Join(baseDir, "PROJ-ROOT-3")
+	if _, statErr := os.Stat(wsDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("expected entire workspace to be cleaned up after child clone failure")
 	}
 }
 
@@ -644,7 +753,7 @@ func TestFindOrCreateMultiRepo_ReusesExistingWorkspace(t *testing.T) {
 	}
 
 	repos := []workspace.RepoEntry{{Name: "repo1", URL: "https://github.com/org/repo1.git"}}
-	path, reused, err := mgr.FindOrCreateMultiRepo("PROJ-500", repos)
+	path, reused, err := mgr.FindOrCreateMultiRepo("PROJ-500", repos, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -659,6 +768,40 @@ func TestFindOrCreateMultiRepo_ReusesExistingWorkspace(t *testing.T) {
 	}
 }
 
+func TestFindOrCreateMultiRepo_WithRootRepo_DoesNotRecloneOnReuse(t *testing.T) {
+	baseDir := t.TempDir()
+
+	cloneCalled := false
+	cloner := &stubCloner{
+		cloneFunc: func(_, _ string) error {
+			cloneCalled = true
+			return nil
+		},
+	}
+
+	mgr := mustNewManager(t, baseDir, cloner)
+
+	wsDir := filepath.Join(baseDir, "PROJ-REUSE")
+	if err := os.MkdirAll(wsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	repos := []workspace.RepoEntry{{Name: "svc-a", URL: "https://github.com/org/svc-a.git"}}
+	path, reused, err := mgr.FindOrCreateMultiRepo("PROJ-REUSE", repos, "https://github.com/org/root.git")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reused {
+		t.Error("expected reused = true")
+	}
+	if path != wsDir {
+		t.Errorf("path = %q, want %q", path, wsDir)
+	}
+	if cloneCalled {
+		t.Error("clone should not be called when workspace exists (root repo should not be re-cloned)")
+	}
+}
+
 func TestFindOrCreateMultiRepo_CreatesWhenNotFound(t *testing.T) {
 	baseDir := t.TempDir()
 	cloner := &stubCloner{}
@@ -669,7 +812,7 @@ func TestFindOrCreateMultiRepo_CreatesWhenNotFound(t *testing.T) {
 		{Name: "svc-b", URL: "https://github.com/org/svc-b.git"},
 	}
 
-	path, reused, err := mgr.FindOrCreateMultiRepo("PROJ-600", repos)
+	path, reused, err := mgr.FindOrCreateMultiRepo("PROJ-600", repos, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

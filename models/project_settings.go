@@ -55,6 +55,12 @@ type ProjectSettings struct {
 	// entry; multi-repo workspaces have multiple.
 	Repos []RepoSettings
 
+	// RootRepoURL is the clone URL of a scaffold repo cloned as the
+	// workspace root. When set, the scaffold is cloned first and
+	// child repos are placed as subdirectories inside it. The
+	// scaffold is never branched, committed to, or PR'd.
+	RootRepoURL string
+
 	// InProgressStatus is the tracker status name for "in progress".
 	InProgressStatus string
 

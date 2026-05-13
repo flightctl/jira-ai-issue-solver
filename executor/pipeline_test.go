@@ -3079,7 +3079,7 @@ func newMultiRepoTestDeps(t *testing.T) *testDeps {
 			},
 		},
 		workspaces: &workspacetest.Stub{
-			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry) (string, bool, error) {
+			FindOrCreateMultiRepoFunc: func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error) {
 				return wsDir, false, nil
 			},
 		},
@@ -3399,6 +3399,42 @@ func TestMultiRepoNewTicket_DraftWhenValidationFails(t *testing.T) {
 	// Only in-progress transition, no in-review for drafts.
 	if len(transitions) != 1 || transitions[0] != "In Progress" {
 		t.Errorf("transitions = %v, want [In Progress] only", transitions)
+	}
+}
+
+func TestMultiRepoNewTicket_ForwardsRootRepoURL(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	const wantRootURL = "https://github.com/org/workspace-root.git"
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
+			},
+			RootRepoURL:      wantRootURL,
+			Container:        models.ContainerSettings{Image: "fat-container:latest"},
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	var gotRootURL string
+	d.workspaces.FindOrCreateMultiRepoFunc = func(ticketKey string, repos []workspace.RepoEntry, rootRepoURL string) (string, bool, error) {
+		gotRootURL = rootRepoURL
+		return d.wsDir, false, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotRootURL != wantRootURL {
+		t.Errorf("rootRepoURL = %q, want %q", gotRootURL, wantRootURL)
 	}
 }
 
