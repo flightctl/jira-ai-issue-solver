@@ -1,18 +1,26 @@
-# CodeRabbit configuration for prodsec-skills
-# Enforces Red Hat Product Security concerns during code review.
-# Skills source: module/skills/*/SKILL.md (129 skills, 4 categories)
+# CodeRabbit configuration for jira-ai-issue-solver
+# Security rules inherited from prodsec-skills, plus Go code quality,
+# test quality, and config compatibility checks.
 #
 # Schema: https://coderabbit.ai/integrations/schema.v2.json
 # Validate: comment "@coderabbitai configuration" on any PR
 #
-#
 language: "en-US"
 tone_instructions: "Be direct. State severity and impact. Cover security, correctness, and maintainability."
+early_access: true
 
 reviews:
   profile: "assertive"
   request_changes_workflow: true
   high_level_summary: true
+  high_level_summary_instructions: >-
+    Summarize changes in terms of which packages are affected (executor/,
+    scanner/, services/, container/, workspace/, jobmanager/, taskfile/,
+    tracker/, projectresolver/, repoconfig/, commentfilter/, recovery/,
+    costtracker/, models/), whether the change affects the execution
+    pipeline (ticket processing, PR creation, feedback handling) or
+    infrastructure (container management, workspace lifecycle, crash
+    recovery), and whether it touches configuration or deployment.
   collapse_walkthrough: false
   sequence_diagrams: true
 
@@ -34,6 +42,42 @@ reviews:
     base_branches:
       - "main"
       - "release/.*"
+    ignore_title_keywords:
+      - "[skip-review]"
+      - "WIP"
+
+  labeling_instructions:
+    - label: "executor"
+      instructions: >-
+        Apply when the PR modifies files in executor/. Changes here affect
+        the execution pipeline (new-ticket and PR-feedback flows), task file
+        generation, container invocation, and PR creation.
+
+    - label: "scanner"
+      instructions: >-
+        Apply when the PR modifies files in scanner/. Changes here affect
+        ticket discovery (WorkItemScanner) or feedback detection (FeedbackScanner).
+
+    - label: "container"
+      instructions: >-
+        Apply when the PR modifies files in container/. Changes here affect
+        container lifecycle management, image resolution, or runtime orchestration.
+
+    - label: "jira-service"
+      instructions: >-
+        Apply when the PR modifies services/jira*.go or tracker/. Changes
+        here affect Jira API interaction, issue tracking, or status transitions.
+
+    - label: "github-service"
+      instructions: >-
+        Apply when the PR modifies services/github*.go. Changes here affect
+        GitHub App auth, PR operations, or Git Data API usage.
+
+    - label: "config"
+      instructions: >-
+        Apply when the PR modifies models/config*.go, chart/jira-ai-issue-solver/values.yaml,
+        or projectresolver/. Changes here affect configuration loading,
+        project resolution, or env var mapping.
 
   path_instructions:
 
