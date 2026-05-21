@@ -186,7 +186,7 @@ reviews:
     # Skills: prompt-injection-mitigation, file-protection,
     #         third-party-model-security, bidirectional-filtering,
     #         output-validation-sandbox
-    - path: "**/{llm,prompt,chat,completion}**/*"
+    - path: "**/{llm,prompt,chat,completion}/**/*"
       instructions: |
         LLM security (prodsec-skills):
         - Prompt injection: separate system/user content; never
