@@ -103,6 +103,10 @@ func Filter(comments []models.PRComment, cfg Config) []models.PRComment {
 			continue
 		}
 
+		if isSlashCommandOnly(c.Body) {
+			continue
+		}
+
 		if isKnownBot(norm, cfg.KnownBotUsernames) && c.InReplyTo != 0 {
 			if shouldSkipBotReply(c, byID, normBot) {
 				continue
@@ -193,6 +197,23 @@ func isKnownBot(normUsername string, knownBots []string) bool {
 		}
 	}
 	return false
+}
+
+// isSlashCommandOnly returns true when every non-empty line in body
+// starts with '/' (e.g. Prow commands like /lgtm, /approve).
+func isSlashCommandOnly(body string) bool {
+	hasCommand := false
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "/") {
+			return false
+		}
+		hasCommand = true
+	}
+	return hasCommand
 }
 
 // shouldSkipBotReply returns true if a known bot is replying to our

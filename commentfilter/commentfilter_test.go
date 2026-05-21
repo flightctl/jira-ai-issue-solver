@@ -283,6 +283,93 @@ func TestFilter_CombinedRules(t *testing.T) {
 	assertIDs(t, ids, []int64{1, 2, 5})
 }
 
+// --- Slash-command-only filtering ---
+
+func TestFilter_RemovesSlashCommandOnlyComments(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "/lgtm\r\n/approve"},
+		{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "Looks good, just one nit"},
+		{ID: 3, Author: models.Author{Username: "reviewer2"}, Body: "/lgtm"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	ids := extractIDs(result)
+	assertIDs(t, ids, []int64{2})
+}
+
+func TestFilter_KeepsSlashCommandWithSurroundingText(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Looks good!\n/lgtm"},
+		{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "/lgtm\nGreat work"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 2 {
+		t.Fatalf("got %d comments, want 2 (mixed content kept)", len(result))
+	}
+}
+
+func TestFilter_KeepsEmptyBodyComment(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: ""},
+		{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "   \n\n  "},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 2 {
+		t.Fatalf("got %d comments, want 2 (empty bodies are not slash commands)", len(result))
+	}
+}
+
+func TestFilter_RemovesSlashCommandWithArguments(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "/assign @user\n/priority critical"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (slash commands with args)", len(result))
+	}
+}
+
+func TestFilter_RemovesSlashCommandWithBlankLines(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "/lgtm\n\n/approve\n"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (slash commands with blank lines between)", len(result))
+	}
+}
+
+func TestHasNewActionable_FalseWhenOnlySlashCommands(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "/lgtm\n/approve"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	if commentfilter.HasNewActionable(comments, cfg) {
+		t.Error("expected false: only slash-command comments")
+	}
+}
+
 // --- HasNewActionable ---
 
 func TestHasNewActionable_TrueWhenNewComments(t *testing.T) {
