@@ -473,7 +473,7 @@ func (m *MergeConfig) validate() error {
 	if m.IdleDays < 0 {
 		return errors.New("merge.idle_days must be non-negative")
 	}
-	if m.IdleDays > 0 && m.IdleLabel == "" {
+	if m.IdleDays > 0 && strings.TrimSpace(m.IdleLabel) == "" {
 		return errors.New("merge.idle_label is required when merge.idle_days is positive")
 	}
 	return nil
