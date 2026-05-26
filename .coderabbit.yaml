@@ -1,8 +1,8 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit configuration for jira-ai-issue-solver
 # Security rules inherited from prodsec-skills, plus Go code quality,
 # test quality, and config compatibility checks.
 #
-# Schema: https://coderabbit.ai/integrations/schema.v2.json
 # Validate: comment "@coderabbitai configuration" on any PR
 #
 language: "en-US"
@@ -34,6 +34,9 @@ reviews:
     # package-lock.json, Cargo.lock) are deliberately kept so the supply-chain
     # path_instructions block fires on them.
     - "!yarn.lock"
+
+  approve:
+    enabled: false
 
   auto_review:
     enabled: true
