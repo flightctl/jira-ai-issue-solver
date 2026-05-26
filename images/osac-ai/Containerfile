@@ -14,7 +14,7 @@ FROM fedora:41
 
 # Layer 1 — System packages (stable, rarely changes)
 RUN dnf install -y \
-        make git unzip diffutils findutils bash coreutils grep jq \
+        make git unzip diffutils findutils bash coreutils grep jq openssl \
         kubectl \
         # Unit test deps (fulfillment-service tests start a PostgreSQL
         # container via podman for ephemeral database instances)
