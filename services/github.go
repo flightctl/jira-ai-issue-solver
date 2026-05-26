@@ -2483,19 +2483,19 @@ func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
 func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
 	fetchCmd := exec.Command("git", "fetch", "origin", branch)
 	fetchCmd.Dir = dir
-	if out, err := fetchCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("git fetch origin %s: %s: %w", branch, string(out), err)
+	if _, err := fetchCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git fetch origin %s: %w", branch, err)
 	}
 
 	mergeCmd := exec.Command("git", "merge", "--no-edit", "origin/"+branch)
 	mergeCmd.Dir = dir
-	out, err := mergeCmd.CombinedOutput()
+	_, err := mergeCmd.CombinedOutput()
 	if err != nil {
 		conflictFiles := listConflictFiles(dir)
 		if len(conflictFiles) > 0 {
-			return conflictFiles, fmt.Errorf("%w: %s", ErrMergeConflict, strings.TrimSpace(string(out)))
+			return conflictFiles, fmt.Errorf("%w: conflicted files: %v", ErrMergeConflict, conflictFiles)
 		}
-		return nil, fmt.Errorf("git merge origin/%s: %s: %w", branch, string(out), err)
+		return nil, fmt.Errorf("git merge origin/%s failed: %w", branch, err)
 	}
 
 	return []string{}, nil
