@@ -1,7 +1,7 @@
 # AI development container for OSAC
 #
-# Contains: Go toolchain, buf, ginkgo, golangci-lint, Python/uv,
-# Ansible, ansible-lint, Claude Code, and Gemini CLI.
+# Contains: Go toolchain, buf, ginkgo, golangci-lint, helm, podman,
+# Python/uv, Ansible, ansible-lint, Claude Code, and Gemini CLI.
 # Used by the bot as the multi-repo container image for the OSAC workspace.
 #
 # Build:
@@ -14,8 +14,11 @@ FROM fedora:41
 
 # Layer 1 — System packages (stable, rarely changes)
 RUN dnf install -y \
-        make git unzip diffutils findutils bash coreutils grep \
+        make git unzip diffutils findutils bash coreutils grep jq \
         kubectl \
+        # Unit test deps (fulfillment-service tests start a PostgreSQL
+        # container via podman for ephemeral database instances)
+        podman \
         procps-ng \
         nodejs npm \
     && dnf clean all
@@ -42,12 +45,15 @@ RUN curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-Linux
         -o /usr/local/bin/buf \
     && chmod +x /usr/local/bin/buf
 
-# Layer 6 — Node.js tools (AI CLIs, linters)
+# Layer 6 — Helm 3.x (osac-installer chart validation)
+RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Layer 7 — Node.js tools (AI CLIs, linters)
 RUN npm install -g \
         @anthropic-ai/claude-code@latest \
         @google/gemini-cli@0.23.0
 
-# Layer 7 — Non-root user
+# Layer 8 — Non-root user
 RUN useradd -m -s /bin/bash builder \
     && mkdir -p /home/builder/go/pkg/mod /home/builder/.cache/go-build \
     && chown -R builder:builder /home/builder \
@@ -56,7 +62,7 @@ RUN useradd -m -s /bin/bash builder \
 USER builder
 ENV PATH="/home/builder/.local/bin:${PATH}"
 
-# Layer 8 — Python tools as builder (ansible, ansible-lint via uv)
+# Layer 9 — Python tools as builder (ansible, ansible-lint via uv)
 RUN uv tool install ansible-lint \
     && uv tool install ansible
 
