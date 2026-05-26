@@ -467,16 +467,11 @@ func (p *Pipeline) runMultiRepoMergeAI(
 		return ctr, result, fmt.Errorf("import install: %w", err)
 	}
 
-	for _, repo := range settings.Repos {
-		repoDir := filepath.Join(wsPath, repo.Name)
-		if err := p.git.StripRemoteAuth(repoDir); err != nil {
-			return ctr, result, fmt.Errorf("strip remote auth for %s: %w", repo.Name, err)
-		}
-	}
+	strippedRepos := make([]models.RepoSettings, 0, len(settings.Repos))
 	authStripped := true
 	defer func() {
 		if authStripped {
-			for _, repo := range settings.Repos {
+			for _, repo := range strippedRepos {
 				repoDir := filepath.Join(wsPath, repo.Name)
 				if restoreErr := p.git.RestoreRemoteAuth(
 					repoDir, settings.CommitOwnerFor(repo), repo.Repo); restoreErr != nil {
@@ -486,6 +481,13 @@ func (p *Pipeline) runMultiRepoMergeAI(
 			}
 		}
 	}()
+	for _, repo := range settings.Repos {
+		repoDir := filepath.Join(wsPath, repo.Name)
+		if err := p.git.StripRemoteAuth(repoDir); err != nil {
+			return ctr, result, fmt.Errorf("strip remote auth for %s: %w", repo.Name, err)
+		}
+		strippedRepos = append(strippedRepos, repo)
+	}
 
 	execCtx := ctx
 	if p.cfg.SessionTimeout > 0 {

@@ -469,6 +469,16 @@ type MergeConfig struct {
 	IdleLabel string `yaml:"idle_label" mapstructure:"idle_label"`
 }
 
+func (m *MergeConfig) validate() error {
+	if m.IdleDays < 0 {
+		return errors.New("merge.idle_days must be non-negative")
+	}
+	if m.IdleDays > 0 && m.IdleLabel == "" {
+		return errors.New("merge.idle_label is required when merge.idle_days is positive")
+	}
+	return nil
+}
+
 // ContainerCfg holds bot-level container configuration: host-level
 // runtime policy applied to all spawned containers.
 type ContainerCfg struct {
@@ -1076,6 +1086,10 @@ func (c *Config) validate() error {
 	}
 
 	if err := c.Guardrails.validate(); err != nil {
+		return err
+	}
+
+	if err := c.Merge.validate(); err != nil {
 		return err
 	}
 

@@ -343,9 +343,10 @@ func (s *MergeScanner) isIdlePR(
 			zap.Int("pr", pr.Number),
 			zap.Time("last_human_comment", lastHuman))
 		if err := s.labeler.AddPRLabel(owner, repo, pr.Number, s.cfg.IdleLabel); err != nil {
-			logger.Warn("Failed to add idle label",
+			logger.Warn("Failed to add idle label, treating as active",
 				zap.String("repo", owner+"/"+repo),
 				zap.Error(err))
+			return false
 		}
 		return true
 	}

@@ -73,6 +73,9 @@ func TestWriteMergeConflictTask_SortsFiles(t *testing.T) {
 	mIdx := strings.Index(body, "- `m.go`")
 	zIdx := strings.Index(body, "- `z.go`")
 
+	if aIdx == -1 || mIdx == -1 || zIdx == -1 {
+		t.Fatal("expected all conflict files to be present in task file")
+	}
 	if aIdx > mIdx || mIdx > zIdx {
 		t.Error("conflict files should be sorted alphabetically")
 	}
