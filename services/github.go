@@ -2481,17 +2481,17 @@ func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
 // conflict, returns [ErrMergeConflict] and the list of conflicted
 // file paths (conflict markers are left in the working tree).
 func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
-	fetchCmd := exec.Command("git", "fetch", "origin", branch)
+	fetchCmd := s.executor("git", "fetch", "origin", branch)
 	fetchCmd.Dir = dir
 	if _, err := fetchCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git fetch origin %s: %w", branch, err)
 	}
 
-	mergeCmd := exec.Command("git", "merge", "--no-edit", "origin/"+branch)
+	mergeCmd := s.executor("git", "merge", "--no-edit", "origin/"+branch)
 	mergeCmd.Dir = dir
 	_, err := mergeCmd.CombinedOutput()
 	if err != nil {
-		conflictFiles := listConflictFiles(dir)
+		conflictFiles := s.listConflictFiles(dir)
 		if len(conflictFiles) > 0 {
 			return conflictFiles, fmt.Errorf("%w: conflicted files: %v", ErrMergeConflict, conflictFiles)
 		}
@@ -2503,8 +2503,8 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
 
 // listConflictFiles returns file paths with unresolved merge conflicts
 // by parsing git status porcelain output for unmerged entries.
-func listConflictFiles(dir string) []string {
-	cmd := exec.Command("git", "status", "--porcelain")
+func (s *GitHubServiceImpl) listConflictFiles(dir string) []string {
+	cmd := s.executor("git", "status", "--porcelain")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
