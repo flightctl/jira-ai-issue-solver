@@ -28,6 +28,10 @@ import (
 // are bot artifacts and there is nothing to commit.
 var ErrNoChanges = errors.New("no committable changes")
 
+// ErrMergeConflict is returned by MergeBase when git merge produces
+// conflicts. The working tree contains conflict markers for resolution.
+var ErrMergeConflict = errors.New("merge conflict")
+
 // fileExists returns true if the file exists, false if it does not exist,
 // and an error if the existence check failed for reasons other than the file not existing.
 func fileExists(path string) (bool, error) {
@@ -2470,4 +2474,137 @@ func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("merge-upstream failed for %s/%s: %s, status: %d",
 		forkOwner, repo, string(body), resp.StatusCode)
+}
+
+// MergeBase merges origin/{branch} into the current branch in the
+// workspace. On a clean merge, returns nil and an empty slice. On
+// conflict, returns [ErrMergeConflict] and the list of conflicted
+// file paths (conflict markers are left in the working tree).
+func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
+	fetchCmd := exec.Command("git", "fetch", "origin", branch)
+	fetchCmd.Dir = dir
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git fetch origin %s: %s: %w", branch, string(out), err)
+	}
+
+	mergeCmd := exec.Command("git", "merge", "--no-edit", "origin/"+branch)
+	mergeCmd.Dir = dir
+	out, err := mergeCmd.CombinedOutput()
+	if err != nil {
+		conflictFiles := listConflictFiles(dir)
+		if len(conflictFiles) > 0 {
+			return conflictFiles, fmt.Errorf("%w: %s", ErrMergeConflict, strings.TrimSpace(string(out)))
+		}
+		return nil, fmt.Errorf("git merge origin/%s: %s: %w", branch, string(out), err)
+	}
+
+	return []string{}, nil
+}
+
+// listConflictFiles returns file paths with unresolved merge conflicts
+// by parsing git status porcelain output for unmerged entries.
+func listConflictFiles(dir string) []string {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return []string{}
+	}
+
+	var files []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		xy := line[:2]
+		if xy == "UU" || xy == "AA" || xy == "DD" ||
+			xy == "AU" || xy == "UA" || xy == "DU" || xy == "UD" {
+			files = append(files, strings.TrimSpace(line[3:]))
+		}
+	}
+	if files == nil {
+		files = []string{}
+	}
+	return files
+}
+
+// GetPRMergeability fetches the mergeability status of a pull request.
+// GitHub computes mergeability asynchronously; when the result is not
+// yet available, Mergeable is nil.
+func (s *GitHubServiceImpl) GetPRMergeability(owner, repo string, number int) (*models.PRMergeState, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("get PR #%d: %w", number, err)
+	}
+
+	return &models.PRMergeState{
+		Mergeable:  pr.Mergeable,
+		BaseBranch: pr.GetBase().GetRef(),
+	}, nil
+}
+
+// AddPRLabel adds a label to a pull request. If the label does not
+// exist on the repository, GitHub creates it automatically.
+func (s *GitHubServiceImpl) AddPRLabel(owner, repo string, number int, label string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, _, err = client.Issues.AddLabelsToIssue(
+		ctx, owner, repo, number, []string{label})
+	if err != nil {
+		return fmt.Errorf("add label %q to PR #%d: %w", label, number, err)
+	}
+	return nil
+}
+
+// HasPRLabel reports whether a pull request has the given label.
+func (s *GitHubServiceImpl) HasPRLabel(owner, repo string, number int, label string) (bool, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return false, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return false, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	labels, _, err := client.Issues.ListLabelsByIssue(
+		ctx, owner, repo, number, nil)
+	if err != nil {
+		return false, fmt.Errorf("list labels for PR #%d: %w", number, err)
+	}
+
+	for _, l := range labels {
+		if l.GetName() == label {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -450,6 +450,23 @@ type Config struct {
 
 	// Guardrails configuration for safety and resource limits
 	Guardrails GuardrailsConfig `yaml:"guardrails" mapstructure:"guardrails"`
+
+	// Merge configuration for auto-merge scanner behavior
+	Merge MergeConfig `yaml:"merge" mapstructure:"merge"`
+}
+
+// MergeConfig holds settings for the auto-merge scanner that keeps
+// PR branches current with the target branch.
+type MergeConfig struct {
+	// IdleDays is the number of days without human PR comment
+	// activity before a PR is considered idle. Idle unmergeable
+	// PRs are labeled instead of merged. Zero disables idle
+	// detection (all unmergeable PRs are merged).
+	IdleDays int `yaml:"idle_days" mapstructure:"idle_days"`
+
+	// IdleLabel is the GitHub label applied to idle unmergeable
+	// PRs. Removing the label re-activates auto-merging.
+	IdleLabel string `yaml:"idle_label" mapstructure:"idle_label"`
 }
 
 // ContainerCfg holds bot-level container configuration: host-level
@@ -725,6 +742,10 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.min_comment_length")
 	bindEnv("guardrails.retry_label")
 
+	// Merge configuration
+	bindEnv("merge.idle_days")
+	bindEnv("merge.idle_label")
+
 	// Note: component_to_repo has custom unmarshaling logic, so we don't bind it explicitly
 
 	// Load main config file if provided
@@ -952,6 +973,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.max_ci_fix_attempts", 3)
 	v.SetDefault("guardrails.retry_label", "ai-retry")
 	v.SetDefault("guardrails.min_comment_length", 20)
+
+	// Merge configuration defaults
+	v.SetDefault("merge.idle_days", 7)
+	v.SetDefault("merge.idle_label", "ai-bot/idle")
 }
 
 // validate validates the entire configuration

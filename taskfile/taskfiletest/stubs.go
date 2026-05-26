@@ -13,11 +13,13 @@ var _ taskfile.Writer = (*Stub)(nil)
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns nil.
 type Stub struct {
-	WriteIssueFunc                  func(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error
-	WriteNewTicketTaskFunc          func(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
-	WriteFeedbackTaskFunc           func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, dir, overrideInstructions, overrideWorkflow string) error
-	WriteMultiRepoNewTicketTaskFunc func(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error
-	WriteMultiRepoFeedbackTaskFunc  func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error
+	WriteIssueFunc                      func(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error
+	WriteNewTicketTaskFunc              func(workItem models.WorkItem, dir, overrideInstructions, overrideWorkflow string) error
+	WriteFeedbackTaskFunc               func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, dir, overrideInstructions, overrideWorkflow string) error
+	WriteMultiRepoNewTicketTaskFunc     func(workItem models.WorkItem, wsDir string, repos []taskfile.RepoContext) error
+	WriteMultiRepoFeedbackTaskFunc      func(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error
+	WriteMergeConflictTaskFunc          func(prDetails models.PRDetails, conflictFiles []string, dir, overrideInstructions string) error
+	WriteMultiRepoMergeConflictTaskFunc func(prDetails models.PRDetails, conflictFiles []string, wsDir string, repos []taskfile.RepoContext) error
 }
 
 func (s *Stub) WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error {
@@ -51,6 +53,20 @@ func (s *Stub) WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir strin
 func (s *Stub) WriteMultiRepoFeedbackTask(prDetails models.PRDetails, newComments, addressedComments []models.PRComment, ciFailures []models.CheckRunFailure, wsDir string, repos []taskfile.RepoContext) error {
 	if s.WriteMultiRepoFeedbackTaskFunc != nil {
 		return s.WriteMultiRepoFeedbackTaskFunc(prDetails, newComments, addressedComments, ciFailures, wsDir, repos)
+	}
+	return nil
+}
+
+func (s *Stub) WriteMergeConflictTask(prDetails models.PRDetails, conflictFiles []string, dir, overrideInstructions string) error {
+	if s.WriteMergeConflictTaskFunc != nil {
+		return s.WriteMergeConflictTaskFunc(prDetails, conflictFiles, dir, overrideInstructions)
+	}
+	return nil
+}
+
+func (s *Stub) WriteMultiRepoMergeConflictTask(prDetails models.PRDetails, conflictFiles []string, wsDir string, repos []taskfile.RepoContext) error {
+	if s.WriteMultiRepoMergeConflictTaskFunc != nil {
+		return s.WriteMultiRepoMergeConflictTaskFunc(prDetails, conflictFiles, wsDir, repos)
 	}
 	return nil
 }

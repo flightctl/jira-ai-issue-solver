@@ -183,6 +183,13 @@ type GitService interface {
 	// comment reactions API for conversation comments.
 	AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error
 
+	// MergeBase merges origin/{branch} into the current branch in the
+	// workspace. On a clean merge, returns nil and an empty slice. On
+	// conflict, returns [services.ErrMergeConflict] and the list of
+	// conflicted file paths (conflict markers are left in the working
+	// tree for resolution).
+	MergeBase(dir, branch string) ([]string, error)
+
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after
 	// cloning. Used to make shared resources (workflow skills,
