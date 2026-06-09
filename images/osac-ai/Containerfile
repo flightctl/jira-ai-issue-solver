@@ -1,6 +1,6 @@
 # AI development container for OSAC
 #
-# Contains: Go toolchain, buf, ginkgo, golangci-lint, helm, podman,
+# Contains: Go toolchain, buf, ginkgo, golangci-lint, helm, podman (remote),
 # Python/uv, Ansible, ansible-lint, Claude Code, and Gemini CLI.
 # Used by the bot as the multi-repo container image for the OSAC workspace.
 #
@@ -16,12 +16,18 @@ FROM fedora:41
 RUN dnf install -y \
         make git unzip diffutils findutils bash coreutils grep jq openssl \
         kubectl \
-        # Unit test deps (fulfillment-service tests start a PostgreSQL
-        # container via podman for ephemeral database instances)
-        podman \
         procps-ng \
         nodejs npm \
     && dnf clean all
+
+# podman-remote-static: client-only binary that talks to the host's
+# podman via CONTAINER_HOST socket, avoiding the full podman package
+# and its user-namespace dependencies (newuidmap, crun, etc.).
+ARG PODMAN_VERSION=5.5.1
+RUN curl -fsSL "https://github.com/containers/podman/releases/download/v${PODMAN_VERSION}/podman-remote-static-linux_amd64.tar.gz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 "bin/podman-remote-static-linux_amd64" \
+    && mv /usr/local/bin/podman-remote-static-linux_amd64 /usr/local/bin/podman \
+    && chmod +x /usr/local/bin/podman
 
 # Layer 2 — Python / uv (changes with Python version bumps)
 RUN dnf install -y python3.13 python3.13-devel python3-pip \
