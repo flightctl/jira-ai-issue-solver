@@ -159,4 +159,19 @@ type Writer interface {
 		newComments, addressedComments []models.PRComment,
 		ciFailures []models.CheckRunFailure,
 		wsDir string, repos []RepoContext) error
+
+	// WriteMergeConflictTask generates a task file for AI-assisted
+	// merge conflict resolution. conflictFiles lists the paths with
+	// unresolved conflicts (from git status). The file is written to
+	// <dir>/.ai-bot/task.md.
+	WriteMergeConflictTask(prDetails models.PRDetails,
+		conflictFiles []string,
+		dir, overrideInstructions string) error
+
+	// WriteMultiRepoMergeConflictTask generates a merge conflict task
+	// file for a multi-repo workspace. The task file is written to
+	// <wsDir>/.ai-bot/task.md.
+	WriteMultiRepoMergeConflictTask(prDetails models.PRDetails,
+		conflictFiles []string,
+		wsDir string, repos []RepoContext) error
 }
