@@ -331,6 +331,34 @@ type ProjectConfig struct {
 	// Components maps Jira component names to workspace names.
 	// Component names are matched case-insensitively at lookup time.
 	Components ComponentMap `yaml:"components" mapstructure:"components"`
+
+	// FailureLabels configures optional Jira labels applied to
+	// tickets in failure states. Empty strings disable the
+	// corresponding label.
+	FailureLabels FailureLabels `yaml:"failure_labels" mapstructure:"failure_labels"`
+}
+
+// FailureLabels holds optional Jira label names applied to tickets in
+// failure states. Each label is independent: an empty string disables
+// that label. All three labels are mutually exclusive by lifecycle.
+type FailureLabels struct {
+	// CIFailing is applied when the bot's PR exists but CI checks
+	// are failing. Removed when CI passes.
+	CIFailing string `yaml:"ci_failing" mapstructure:"ci_failing"`
+
+	// Rejected is applied when a human reviewer closes the PR
+	// without merging.
+	Rejected string `yaml:"rejected" mapstructure:"rejected"`
+
+	// Blocked is applied when the bot cannot proceed on a ticket
+	// (workspace errors, infra failures, retry exhaustion).
+	Blocked string `yaml:"blocked" mapstructure:"blocked"`
+}
+
+// All returns the configured label strings in a fixed order. Empty
+// strings (disabled labels) are included; callers should skip them.
+func (fl FailureLabels) All() []string {
+	return []string{fl.CIFailing, fl.Rejected, fl.Blocked}
 }
 
 // ImportConfig declares an auxiliary repository to clone into the workspace.

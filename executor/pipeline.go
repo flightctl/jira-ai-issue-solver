@@ -331,6 +331,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	// --- Step 17: Update ticket ---
 	p.setPRURL(logger, job.TicketKey, settings, pr.URL)
 	p.cleanupStatusComment(logger, job.TicketKey)
+	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 	p.postOrUpdateCostComment(logger,
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
 		pr.Number, result.CostUSD, "New ticket")
@@ -690,6 +691,8 @@ func (p *Pipeline) handleFailure(logger *zap.Logger, ticketKey string, settings 
 			zap.Error(err))
 	}
 
+	p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.Blocked)
+
 	if settings.DisableErrorComments {
 		return
 	}
@@ -965,6 +968,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	// --- Step 17: Update ticket with all PR URLs ---
 	p.setMultiRepoPRURLs(logger, job.TicketKey, settings, prs)
 	p.cleanupStatusComment(logger, job.TicketKey)
+	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 
 	// Post cost on the first PR only to avoid double-counting.
 	p.postOrUpdateCostComment(logger,

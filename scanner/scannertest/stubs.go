@@ -12,16 +12,18 @@ import (
 
 // Compile-time checks.
 var (
-	_ scanner.Scanner             = (*StubScanner)(nil)
-	_ scanner.IssueSearcher       = (*StubIssueSearcher)(nil)
-	_ scanner.JobSubmitter        = (*StubJobSubmitter)(nil)
-	_ scanner.PRFetcher           = (*StubPRFetcher)(nil)
-	_ scanner.RepoLocator         = (*StubRepoLocator)(nil)
-	_ scanner.CIChecker           = (*StubCIChecker)(nil)
-	_ scanner.WorkspaceCleaner    = (*StubWorkspaceCleaner)(nil)
-	_ scanner.TicketStatusChecker = (*StubTicketStatusChecker)(nil)
-	_ scanner.LabelRemover        = (*StubLabelRemover)(nil)
-	_ scanner.RetryResetter       = (*StubRetryResetter)(nil)
+	_ scanner.Scanner              = (*StubScanner)(nil)
+	_ scanner.IssueSearcher        = (*StubIssueSearcher)(nil)
+	_ scanner.JobSubmitter         = (*StubJobSubmitter)(nil)
+	_ scanner.PRFetcher            = (*StubPRFetcher)(nil)
+	_ scanner.RepoLocator          = (*StubRepoLocator)(nil)
+	_ scanner.CIChecker            = (*StubCIChecker)(nil)
+	_ scanner.WorkspaceCleaner     = (*StubWorkspaceCleaner)(nil)
+	_ scanner.TicketStatusChecker  = (*StubTicketStatusChecker)(nil)
+	_ scanner.LabelRemover         = (*StubLabelRemover)(nil)
+	_ scanner.LabelManager         = (*StubLabelManager)(nil)
+	_ scanner.FailureLabelResolver = (*StubFailureLabelResolver)(nil)
+	_ scanner.RetryResetter        = (*StubRetryResetter)(nil)
 )
 
 // StubScanner is a test double for [scanner.Scanner].
@@ -89,8 +91,9 @@ func (s *StubRetryResetter) ResetRetries(ticketKey string) error {
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns zero values.
 type StubPRFetcher struct {
-	GetPRForBranchFunc func(owner, repo, head string) (*models.PRDetails, error)
-	GetPRCommentsFunc  func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
+	GetPRForBranchFunc       func(owner, repo, head string) (*models.PRDetails, error)
+	GetClosedPRForBranchFunc func(owner, repo, head string) (*models.PRDetails, error)
+	GetPRCommentsFunc        func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 }
 
 func (s *StubPRFetcher) GetPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
@@ -98,6 +101,13 @@ func (s *StubPRFetcher) GetPRForBranch(owner, repo, head string) (*models.PRDeta
 		return s.GetPRForBranchFunc(owner, repo, head)
 	}
 	return &models.PRDetails{}, nil
+}
+
+func (s *StubPRFetcher) GetClosedPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
+	if s.GetClosedPRForBranchFunc != nil {
+		return s.GetClosedPRForBranchFunc(owner, repo, head)
+	}
+	return nil, nil
 }
 
 func (s *StubPRFetcher) GetPRComments(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
@@ -187,4 +197,37 @@ func (s *StubLabelRemover) RemoveLabel(key, label string) error {
 		return s.RemoveLabelFunc(key, label)
 	}
 	return nil
+}
+
+// StubLabelManager is a test double for [scanner.LabelManager].
+type StubLabelManager struct {
+	AddLabelFunc    func(key, label string) error
+	RemoveLabelFunc func(key, label string) error
+}
+
+func (s *StubLabelManager) AddLabel(key, label string) error {
+	if s.AddLabelFunc != nil {
+		return s.AddLabelFunc(key, label)
+	}
+	return nil
+}
+
+func (s *StubLabelManager) RemoveLabel(key, label string) error {
+	if s.RemoveLabelFunc != nil {
+		return s.RemoveLabelFunc(key, label)
+	}
+	return nil
+}
+
+// StubFailureLabelResolver is a test double for
+// [scanner.FailureLabelResolver].
+type StubFailureLabelResolver struct {
+	ResolveFailureLabelsFunc func(item models.WorkItem) models.FailureLabels
+}
+
+func (s *StubFailureLabelResolver) ResolveFailureLabels(item models.WorkItem) models.FailureLabels {
+	if s.ResolveFailureLabelsFunc != nil {
+		return s.ResolveFailureLabelsFunc(item)
+	}
+	return models.FailureLabels{}
 }

@@ -79,6 +79,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		DisableErrorComments: pc.DisableErrorComments,
 		AIProvider:           r.config.AIProvider,
 		Container:            ws.Container,
+		FailureLabels:        pc.FailureLabels,
 		GitHubUsername:       ghUsername,
 	}, nil
 }
@@ -164,6 +165,17 @@ func (r *ConfigResolver) ForkOwner(workItem models.WorkItem) string {
 		return ""
 	}
 	return r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
+}
+
+// ResolveFailureLabels returns the failure label configuration for the
+// given work item's project. Returns a zero-value FailureLabels (all
+// labels disabled) if the project cannot be resolved.
+func (r *ConfigResolver) ResolveFailureLabels(item models.WorkItem) models.FailureLabels {
+	pc, err := r.findProjectConfig(item)
+	if err != nil {
+		return models.FailureLabels{}
+	}
+	return pc.FailureLabels
 }
 
 // findProjectConfig returns the ProjectConfig for the work item's

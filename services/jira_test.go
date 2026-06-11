@@ -1503,3 +1503,60 @@ func TestRemoveLabel(t *testing.T) {
 		}
 	})
 }
+
+func TestAddLabel(t *testing.T) {
+	t.Run("sends correct update payload", func(t *testing.T) {
+		var gotBody []byte
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodPut {
+				t.Errorf("method = %s, want PUT", req.Method)
+			}
+			gotBody, _ = io.ReadAll(req.Body)
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(bytes.NewReader([]byte(``))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		err := service.AddLabel("TEST-1", "jira-autofix-blocked")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(gotBody, &payload); err != nil {
+			t.Fatalf("failed to parse payload: %v", err)
+		}
+
+		update, ok := payload["update"].(map[string]any)
+		if !ok {
+			t.Fatal("missing update key in payload")
+		}
+		labels, ok := update["labels"].([]any)
+		if !ok || len(labels) != 1 {
+			t.Fatalf("expected labels array with 1 entry, got %v", update["labels"])
+		}
+		entry, ok := labels[0].(map[string]any)
+		if !ok || entry["add"] != "jira-autofix-blocked" {
+			t.Errorf("expected {add: jira-autofix-blocked}, got %v", labels[0])
+		}
+	})
+
+	t.Run("returns error on failure", func(t *testing.T) {
+		mockClient := NewTestClient(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"errorMessages":["Forbidden"]}`))),
+			}, nil
+		})
+
+		service := NewJiraServiceForTest(newTestJiraConfig(), mockClient, zap.NewNop(), instantSleep, execCommand)
+		err := service.AddLabel("TEST-1", "jira-autofix-blocked")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}

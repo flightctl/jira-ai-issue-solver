@@ -54,13 +54,15 @@ type FeedbackScannerConfig struct {
 // GitHub for actionable PR comments. Applies bot-loop prevention via
 // [commentfilter.HasNewActionable] before emitting events.
 type FeedbackScanner struct {
-	searcher  IssueSearcher
-	submitter JobSubmitter
-	prs       PRFetcher
-	repos     RepoLocator
-	ci        CIChecker
-	cfg       FeedbackScannerConfig
-	logger    *zap.Logger
+	searcher      IssueSearcher
+	submitter     JobSubmitter
+	prs           PRFetcher
+	repos         RepoLocator
+	ci            CIChecker
+	labels        LabelManager
+	labelResolver FailureLabelResolver
+	cfg           FeedbackScannerConfig
+	logger        *zap.Logger
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -77,6 +79,7 @@ func NewFeedbackScanner(
 	ci CIChecker,
 	cfg FeedbackScannerConfig,
 	logger *zap.Logger,
+	opts ...FeedbackScannerOption,
 ) (*FeedbackScanner, error) {
 	if searcher == nil {
 		return nil, errors.New("issue searcher must not be nil")
@@ -100,7 +103,7 @@ func NewFeedbackScanner(
 		return nil, errors.New("logger must not be nil")
 	}
 
-	return &FeedbackScanner{
+	fs := &FeedbackScanner{
 		searcher:  searcher,
 		submitter: submitter,
 		prs:       prs,
@@ -108,7 +111,27 @@ func NewFeedbackScanner(
 		ci:        ci,
 		cfg:       cfg,
 		logger:    logger,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(fs)
+	}
+	return fs, nil
+}
+
+// FeedbackScannerOption configures optional behavior on a
+// [FeedbackScanner]. Pass to [NewFeedbackScanner].
+type FeedbackScannerOption func(*FeedbackScanner)
+
+// WithLabelManager enables failure-state label management on the
+// scanner. Both a [LabelManager] and a [FailureLabelResolver] are
+// required; if either is nil, labeling is silently disabled.
+func WithLabelManager(lm LabelManager, lr FailureLabelResolver) FeedbackScannerOption {
+	return func(fs *FeedbackScanner) {
+		if lm != nil && lr != nil {
+			fs.labels = lm
+			fs.labelResolver = lr
+		}
+	}
 }
 
 // Start begins polling in a background goroutine.
@@ -200,7 +223,10 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 		head = forkOwner + ":" + branchName
 	}
 
-	if !s.hasActionableComments(logger, repos, head) {
+	obs := s.observeRepos(logger, repos, head)
+	s.updateFailureLabels(logger, item, repos, head, obs)
+
+	if !obs.actionable {
 		return false
 	}
 
@@ -236,21 +262,31 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 	return false
 }
 
-// hasActionableComments checks all repos for PRs with actionable
-// review comments or CI failures. Returns true as soon as any repo
-// has actionable work.
-func (s *FeedbackScanner) hasActionableComments(
+// repoObservation summarises PR/CI state across all repos for a ticket.
+type repoObservation struct {
+	actionable  bool // at least one repo has actionable comments or CI failures
+	hasOpenPR   bool // at least one repo has an open PR
+	ciChecked   bool // CI status was successfully determined for at least one repo
+	ciIsFailing bool // at least one repo has failing CI (all checks completed)
+}
+
+// observeRepos checks all repos for PRs with actionable review
+// comments or CI failures and captures the aggregate state.
+func (s *FeedbackScanner) observeRepos(
 	logger *zap.Logger,
 	repos []models.RepoCoord,
 	head string,
-) bool {
+) repoObservation {
+	var obs repoObservation
 	for _, r := range repos {
 		pr, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
 			logger.Debug("No PR found for repo, skipping",
-				zap.String("repo", r.Owner+"/"+r.Repo))
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
 			continue
 		}
+		obs.hasOpenPR = true
 
 		comments, err := s.prs.GetPRComments(r.Owner, r.Repo, pr.Number, time.Time{})
 		if err != nil {
@@ -260,34 +296,135 @@ func (s *FeedbackScanner) hasActionableComments(
 			continue
 		}
 
-		if commentfilter.HasNewActionable(comments, s.filterConfig()) {
-			return true
+		ciResult := s.checkCI(logger, r.Owner, r.Repo, pr, comments)
+		if ciResult.checked {
+			obs.ciChecked = true
+			if ciResult.hasFailures {
+				obs.ciIsFailing = true
+			}
 		}
 
-		if s.hasActionableCIFailures(logger, r.Owner, r.Repo, pr, comments) {
-			return true
+		if commentfilter.HasNewActionable(comments, s.filterConfig()) {
+			obs.actionable = true
+			return obs
+		}
+
+		if ciResult.actionable {
+			obs.actionable = true
+			return obs
 		}
 	}
 
-	logger.Debug("No actionable feedback")
+	if !obs.actionable {
+		logger.Debug("No actionable feedback")
+	}
+	return obs
+}
+
+// ciCheckResult captures the CI state for a single repo.
+type ciCheckResult struct {
+	checked     bool // CI was successfully queried and all checks completed
+	hasFailures bool // non-ignored, non-pre-existing failures exist
+	actionable  bool // failures exist and fix attempts are not exhausted
+}
+
+// updateFailureLabels applies or removes failure-state labels based on
+// observed PR/CI state. No-op when labeling is not configured.
+func (s *FeedbackScanner) updateFailureLabels(
+	logger *zap.Logger,
+	item models.WorkItem,
+	repos []models.RepoCoord,
+	head string,
+	obs repoObservation,
+) {
+	if s.labels == nil || s.labelResolver == nil {
+		return
+	}
+	fl := s.labelResolver.ResolveFailureLabels(item)
+	if fl == (models.FailureLabels{}) {
+		return
+	}
+
+	switch {
+	case !obs.hasOpenPR:
+		if s.detectRejection(logger, repos, head) {
+			s.applyFailureLabel(logger, item.Key, fl, fl.Rejected)
+			return
+		}
+	case obs.ciIsFailing:
+		s.applyFailureLabel(logger, item.Key, fl, fl.CIFailing)
+		return
+	case obs.ciChecked && !obs.ciIsFailing:
+		// CI was checked and is confirmed passing — remove ci-failing
+		// label if it was previously applied.
+		if fl.CIFailing != "" {
+			if err := s.labels.RemoveLabel(item.Key, fl.CIFailing); err != nil {
+				logger.Debug("Failed to remove CI-failing label", zap.Error(err))
+			}
+		}
+	}
+}
+
+// detectRejection checks for a closed (not merged) PR across all
+// repos. Returns true if at least one repo has a rejected PR.
+func (s *FeedbackScanner) detectRejection(
+	logger *zap.Logger,
+	repos []models.RepoCoord,
+	head string,
+) bool {
+	for _, r := range repos {
+		pr, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Debug("Error checking for closed PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
+			continue
+		}
+		if pr != nil {
+			logger.Info("PR rejected (closed without merge)",
+				zap.String("pr_url", pr.URL))
+			return true
+		}
+	}
 	return false
 }
 
-// hasActionableCIFailures checks whether a PR has CI failures that the
-// bot should attempt to fix. Returns false if CI checking is disabled,
-// checks are still running, all failures are ignored, or fix attempts
-// are exhausted.
-func (s *FeedbackScanner) hasActionableCIFailures(
+// applyFailureLabel sets one failure label and removes the others.
+// Skips labels that are empty (not configured).
+func (s *FeedbackScanner) applyFailureLabel(
+	logger *zap.Logger,
+	ticketKey string,
+	fl models.FailureLabels,
+	target string,
+) {
+	for _, label := range fl.All() {
+		if label != "" && label != target {
+			if err := s.labels.RemoveLabel(ticketKey, label); err != nil {
+				logger.Debug("Failed to remove failure label",
+					zap.String("label", label), zap.Error(err))
+			}
+		}
+	}
+	if target != "" {
+		if err := s.labels.AddLabel(ticketKey, target); err != nil {
+			logger.Warn("Failed to add failure label",
+				zap.String("label", target), zap.Error(err))
+		}
+	}
+}
+
+// checkCI queries CI status for a PR and returns the full state:
+// whether CI was checked, whether failures exist, and whether the
+// failures are actionable (not exhausted, not disabled). This avoids
+// redundant API calls by producing all CI signals in one pass.
+func (s *FeedbackScanner) checkCI(
 	logger *zap.Logger,
 	owner, repo string,
 	pr *models.PRDetails,
 	comments []models.PRComment,
-) bool {
-	if s.cfg.MaxCIFixAttempts == 0 || s.ci == nil {
-		return false
-	}
-	if pr.HeadSHA == "" {
-		return false
+) ciCheckResult {
+	if s.ci == nil || pr.HeadSHA == "" {
+		return ciCheckResult{}
 	}
 
 	failures, allCompleted, err := s.ci.ListCheckRunsForRef(owner, repo, pr.HeadSHA)
@@ -295,17 +432,17 @@ func (s *FeedbackScanner) hasActionableCIFailures(
 		logger.Warn("Failed to check CI status",
 			zap.String("repo", owner+"/"+repo),
 			zap.Error(err))
-		return false
+		return ciCheckResult{}
 	}
 	if !allCompleted {
 		logger.Debug("CI checks still running, skipping CI analysis",
 			zap.String("repo", owner+"/"+repo))
-		return false
+		return ciCheckResult{}
 	}
 
 	filtered := filterIgnoredChecks(failures, s.cfg.IgnoredCheckNames)
 	if len(filtered) == 0 {
-		return false
+		return ciCheckResult{checked: true}
 	}
 
 	if pr.BaseBranch != "" {
@@ -313,9 +450,15 @@ func (s *FeedbackScanner) hasActionableCIFailures(
 		if baseErr == nil {
 			filtered = filterPreExistingFailures(filtered, baseFailures)
 			if len(filtered) == 0 {
-				return false
+				return ciCheckResult{checked: true}
 			}
 		}
+	}
+
+	result := ciCheckResult{checked: true, hasFailures: true}
+
+	if s.cfg.MaxCIFixAttempts == 0 {
+		return result
 	}
 
 	if s.cfg.MaxCIFixAttempts > 0 {
@@ -325,14 +468,15 @@ func (s *FeedbackScanner) hasActionableCIFailures(
 				zap.String("repo", owner+"/"+repo),
 				zap.Int("attempts", attempts),
 				zap.Int("max", s.cfg.MaxCIFixAttempts))
-			return false
+			return result
 		}
 	}
 
 	logger.Info("Found actionable CI failures",
 		zap.String("repo", owner+"/"+repo),
 		zap.Int("count", len(filtered)))
-	return true
+	result.actionable = true
+	return result
 }
 
 // filterPreExistingFailures removes failures whose check name also

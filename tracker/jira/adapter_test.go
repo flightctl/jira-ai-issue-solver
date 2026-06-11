@@ -1196,3 +1196,43 @@ func TestAdapter_RemoveLabel(t *testing.T) {
 		}
 	})
 }
+
+func TestAdapter_AddLabel(t *testing.T) {
+	t.Run("delegates to client", func(t *testing.T) {
+		var gotKey, gotLabel string
+		mock := &jiratest.Stub{
+			AddLabelFunc: func(key, label string) error {
+				gotKey, gotLabel = key, label
+				return nil
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.AddLabel("PROJ-1", "jira-autofix-blocked")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotKey != "PROJ-1" || gotLabel != "jira-autofix-blocked" {
+			t.Errorf("got (%q, %q), want (PROJ-1, jira-autofix-blocked)", gotKey, gotLabel)
+		}
+	})
+
+	t.Run("wraps error", func(t *testing.T) {
+		mock := &jiratest.Stub{
+			AddLabelFunc: func(key, label string) error {
+				return errors.New("forbidden")
+			},
+		}
+
+		adapter := mustNewAdapter(t, mock)
+		err := adapter.AddLabel("PROJ-1", "jira-autofix-blocked")
+
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "forbidden") {
+			t.Errorf("error = %q, want to contain 'forbidden'", err.Error())
+		}
+	})
+}

@@ -32,6 +32,15 @@ jira:
         - "PROJ2"
       git_pull_request_field_name: "Git Pull Request"  # Required for PR feedback processing - set to your custom field name for PR URL
       disable_error_comments: false
+
+      # Optional failure-state labels. When set, Bug Buddy applies these
+      # labels to tickets in the corresponding failure state. Empty or
+      # omitted values disable the label. Labels are mutually exclusive.
+      failure_labels:
+        ci_failing: "jira-autofix-ci-failing"    # PR exists, CI checks failing
+        rejected: "jira-autofix-rejected"        # PR closed without merge
+        blocked: "jira-autofix-blocked"          # Bot cannot proceed
+
       # Status transitions can be configured per ticket type
       # All ticket types must be explicitly configured
       # IMPORTANT: Status names are case-sensitive and must match Jira exactly

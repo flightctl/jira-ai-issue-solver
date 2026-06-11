@@ -910,6 +910,96 @@ func minimalConfig() *models.Config {
 	return cfg
 }
 
+func TestResolveProject_FailureLabels(t *testing.T) {
+	t.Run("passes through configured labels", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].FailureLabels = models.FailureLabels{
+			CIFailing: "ci-fail",
+			Rejected:  "rejected",
+			Blocked:   "blocked",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.FailureLabels.CIFailing != "ci-fail" {
+			t.Errorf("CIFailing = %q, want %q", ps.FailureLabels.CIFailing, "ci-fail")
+		}
+		if ps.FailureLabels.Rejected != "rejected" {
+			t.Errorf("Rejected = %q, want %q", ps.FailureLabels.Rejected, "rejected")
+		}
+		if ps.FailureLabels.Blocked != "blocked" {
+			t.Errorf("Blocked = %q, want %q", ps.FailureLabels.Blocked, "blocked")
+		}
+	})
+
+	t.Run("defaults to empty when not configured", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.FailureLabels != (models.FailureLabels{}) {
+			t.Errorf("expected zero FailureLabels, got %+v", ps.FailureLabels)
+		}
+	})
+}
+
+func TestResolveFailureLabels(t *testing.T) {
+	t.Run("returns labels for known project", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].FailureLabels = models.FailureLabels{
+			CIFailing: "ci-label",
+			Blocked:   "blocked-label",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		fl := r.ResolveFailureLabels(models.WorkItem{Key: "PROJ-1", Type: "Bug"})
+		if fl.CIFailing != "ci-label" {
+			t.Errorf("CIFailing = %q, want %q", fl.CIFailing, "ci-label")
+		}
+		if fl.Blocked != "blocked-label" {
+			t.Errorf("Blocked = %q, want %q", fl.Blocked, "blocked-label")
+		}
+	})
+
+	t.Run("returns zero value when project has no labels", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		fl := r.ResolveFailureLabels(models.WorkItem{Key: "PROJ-1", Type: "Bug"})
+		if fl != (models.FailureLabels{}) {
+			t.Errorf("expected zero FailureLabels, got %+v", fl)
+		}
+	})
+}
+
 // assertContains is a test helper that fails if s does not contain substr.
 func assertContains(t *testing.T, s, substr string) {
 	t.Helper()

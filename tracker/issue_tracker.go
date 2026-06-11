@@ -47,6 +47,9 @@ type IssueTracker interface {
 	// DeleteComment removes a comment from a work item.
 	DeleteComment(key, commentID string) error
 
+	// AddLabel adds a label to a work item.
+	AddLabel(key, label string) error
+
 	// RemoveLabel removes a label from a work item.
 	RemoveLabel(key, label string) error
 
