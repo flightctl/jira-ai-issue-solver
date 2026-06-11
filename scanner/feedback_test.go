@@ -1202,8 +1202,17 @@ func TestFeedbackScanner_FailureLabels_MultiRepo_ActionableAndCIFailing(t *testi
 		},
 	}
 
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
 	runOneFeedbackScan(t, d.scanner(t))
 
+	if !submitted {
+		t.Error("expected feedback submission for actionable comments on repo-a")
+	}
 	if len(added) != 1 || added[0] != "ci-fail" {
 		t.Errorf("added = %v, want [ci-fail] (CI on repo-b should be observed even though repo-a has actionable comments)", added)
 	}
