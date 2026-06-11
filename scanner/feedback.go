@@ -306,12 +306,10 @@ func (s *FeedbackScanner) observeRepos(
 
 		if commentfilter.HasNewActionable(comments, s.filterConfig()) {
 			obs.actionable = true
-			return obs
 		}
 
 		if ciResult.actionable {
 			obs.actionable = true
-			return obs
 		}
 	}
 

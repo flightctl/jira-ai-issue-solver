@@ -1160,3 +1160,51 @@ func TestFeedbackScanner_FailureLabels_CIErrorPreservesLabel(t *testing.T) {
 		t.Error("ci-failing label should be preserved when CI query errors")
 	}
 }
+
+func TestFeedbackScanner_FailureLabels_MultiRepo_ActionableAndCIFailing(t *testing.T) {
+	d := newFeedbackDeps()
+	// Two repos: repo-a has actionable comments, repo-b has failing CI.
+	d.repos = &scannertest.StubRepoLocator{
+		LocateReposFunc: func(_ models.WorkItem) ([]models.RepoCoord, error) {
+			return []models.RepoCoord{
+				{Owner: "org", Repo: "repo-a"},
+				{Owner: "org", Repo: "repo-b"},
+			}, nil
+		},
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		if repo == "repo-a" {
+			return []models.PRComment{
+				{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			}, nil
+		}
+		return []models.PRComment{}, nil
+	}
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, repo, _ string) ([]models.CheckRunFailure, bool, error) {
+			if repo == "repo-b" {
+				return []models.CheckRunFailure{{Name: "lint"}}, true, nil
+			}
+			return []models.CheckRunFailure{}, true, nil
+		},
+	}
+
+	var added []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc: func(_, label string) error { added = append(added, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "ci-fail" {
+		t.Errorf("added = %v, want [ci-fail] (CI on repo-b should be observed even though repo-a has actionable comments)", added)
+	}
+}
