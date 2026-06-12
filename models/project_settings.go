@@ -88,6 +88,11 @@ type ProjectSettings struct {
 	// in which case the repo's profile container is used instead.
 	Container ContainerSettings
 
+	// FailureLabels holds the configured failure-state label strings.
+	// Empty strings mean the corresponding labeling behavior is
+	// disabled.
+	FailureLabels FailureLabels
+
 	// GitHubUsername is the GitHub username of the ticket assignee,
 	// resolved from the assignee-to-GitHub-username config mapping.
 	// Empty when the assignee has no mapping or the ticket is unassigned.

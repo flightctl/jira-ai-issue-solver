@@ -250,6 +250,7 @@ func main() {
 			MaxCIFixAttempts:  config.Guardrails.MaxCIFixAttempts,
 		},
 		logger,
+		scanner.WithLabelManager(issueTracker, resolver),
 	)
 	if err != nil {
 		logger.Fatal("Failed to create feedback scanner", zap.Error(err))

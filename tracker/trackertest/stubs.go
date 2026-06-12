@@ -20,6 +20,7 @@ type Stub struct {
 	GetCommentsFunc        func(key string) ([]models.Comment, error)
 	UpdateCommentFunc      func(key, commentID, body string) error
 	DeleteCommentFunc      func(key, commentID string) error
+	AddLabelFunc           func(key, label string) error
 	RemoveLabelFunc        func(key, label string) error
 	SetFieldValueFunc      func(key, field, value string) error
 	DownloadAttachmentFunc func(url string) ([]byte, error)
@@ -70,6 +71,13 @@ func (s *Stub) UpdateComment(key, commentID, body string) error {
 func (s *Stub) DeleteComment(key, commentID string) error {
 	if s.DeleteCommentFunc != nil {
 		return s.DeleteCommentFunc(key, commentID)
+	}
+	return nil
+}
+
+func (s *Stub) AddLabel(key, label string) error {
+	if s.AddLabelFunc != nil {
+		return s.AddLabelFunc(key, label)
 	}
 	return nil
 }

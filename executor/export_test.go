@@ -48,3 +48,13 @@ func BuildPRContent(workItem *models.WorkItem, ticketKey, titlePrefix string, ai
 
 // ContainerCredsMountTarget exposes the mount path constant for tests.
 const ContainerCredsMountTarget = containerCredsMountTarget
+
+// SetFailureLabel exposes setFailureLabel for testing.
+func SetFailureLabel(p *Pipeline, logger *zap.Logger, ticketKey string, fl models.FailureLabels, targetLabel string) {
+	p.setFailureLabel(logger, ticketKey, fl, targetLabel)
+}
+
+// ClearFailureLabels exposes clearFailureLabels for testing.
+func ClearFailureLabels(p *Pipeline, logger *zap.Logger, ticketKey string, fl models.FailureLabels) {
+	p.clearFailureLabels(logger, ticketKey, fl)
+}

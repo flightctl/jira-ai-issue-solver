@@ -71,11 +71,29 @@ type LabelRemover interface {
 	RemoveLabel(key, label string) error
 }
 
+// LabelManager adds and removes labels on work items. Used by
+// [FeedbackScanner] for failure-state label management.
+type LabelManager interface {
+	AddLabel(key, label string) error
+	RemoveLabel(key, label string) error
+}
+
+// FailureLabelResolver resolves per-project failure label
+// configuration for a work item.
+type FailureLabelResolver interface {
+	ResolveFailureLabels(item models.WorkItem) models.FailureLabels
+}
+
 // PRFetcher retrieves PR details and comments from GitHub.
 type PRFetcher interface {
 	// GetPRForBranch finds the open pull request whose head
 	// branch matches the given name.
 	GetPRForBranch(owner, repo, head string) (*models.PRDetails, error)
+
+	// GetClosedPRForBranch finds a closed (not merged) pull request
+	// whose head branch matches the given name. Returns nil, nil
+	// when no rejected PR exists.
+	GetClosedPRForBranch(owner, repo, head string) (*models.PRDetails, error)
 
 	// GetPRComments returns comments on the given pull request.
 	// Pass time.Time{} to retrieve all comments.
