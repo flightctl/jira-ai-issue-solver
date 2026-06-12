@@ -84,6 +84,15 @@ Configurable via `github.known_bot_usernames`, `github.ignored_usernames`, and `
 - **Ignored usernames**: Comments completely skipped (for CI bots like packit-as-a-service[bot])
 - **Thread depth**: Maximum bot replies per thread (default: 5)
 
+### Failure-State Labels
+
+Optional per-project Jira labels (`failure_labels` in project config) that mark ticket failure states for dashboard visibility. All three are mutually exclusive by lifecycle; empty string disables the label:
+- **`ci_failing`**: Applied when the bot's PR exists but CI checks are failing. Removed when CI passes or the bot pushes new code.
+- **`rejected`**: Applied when a human reviewer closes the PR without merging.
+- **`blocked`**: Applied when the bot cannot proceed (workspace errors, infra failures). Applied by the executor on pipeline failure; removed on success.
+
+Label management is best-effort — failures are logged but never block core operations. The feedback scanner handles `ci_failing` and `rejected` detection; the executor handles `blocked`.
+
 ### Security Features
 
 - **Security level redaction**: Tickets with security levels get redacted PR titles/descriptions

@@ -238,7 +238,8 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("sync with remote: %w", err)
 	}
 
-	// --- Step 17: Reply to addressed comments ---
+	// --- Step 17: Clear failure labels and reply to addressed comments ---
+	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 	aiResponses := readCommentResponses(wsPath)
 	p.replyToComments(logger, settings, prDetails, newComments, sha, aiResponses)
 
@@ -482,6 +483,8 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if !committed {
 		return result, nil
 	}
+
+	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 
 	result.PRURL = repoInfos[0].pr.URL
 	result.PRNumber = repoInfos[0].pr.Number
@@ -853,6 +856,8 @@ func (p *Pipeline) handleFeedbackFailure(
 	settings *models.ProjectSettings,
 	jobErr error,
 ) {
+	p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.Blocked)
+
 	if settings.DisableErrorComments {
 		return
 	}

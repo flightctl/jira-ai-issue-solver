@@ -680,15 +680,21 @@ func TestFeedbackScanner_CIDisabled_MaxZero(t *testing.T) {
 	d := newFeedbackDeps()
 	d.cfg.MaxCIFixAttempts = 0
 
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
 	// No review comments.
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
 	}
 
+	// CI has failures, but MaxCIFixAttempts=0 means they are not
+	// actionable. CI is still queried for label state.
+	ciCalled := false
 	d.ci = &scannertest.StubCIChecker{
 		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
-			t.Fatal("CI checker should not be called when disabled")
-			return nil, true, nil
+			ciCalled = true
+			return []models.CheckRunFailure{{Name: "lint"}}, true, nil
 		},
 	}
 
@@ -701,7 +707,10 @@ func TestFeedbackScanner_CIDisabled_MaxZero(t *testing.T) {
 	runOneFeedbackScan(t, d.scanner(t))
 
 	if submitted {
-		t.Error("should not submit when CI is disabled and no comments")
+		t.Error("should not submit when CI fixing is disabled and no comments")
+	}
+	if !ciCalled {
+		t.Error("CI should still be queried for label state even when fixing is disabled")
 	}
 }
 
@@ -834,17 +843,14 @@ func TestFeedbackScanner_CIAndComments_BothActionable(t *testing.T) {
 	d := newFeedbackDeps()
 	d.cfg.MaxCIFixAttempts = 3
 
-	// Has review comments — should trigger before CI check.
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
 		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
 	}
 
-	// CI also has failures, but should not need to be checked
-	// since comments already triggered the event.
-	ciChecked := false
+	// CI also has failures — checked for label state even when
+	// review comments are actionable.
 	d.ci = &scannertest.StubCIChecker{
 		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
-			ciChecked = true
 			return []models.CheckRunFailure{{ID: 1, Name: "lint", Conclusion: "failure"}}, true, nil
 		},
 	}
@@ -860,20 +866,19 @@ func TestFeedbackScanner_CIAndComments_BothActionable(t *testing.T) {
 	if !submitted {
 		t.Error("expected feedback event")
 	}
-	if ciChecked {
-		t.Error("CI check should be skipped when review comments already triggered event")
-	}
 }
 
 // --- helpers ---
 
 type feedbackDeps struct {
-	searcher  *scannertest.StubIssueSearcher
-	submitter *scannertest.StubJobSubmitter
-	prs       *scannertest.StubPRFetcher
-	repos     *scannertest.StubRepoLocator
-	ci        *scannertest.StubCIChecker
-	cfg       scanner.FeedbackScannerConfig
+	searcher      *scannertest.StubIssueSearcher
+	submitter     *scannertest.StubJobSubmitter
+	prs           *scannertest.StubPRFetcher
+	repos         *scannertest.StubRepoLocator
+	ci            *scannertest.StubCIChecker
+	cfg           scanner.FeedbackScannerConfig
+	labels        *scannertest.StubLabelManager
+	labelResolver *scannertest.StubFailureLabelResolver
 }
 
 func newFeedbackDeps() *feedbackDeps {
@@ -911,8 +916,12 @@ func newFeedbackDeps() *feedbackDeps {
 
 func (d *feedbackDeps) scanner(t *testing.T) *scanner.FeedbackScanner {
 	t.Helper()
+	var opts []scanner.FeedbackScannerOption
+	if d.labels != nil && d.labelResolver != nil {
+		opts = append(opts, scanner.WithLabelManager(d.labels, d.labelResolver))
+	}
 	s, err := scanner.NewFeedbackScanner(
-		d.searcher, d.submitter, d.prs, d.repos, d.ci, d.cfg, zap.NewNop())
+		d.searcher, d.submitter, d.prs, d.repos, d.ci, d.cfg, zap.NewNop(), opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -938,4 +947,273 @@ func runOneFeedbackScan(t *testing.T, s *scanner.FeedbackScanner) {
 
 	time.Sleep(50 * time.Millisecond)
 	s.Stop()
+}
+
+func TestFeedbackScanner_FailureLabels_CIFailing(t *testing.T) {
+	d := newFeedbackDeps()
+	// No actionable review comments.
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	// CI is failing but not actionable (attempts exhausted).
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{Name: "build"}}, true, nil
+		},
+	}
+	d.cfg.MaxCIFixAttempts = 0 // CI fixing disabled, but CI is still red
+
+	var added []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc: func(_, label string) error { added = append(added, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail", Blocked: "blocked"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "ci-fail" {
+		t.Errorf("added = %v, want [ci-fail]", added)
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_CIPassing(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	// CI is passing.
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{}, true, nil
+		},
+	}
+
+	var removed []string
+	d.labels = &scannertest.StubLabelManager{
+		RemoveLabelFunc: func(_, label string) error { removed = append(removed, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(removed) != 1 || removed[0] != "ci-fail" {
+		t.Errorf("removed = %v, want [ci-fail]", removed)
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_Rejected(t *testing.T) {
+	d := newFeedbackDeps()
+	// No open PR — simulate PR not found.
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, fmt.Errorf("no open PR found")
+	}
+	// Closed (rejected) PR exists.
+	d.prs.GetClosedPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, URL: "https://github.com/org/repo/pull/1"}, nil
+	}
+
+	var added []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc: func(_, label string) error { added = append(added, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{Rejected: "rejected", CIFailing: "ci-fail"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "rejected" {
+		t.Errorf("added = %v, want [rejected]", added)
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_NoOpWhenNotConfigured(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	// No labels or labelResolver set — should be a no-op.
+	runOneFeedbackScan(t, d.scanner(t))
+	// If we got here without panic, the test passes.
+}
+
+func TestFeedbackScanner_FailureLabels_EmptyLabelsSkipped(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{}, true, nil
+		},
+	}
+
+	labelsCalled := false
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, _ string) error { labelsCalled = true; return nil },
+		RemoveLabelFunc: func(_, _ string) error { labelsCalled = true; return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{} // all empty
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if labelsCalled {
+		t.Error("expected no label operations when all labels are empty")
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_Rejected_MultiRepo_ErrorOnOneRepo(t *testing.T) {
+	d := newFeedbackDeps()
+	// No open PR on any repo.
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, fmt.Errorf("no open PR found")
+	}
+	// Multi-repo: two repos, first errors on closed PR check, second has rejected PR.
+	d.repos = &scannertest.StubRepoLocator{
+		LocateReposFunc: func(_ models.WorkItem) ([]models.RepoCoord, error) {
+			return []models.RepoCoord{
+				{Owner: "org", Repo: "repo-a"},
+				{Owner: "org", Repo: "repo-b"},
+			}, nil
+		},
+	}
+	callCount := 0
+	d.prs.GetClosedPRForBranchFunc = func(_, repo, _ string) (*models.PRDetails, error) {
+		callCount++
+		if repo == "repo-a" {
+			return nil, fmt.Errorf("API error")
+		}
+		return &models.PRDetails{Number: 1, URL: "https://github.com/org/repo-b/pull/1"}, nil
+	}
+
+	var added []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc: func(_, label string) error { added = append(added, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{Rejected: "rejected"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if callCount != 2 {
+		t.Errorf("expected 2 GetClosedPRForBranch calls, got %d", callCount)
+	}
+	if len(added) != 1 || added[0] != "rejected" {
+		t.Errorf("added = %v, want [rejected]", added)
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_CIErrorPreservesLabel(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	// CI query fails — label should NOT be removed.
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return nil, false, fmt.Errorf("GitHub API error")
+		},
+	}
+
+	labelRemoved := false
+	d.labels = &scannertest.StubLabelManager{
+		RemoveLabelFunc: func(_, _ string) error { labelRemoved = true; return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if labelRemoved {
+		t.Error("ci-failing label should be preserved when CI query errors")
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_MultiRepo_ActionableAndCIFailing(t *testing.T) {
+	d := newFeedbackDeps()
+	// Two repos: repo-a has actionable comments, repo-b has failing CI.
+	d.repos = &scannertest.StubRepoLocator{
+		LocateReposFunc: func(_ models.WorkItem) ([]models.RepoCoord, error) {
+			return []models.RepoCoord{
+				{Owner: "org", Repo: "repo-a"},
+				{Owner: "org", Repo: "repo-b"},
+			}, nil
+		},
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		if repo == "repo-a" {
+			return []models.PRComment{
+				{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			}, nil
+		}
+		return []models.PRComment{}, nil
+	}
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, repo, _ string) ([]models.CheckRunFailure, bool, error) {
+			if repo == "repo-b" {
+				return []models.CheckRunFailure{{Name: "lint"}}, true, nil
+			}
+			return []models.CheckRunFailure{}, true, nil
+		},
+	}
+
+	var added []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc: func(_, label string) error { added = append(added, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail"}
+		},
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected feedback submission for actionable comments on repo-a")
+	}
+	if len(added) != 1 || added[0] != "ci-fail" {
+		t.Errorf("added = %v, want [ci-fail] (CI on repo-b should be observed even though repo-a has actionable comments)", added)
+	}
 }
