@@ -86,8 +86,8 @@ func TestReadCommentResponses_SkipsZeroIDAndEmptyResponse(t *testing.T) {
 
 func writeCommentResponsesFile(t *testing.T, dir, content string) {
 	t.Helper()
-	aiBotDir := filepath.Join(dir, filepath.Dir(taskfile.CommentResponsesPath))
-	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+	sessionDir := filepath.Join(dir, filepath.Dir(taskfile.CommentResponsesPath))
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, taskfile.CommentResponsesPath)
@@ -96,20 +96,20 @@ func writeCommentResponsesFile(t *testing.T, dir, content string) {
 	}
 }
 
-func writeAIBotFile(t *testing.T, dir, filename, content string) {
+func writeSessionFile(t *testing.T, dir, filename, content string) {
 	t.Helper()
-	aiBotDir := filepath.Join(dir, ".ai-bot")
-	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+	sessionDir := filepath.Join(dir, ".ai-session")
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(aiBotDir, filename), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sessionDir, filename), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestEnrichFromCLIOutput_Claude(t *testing.T) {
 	dir := t.TempDir()
-	writeAIBotFile(t, dir, "cli-output.json", `{
+	writeSessionFile(t, dir, "cli-output.json", `{
 		"type": "result",
 		"total_cost_usd": 0.36888,
 		"is_error": false
@@ -128,7 +128,7 @@ func TestEnrichFromCLIOutput_Claude(t *testing.T) {
 
 func TestEnrichFromCLIOutput_Gemini(t *testing.T) {
 	dir := t.TempDir()
-	writeAIBotFile(t, dir, "cli-output.json", `{
+	writeSessionFile(t, dir, "cli-output.json", `{
 		"session_id": "abc",
 		"stats": {
 			"models": {
@@ -182,7 +182,7 @@ func TestEnrichFromCLIOutput_MissingFile(t *testing.T) {
 
 func TestEnrichFromCLIOutput_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	writeAIBotFile(t, dir, "cli-output.json", "not json at all")
+	writeSessionFile(t, dir, "cli-output.json", "not json at all")
 
 	var output SessionOutput
 	enrichFromCLIOutput(&output, dir)
@@ -194,8 +194,8 @@ func TestEnrichFromCLIOutput_InvalidJSON(t *testing.T) {
 
 func TestReadSessionOutput_WithCLIOutput(t *testing.T) {
 	dir := t.TempDir()
-	writeAIBotFile(t, dir, "session-output.json", `{"exit_code": 0}`)
-	writeAIBotFile(t, dir, "cli-output.json", `{"total_cost_usd": 1.23}`)
+	writeSessionFile(t, dir, "session-output.json", `{"exit_code": 0}`)
+	writeSessionFile(t, dir, "cli-output.json", `{"total_cost_usd": 1.23}`)
 
 	output := readSessionOutput(dir)
 

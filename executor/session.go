@@ -11,7 +11,7 @@ import (
 
 // sessionOutputPath is the path, relative to the workspace root,
 // where the wrapper script writes AI session metadata.
-const sessionOutputPath = ".ai-bot/session-output.json"
+const sessionOutputPath = ".ai-session/session-output.json"
 
 // SessionOutput holds the AI session results parsed from
 // session-output.json. The wrapper script writes this file after the
@@ -43,7 +43,7 @@ type SessionOutput struct {
 }
 
 // PRDescription holds the AI-generated PR title and body parsed from
-// .ai-bot/pr.md. The first non-empty line is the title; remaining
+// .ai-session/pr.md. The first non-empty line is the title; remaining
 // lines form the body.
 type PRDescription struct {
 	Title string
@@ -198,7 +198,7 @@ func isPRMetadataLine(line string) bool {
 
 // CommentResponse maps a PR comment ID to the AI's summary of how it
 // was addressed. The AI writes an array of these to
-// .ai-bot/comment-responses.json after a feedback session.
+// .ai-session/comment-responses.json after a feedback session.
 type CommentResponse struct {
 	CommentID int64  `json:"comment_id"`
 	Response  string `json:"response"`

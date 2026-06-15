@@ -144,7 +144,7 @@ func TestBuildExecCommand_SessionLogRedirect(t *testing.T) {
 	cmd := buildExecCommand(scriptParams{Provider: "claude"})
 
 	script := cmd[2]
-	if !strings.Contains(script, "tee /workspace/.ai-bot/session.log") {
+	if !strings.Contains(script, "tee /workspace/.ai-session/session.log") {
 		t.Error("script should tee stderr to session.log")
 	}
 }

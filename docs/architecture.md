@@ -157,7 +157,7 @@ sequenceDiagram
     WS->>GH: Clone repository
     P->>P: Load repo config (.ai-bot/config.yaml)
     P->>GH: Clone imports (auxiliary repos into workspace)
-    P->>P: Write task file (.ai-bot/task.md + instructions)
+    P->>P: Write task file (.ai-session/task.md + instructions)
     P->>CTR: Resolve container config
     P->>CTR: Start container (workspace mounted)
     P->>CTR: Run import install commands (if configured)
@@ -167,7 +167,7 @@ sequenceDiagram
     P->>CTR: Stop container
 
     P->>WS: Check for changes (git diff)
-    P->>P: Read AI-generated PR description (.ai-bot/pr.md)
+    P->>P: Read AI-generated PR description (.ai-session/pr.md)
     P->>GH: Commit changes via Git Data API
     P->>WS: Sync workspace with remote
     P->>GH: Create pull request
