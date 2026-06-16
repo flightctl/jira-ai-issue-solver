@@ -2420,7 +2420,10 @@ func (s *GitHubServiceImpl) GetMergedPRForBranch(owner, repo, head string) (*mod
 		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	prs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 		State: "closed",
 		Head:  head,
 	})
