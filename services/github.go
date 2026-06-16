@@ -283,7 +283,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 			return fmt.Errorf("failed to clone repository: %w, stderr: %s", err, cmd.getStderr())
 		}
 
-		s.logger.Debug("git clone", fn, zap.String("url", repoURL), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+		s.logger.Debug("git clone", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 	}
 
 	// Configure git user for GitHub App
@@ -300,7 +300,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 		return fmt.Errorf("failed to configure git user email: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git config user.email", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git config user.email", fn, zap.String("stderr", cmd.getStderr()))
 
 	// Configure SSH signing if a key is specified
 	exists := false
@@ -312,7 +312,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 			return fmt.Errorf("failed to check if SSH key file exists: %w", err)
 		}
 
-		s.logger.Debug("SSH key file exists", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath), zap.Bool("exists", exists))
+		s.logger.Debug("SSH key file exists", fn, zap.Bool("exists", exists))
 	}
 
 	if exists {
@@ -339,7 +339,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 
 		s.logger.Debug("git config commit.gpgsign", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-		s.logger.Info("Configured SSH signing for repository", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
+		s.logger.Debug("Configured SSH signing for repository", fn, zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
 	} else {
 		s.logger.Info("SSH signing not configured for repository")
 	}
