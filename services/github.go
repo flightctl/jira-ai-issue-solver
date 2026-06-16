@@ -2368,6 +2368,49 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 	return nil, fmt.Errorf("no open PR found for branch %s", head)
 }
 
+// GetClosedPRForBranch finds a closed (not merged) pull request whose
+// head branch matches the given name. Returns nil, nil when no rejected
+// PR exists.
+func (s *GitHubServiceImpl) GetClosedPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+		State: "closed",
+		Head:  head,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list closed PRs for branch %s: %w", head, err)
+	}
+
+	refToMatch := head
+	if _, branch, ok := strings.Cut(head, ":"); ok {
+		refToMatch = branch
+	}
+
+	for _, pr := range prs {
+		if pr.GetHead().GetRef() == refToMatch && !pr.GetMerged() {
+			return &models.PRDetails{
+				Number:     pr.GetNumber(),
+				Title:      pr.GetTitle(),
+				Branch:     pr.GetHead().GetRef(),
+				BaseBranch: pr.GetBase().GetRef(),
+				URL:        pr.GetHTMLURL(),
+				HeadSHA:    pr.GetHead().GetSHA(),
+			}, nil
+		}
+	}
+
+	return nil, nil
+}
+
 // BranchHasCommits reports whether the branch has commits beyond the
 // base branch. Used by crash recovery to detect completed AI work.
 func (s *GitHubServiceImpl) BranchHasCommits(owner, repo, branch, base string) (bool, error) {
