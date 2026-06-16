@@ -2336,7 +2336,10 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	prs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 		State: "open",
 		Head:  head,
 	})
@@ -2382,7 +2385,10 @@ func (s *GitHubServiceImpl) GetClosedPRForBranch(owner, repo, head string) (*mod
 		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	prs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 		State: "closed",
 		Head:  head,
 	})
@@ -2424,8 +2430,11 @@ func (s *GitHubServiceImpl) BranchHasCommits(owner, repo, branch, base string) (
 		return false, fmt.Errorf("get GitHub client: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
 	comparison, _, err := client.Repositories.CompareCommits(
-		context.Background(), owner, repo, base, branch, nil)
+		ctx, owner, repo, base, branch, nil)
 	if err != nil {
 		return false, fmt.Errorf("compare %s...%s: %w", base, branch, err)
 	}
@@ -2448,7 +2457,10 @@ func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool
 		return false, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	_, _, err = client.Git.GetRef(context.Background(), owner, repo, "refs/heads/"+branch)
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, _, err = client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branch)
 	if err != nil {
 		// go-github returns an error for 404 responses.
 		return false, nil
