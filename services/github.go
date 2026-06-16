@@ -339,7 +339,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 
 		s.logger.Debug("git config commit.gpgsign", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-		s.logger.Debug("Configured SSH signing for repository", fn, zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
+		s.logger.Debug("Configured SSH signing for repository", fn)
 	} else {
 		s.logger.Info("SSH signing not configured for repository")
 	}
