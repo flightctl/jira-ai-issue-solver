@@ -58,3 +58,8 @@ func SetFailureLabel(p *Pipeline, logger *zap.Logger, ticketKey string, fl model
 func ClearFailureLabels(p *Pipeline, logger *zap.Logger, ticketKey string, fl models.FailureLabels) {
 	p.clearFailureLabels(logger, ticketKey, fl)
 }
+
+// SetLifecycleLabel exposes setLifecycleLabel for testing.
+func SetLifecycleLabel(p *Pipeline, logger *zap.Logger, ticketKey string, ll models.LifecycleLabels, targetLabel string) {
+	p.setLifecycleLabel(logger, ticketKey, ll, targetLabel)
+}

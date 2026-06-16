@@ -12,18 +12,21 @@ import (
 
 // Compile-time checks.
 var (
-	_ scanner.Scanner              = (*StubScanner)(nil)
-	_ scanner.IssueSearcher        = (*StubIssueSearcher)(nil)
-	_ scanner.JobSubmitter         = (*StubJobSubmitter)(nil)
-	_ scanner.PRFetcher            = (*StubPRFetcher)(nil)
-	_ scanner.RepoLocator          = (*StubRepoLocator)(nil)
-	_ scanner.CIChecker            = (*StubCIChecker)(nil)
-	_ scanner.WorkspaceCleaner     = (*StubWorkspaceCleaner)(nil)
-	_ scanner.TicketStatusChecker  = (*StubTicketStatusChecker)(nil)
-	_ scanner.LabelRemover         = (*StubLabelRemover)(nil)
-	_ scanner.LabelManager         = (*StubLabelManager)(nil)
-	_ scanner.FailureLabelResolver = (*StubFailureLabelResolver)(nil)
-	_ scanner.RetryResetter        = (*StubRetryResetter)(nil)
+	_ scanner.Scanner                = (*StubScanner)(nil)
+	_ scanner.IssueSearcher          = (*StubIssueSearcher)(nil)
+	_ scanner.JobSubmitter           = (*StubJobSubmitter)(nil)
+	_ scanner.PRFetcher              = (*StubPRFetcher)(nil)
+	_ scanner.RepoLocator            = (*StubRepoLocator)(nil)
+	_ scanner.CIChecker              = (*StubCIChecker)(nil)
+	_ scanner.WorkspaceCleaner       = (*StubWorkspaceCleaner)(nil)
+	_ scanner.TicketStatusChecker    = (*StubTicketStatusChecker)(nil)
+	_ scanner.LabelRemover           = (*StubLabelRemover)(nil)
+	_ scanner.LabelManager           = (*StubLabelManager)(nil)
+	_ scanner.FailureLabelResolver   = (*StubFailureLabelResolver)(nil)
+	_ scanner.LifecycleLabelResolver = (*StubLifecycleLabelResolver)(nil)
+	_ scanner.MergedStatusResolver   = (*StubMergedStatusResolver)(nil)
+	_ scanner.StatusTransitioner     = (*StubStatusTransitioner)(nil)
+	_ scanner.RetryResetter          = (*StubRetryResetter)(nil)
 )
 
 // StubScanner is a test double for [scanner.Scanner].
@@ -93,6 +96,7 @@ func (s *StubRetryResetter) ResetRetries(ticketKey string) error {
 type StubPRFetcher struct {
 	GetPRForBranchFunc       func(owner, repo, head string) (*models.PRDetails, error)
 	GetClosedPRForBranchFunc func(owner, repo, head string) (*models.PRDetails, error)
+	GetMergedPRForBranchFunc func(owner, repo, head string) (*models.PRDetails, error)
 	GetPRCommentsFunc        func(owner, repo string, number int, since time.Time) ([]models.PRComment, error)
 }
 
@@ -106,6 +110,13 @@ func (s *StubPRFetcher) GetPRForBranch(owner, repo, head string) (*models.PRDeta
 func (s *StubPRFetcher) GetClosedPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
 	if s.GetClosedPRForBranchFunc != nil {
 		return s.GetClosedPRForBranchFunc(owner, repo, head)
+	}
+	return nil, nil
+}
+
+func (s *StubPRFetcher) GetMergedPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
+	if s.GetMergedPRForBranchFunc != nil {
+		return s.GetMergedPRForBranchFunc(owner, repo, head)
 	}
 	return nil, nil
 }
@@ -230,4 +241,43 @@ func (s *StubFailureLabelResolver) ResolveFailureLabels(item models.WorkItem) mo
 		return s.ResolveFailureLabelsFunc(item)
 	}
 	return models.FailureLabels{}
+}
+
+// StubLifecycleLabelResolver is a test double for
+// [scanner.LifecycleLabelResolver].
+type StubLifecycleLabelResolver struct {
+	ResolveLifecycleLabelsFunc func(item models.WorkItem) models.LifecycleLabels
+}
+
+func (s *StubLifecycleLabelResolver) ResolveLifecycleLabels(item models.WorkItem) models.LifecycleLabels {
+	if s.ResolveLifecycleLabelsFunc != nil {
+		return s.ResolveLifecycleLabelsFunc(item)
+	}
+	return models.LifecycleLabels{}
+}
+
+// StubMergedStatusResolver is a test double for
+// [scanner.MergedStatusResolver].
+type StubMergedStatusResolver struct {
+	ResolveMergedStatusFunc func(item models.WorkItem) string
+}
+
+func (s *StubMergedStatusResolver) ResolveMergedStatus(item models.WorkItem) string {
+	if s.ResolveMergedStatusFunc != nil {
+		return s.ResolveMergedStatusFunc(item)
+	}
+	return ""
+}
+
+// StubStatusTransitioner is a test double for
+// [scanner.StatusTransitioner].
+type StubStatusTransitioner struct {
+	TransitionStatusFunc func(key, status string) error
+}
+
+func (s *StubStatusTransitioner) TransitionStatus(key, status string) error {
+	if s.TransitionStatusFunc != nil {
+		return s.TransitionStatusFunc(key, status)
+	}
+	return nil
 }

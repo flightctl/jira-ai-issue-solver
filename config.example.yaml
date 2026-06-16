@@ -41,6 +41,14 @@ jira:
         rejected: "jira-autofix-rejected"        # PR closed without merge
         blocked: "jira-autofix-blocked"          # Bot cannot proceed
 
+      # Optional lifecycle labels tracking ticket progression through
+      # the autofix pipeline. Labels are mutually exclusive: setting one
+      # removes the others. Empty or omitted values disable the label.
+      lifecycle_labels:
+        queued: "jira-autofix"                   # Set externally (e.g., triage bot); removed when review is set
+        review: "jira-autofix-review"            # Applied when PR is created
+        merged: "jira-autofix-merged"            # Applied when all PRs are merged
+
       # Status transitions can be configured per ticket type
       # All ticket types must be explicitly configured
       # IMPORTANT: Status names are case-sensitive and must match Jira exactly
@@ -51,6 +59,7 @@ jira:
           todo: "Open"
           in_progress: "In Progress"
           in_review: "Code Review"
+          merged: "MODIFIED"           # Optional: transition when all PRs merge
 
         # Specific transitions for Story tickets
         Story:

@@ -1000,6 +1000,193 @@ func TestResolveFailureLabels(t *testing.T) {
 	})
 }
 
+func TestResolveProject_LifecycleLabels(t *testing.T) {
+	t.Run("passes through configured labels", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].LifecycleLabels = models.LifecycleLabels{
+			Queued: "jira-autofix",
+			Review: "jira-autofix-review",
+			Merged: "jira-autofix-merged",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.LifecycleLabels.Queued != "jira-autofix" {
+			t.Errorf("Queued = %q, want %q", ps.LifecycleLabels.Queued, "jira-autofix")
+		}
+		if ps.LifecycleLabels.Review != "jira-autofix-review" {
+			t.Errorf("Review = %q, want %q", ps.LifecycleLabels.Review, "jira-autofix-review")
+		}
+		if ps.LifecycleLabels.Merged != "jira-autofix-merged" {
+			t.Errorf("Merged = %q, want %q", ps.LifecycleLabels.Merged, "jira-autofix-merged")
+		}
+	})
+
+	t.Run("defaults to empty when not configured", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.LifecycleLabels != (models.LifecycleLabels{}) {
+			t.Errorf("expected zero LifecycleLabels, got %+v", ps.LifecycleLabels)
+		}
+	})
+}
+
+func TestResolveProject_MergedStatus(t *testing.T) {
+	t.Run("passes through configured merged status", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].StatusTransitions["Bug"] = models.StatusTransitions{
+			Todo:       "To Do",
+			InProgress: "In Progress",
+			InReview:   "In Review",
+			Merged:     "MODIFIED",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.MergedStatus != "MODIFIED" {
+			t.Errorf("MergedStatus = %q, want %q", ps.MergedStatus, "MODIFIED")
+		}
+	})
+
+	t.Run("defaults to empty when not configured", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.MergedStatus != "" {
+			t.Errorf("MergedStatus = %q, want empty", ps.MergedStatus)
+		}
+	})
+}
+
+func TestResolveLifecycleLabels(t *testing.T) {
+	t.Run("returns labels for known project", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].LifecycleLabels = models.LifecycleLabels{
+			Queued: "queued-label",
+			Review: "review-label",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ll := r.ResolveLifecycleLabels(models.WorkItem{Key: "PROJ-1", Type: "Bug"})
+		if ll.Queued != "queued-label" {
+			t.Errorf("Queued = %q, want %q", ll.Queued, "queued-label")
+		}
+		if ll.Review != "review-label" {
+			t.Errorf("Review = %q, want %q", ll.Review, "review-label")
+		}
+	})
+
+	t.Run("returns zero value for unknown project", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ll := r.ResolveLifecycleLabels(models.WorkItem{Key: "UNKNOWN-1", Type: "Bug"})
+		if ll != (models.LifecycleLabels{}) {
+			t.Errorf("expected zero LifecycleLabels, got %+v", ll)
+		}
+	})
+}
+
+func TestResolveMergedStatus(t *testing.T) {
+	t.Run("returns merged status for known ticket type", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].StatusTransitions["Bug"] = models.StatusTransitions{
+			Todo:       "To Do",
+			InProgress: "In Progress",
+			InReview:   "In Review",
+			Merged:     "MODIFIED",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		status := r.ResolveMergedStatus(models.WorkItem{Key: "PROJ-1", Type: "Bug"})
+		if status != "MODIFIED" {
+			t.Errorf("MergedStatus = %q, want %q", status, "MODIFIED")
+		}
+	})
+
+	t.Run("returns empty for unconfigured merged status", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		status := r.ResolveMergedStatus(models.WorkItem{Key: "PROJ-1", Type: "Bug"})
+		if status != "" {
+			t.Errorf("MergedStatus = %q, want empty", status)
+		}
+	})
+
+	t.Run("returns empty for unknown project", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		status := r.ResolveMergedStatus(models.WorkItem{Key: "UNKNOWN-1", Type: "Bug"})
+		if status != "" {
+			t.Errorf("MergedStatus = %q, want empty", status)
+		}
+	})
+}
+
 // assertContains is a test helper that fails if s does not contain substr.
 func assertContains(t *testing.T, s, substr string) {
 	t.Helper()

@@ -337,6 +337,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		pr.Number, result.CostUSD, "New ticket")
 
 	if !draft {
+		p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
 		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
 			logger.Warn("Failed to transition to in-review", zap.Error(err))
 		}
@@ -981,6 +982,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	result.ValidationPassed = !sessionDraft
 
 	if !sessionDraft {
+		p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
 		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
 			logger.Warn("Failed to transition to in-review", zap.Error(err))
 		}

@@ -84,6 +84,23 @@ type FailureLabelResolver interface {
 	ResolveFailureLabels(item models.WorkItem) models.FailureLabels
 }
 
+// LifecycleLabelResolver resolves per-project lifecycle label
+// configuration for a work item.
+type LifecycleLabelResolver interface {
+	ResolveLifecycleLabels(item models.WorkItem) models.LifecycleLabels
+}
+
+// MergedStatusResolver resolves the merged status transition for a
+// work item's project and ticket type.
+type MergedStatusResolver interface {
+	ResolveMergedStatus(item models.WorkItem) string
+}
+
+// StatusTransitioner transitions a work item to a new status.
+type StatusTransitioner interface {
+	TransitionStatus(key, status string) error
+}
+
 // PRFetcher retrieves PR details and comments from GitHub.
 type PRFetcher interface {
 	// GetPRForBranch finds the open pull request whose head
@@ -94,6 +111,11 @@ type PRFetcher interface {
 	// whose head branch matches the given name. Returns nil, nil
 	// when no rejected PR exists.
 	GetClosedPRForBranch(owner, repo, head string) (*models.PRDetails, error)
+
+	// GetMergedPRForBranch finds a merged pull request whose head
+	// branch matches the given name. Returns nil, nil when no
+	// merged PR exists.
+	GetMergedPRForBranch(owner, repo, head string) (*models.PRDetails, error)
 
 	// GetPRComments returns comments on the given pull request.
 	// Pass time.Time{} to retrieve all comments.

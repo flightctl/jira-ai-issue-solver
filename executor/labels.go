@@ -33,6 +33,33 @@ func (p *Pipeline) setFailureLabel(
 	}
 }
 
+// setLifecycleLabel applies the given lifecycle label to a ticket and
+// removes the other configured lifecycle labels (mutual exclusivity).
+// If targetLabel is empty, only clears the others. All operations are
+// best-effort: errors are logged but never propagated.
+func (p *Pipeline) setLifecycleLabel(
+	logger *zap.Logger,
+	ticketKey string,
+	ll models.LifecycleLabels,
+	targetLabel string,
+) {
+	for _, label := range ll.All() {
+		if label != "" && label != targetLabel {
+			if err := p.tracker.RemoveLabel(ticketKey, label); err != nil {
+				logger.Debug("Failed to remove lifecycle label",
+					zap.String("label", label), zap.Error(err))
+			}
+		}
+	}
+
+	if targetLabel != "" {
+		if err := p.tracker.AddLabel(ticketKey, targetLabel); err != nil {
+			logger.Warn("Failed to add lifecycle label",
+				zap.String("label", targetLabel), zap.Error(err))
+		}
+	}
+}
+
 // clearFailureLabels removes all configured failure labels from a
 // ticket. Called on pipeline success paths to clean up labels from
 // prior failed attempts. All operations are best-effort.

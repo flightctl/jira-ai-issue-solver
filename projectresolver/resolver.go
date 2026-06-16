@@ -80,6 +80,8 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		AIProvider:           r.config.AIProvider,
 		Container:            ws.Container,
 		FailureLabels:        pc.FailureLabels,
+		LifecycleLabels:      pc.LifecycleLabels,
+		MergedStatus:         transitions.Merged,
 		GitHubUsername:       ghUsername,
 	}, nil
 }
@@ -176,6 +178,29 @@ func (r *ConfigResolver) ResolveFailureLabels(item models.WorkItem) models.Failu
 		return models.FailureLabels{}
 	}
 	return pc.FailureLabels
+}
+
+// ResolveLifecycleLabels returns the lifecycle label configuration for
+// the given work item's project. Returns a zero-value LifecycleLabels
+// (all labels disabled) if the project cannot be resolved.
+func (r *ConfigResolver) ResolveLifecycleLabels(item models.WorkItem) models.LifecycleLabels {
+	pc, err := r.findProjectConfig(item)
+	if err != nil {
+		return models.LifecycleLabels{}
+	}
+	return pc.LifecycleLabels
+}
+
+// ResolveMergedStatus returns the merged status transition for the
+// given work item's project and ticket type. Returns an empty string
+// if no merged status is configured or the project cannot be resolved.
+func (r *ConfigResolver) ResolveMergedStatus(item models.WorkItem) string {
+	pc, err := r.findProjectConfig(item)
+	if err != nil {
+		return ""
+	}
+	transitions := pc.StatusTransitions.GetStatusTransitions(item.Type)
+	return transitions.Merged
 }
 
 // findProjectConfig returns the ProjectConfig for the work item's

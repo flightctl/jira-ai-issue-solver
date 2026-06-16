@@ -93,6 +93,15 @@ type ProjectSettings struct {
 	// disabled.
 	FailureLabels FailureLabels
 
+	// LifecycleLabels holds the configured lifecycle label strings
+	// that track ticket progression (queued → review → merged).
+	// Empty strings disable the corresponding label.
+	LifecycleLabels LifecycleLabels
+
+	// MergedStatus is the tracker status name to transition to when
+	// all PRs are merged. Empty means no transition on merge.
+	MergedStatus string
+
 	// GitHubUsername is the GitHub username of the ticket assignee,
 	// resolved from the assignee-to-GitHub-username config mapping.
 	// Empty when the assignee has no mapping or the ticket is unassigned.
