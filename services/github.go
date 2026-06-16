@@ -2462,8 +2462,11 @@ func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool
 
 	_, _, err = client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branch)
 	if err != nil {
-		// go-github returns an error for 404 responses.
-		return false, nil
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("get ref refs/heads/%s: %w", branch, err)
 	}
 
 	return true, nil
