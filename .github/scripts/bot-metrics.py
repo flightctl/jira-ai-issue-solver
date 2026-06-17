@@ -4,16 +4,14 @@
 Runs in CI (GitHub Actions) or locally with `gh` CLI authenticated.
 Outputs a markdown report to the GitHub Actions job summary, or stdout.
 
-The report splits PRs into "Legacy Bot" (before cutoff) and "Redesigned Bot"
-(on or after cutoff) sections for side-by-side comparison.
-
 Configuration via environment variables:
   TARGET_REPOS     - Comma-separated GitHub repos to scan (e.g., "flightctl/flightctl")
   BOT_AUTHOR       - GitHub login of the bot (default: app/bugs-buddy-jira-ai-issue-solver)
   JIRA_PROJECTS    - Comma-separated Jira project prefixes to include (e.g., "EDM,PROJ").
                      Empty = all projects (default).
   EXCLUDED_TICKETS - Comma-separated ticket keys to exclude (default: "")
-  CUTOFF_DATE      - YYYY-MM-DD boundary between legacy and redesigned bot (default: 2026-03-23)
+  START_DATE       - YYYY-MM-DD start date for data collection; PRs before this are excluded
+                     (default: 2026-03-23)
 """
 
 import json
@@ -41,8 +39,8 @@ EXCLUDED_TICKETS = [
     for t in os.environ.get("EXCLUDED_TICKETS", "").split(",")
     if t.strip()
 ]
-CUTOFF_DATE = date.fromisoformat(
-    os.environ.get("CUTOFF_DATE", "2026-03-23")
+START_DATE = date.fromisoformat(
+    os.environ.get("START_DATE", "2026-03-23")
 )
 
 
@@ -197,12 +195,11 @@ def fetch_pr_cost(repo, pr_number):
     return 0.0
 
 
-def filter_and_split(prs):
-    """Exclude test tickets, apply project filter, and split into legacy/redesigned."""
+def filter_prs(prs):
+    """Exclude PRs before start date, test tickets, and non-matching projects."""
     excluded_count = 0
     filtered_count = 0
-    legacy = []
-    redesigned = []
+    result = []
 
     for pr in prs:
         ticket = extract_ticket(pr["title"])
@@ -219,13 +216,14 @@ def filter_and_split(prs):
                 filtered_count += 1
                 continue
 
+        # Exclude PRs before start date
         created = parse_time(pr["createdAt"])
-        if created and created.date() >= CUTOFF_DATE:
-            redesigned.append(pr)
-        else:
-            legacy.append(pr)
+        if created and created.date() < START_DATE:
+            continue
 
-    return legacy, redesigned, excluded_count, filtered_count
+        result.append(pr)
+
+    return result, excluded_count, filtered_count
 
 
 def compute_metrics(prs, ci_status, pr_costs=None):
@@ -379,13 +377,11 @@ def format_merge_time(hours):
     return f"{hours:.1f} hours"
 
 
-def format_comparison_table(legacy, redesigned):
-    """Render a side-by-side comparison of legacy vs redesigned metrics."""
+def format_summary_table(m):
+    """Render a single-column summary of metrics."""
     lines = []
 
-    def val(m, key, fmt=None):
-        if m is None:
-            return "—"
+    def val(key, fmt=None):
         v = m[key]
         if v is None:
             return "—"
@@ -393,49 +389,45 @@ def format_comparison_table(legacy, redesigned):
             return fmt(v)
         return str(v)
 
-    def pct(m, key):
-        return val(m, key, lambda v: f"{v:.1f}%")
+    def pct(key):
+        return val(key, lambda v: f"{v:.1f}%")
 
-    def ci_rate(m):
-        if m is None or m["ci_pass_rate"] is None:
-            return "—"
-        return f"{m['ci_pass_rate']:.1f}% ({m['ci_total_checked']} checked)"
+    ci_str = "—"
+    if m["ci_pass_rate"] is not None:
+        ci_str = f"{m['ci_pass_rate']:.1f}% ({m['ci_total_checked']} checked)"
 
-    lines.append("## Comparison: Legacy vs Redesigned")
+    lines.append("## Summary")
     lines.append("")
-    lines.append(f"| Metric | Legacy (before {CUTOFF_DATE}) | Redesigned (from {CUTOFF_DATE}) |")
-    lines.append("|--------|------|------------|")
-    lines.append(f"| Total PRs | {val(legacy, 'total_prs')} | {val(redesigned, 'total_prs')} |")
-    lines.append(f"| Merged | {val(legacy, 'merged')} | {val(redesigned, 'merged')} |")
-    lines.append(f"| Closed (rejected) | {val(legacy, 'closed')} | {val(redesigned, 'closed')} |")
-    lines.append(f"| Open | {val(legacy, 'open')} | {val(redesigned, 'open')} |")
-    lines.append(f"| **Merge rate** | **{pct(legacy, 'merge_rate')}** | **{pct(redesigned, 'merge_rate')}** |")
-    lines.append(f"| CI pass rate | {ci_rate(legacy)} | {ci_rate(redesigned)} |")
-    lines.append(f"| Unique tickets | {val(legacy, 'unique_tickets')} | {val(redesigned, 'unique_tickets')} |")
-    lines.append(f"| Tickets resolved | {val(legacy, 'resolved_tickets')} | {val(redesigned, 'resolved_tickets')} |")
-    lines.append(f"| **Resolution rate** | **{pct(legacy, 'resolution_rate')}** | **{pct(redesigned, 'resolution_rate')}** |")
-    lines.append(f"| Avg PRs per ticket | {val(legacy, 'avg_prs_per_ticket', lambda v: f'{v:.1f}')} | {val(redesigned, 'avg_prs_per_ticket', lambda v: f'{v:.1f}')} |")
-    lines.append(f"| Avg reviews (merged) | {val(legacy, 'avg_reviews_merged', lambda v: f'{v:.1f}')} | {val(redesigned, 'avg_reviews_merged', lambda v: f'{v:.1f}')} |")
-    lines.append(f"| Avg time to merge | {format_merge_time(legacy['avg_merge_hours'] if legacy else None)} | {format_merge_time(redesigned['avg_merge_hours'] if redesigned else None)} |")
-    lines.append(f"| Lines added (merged) | {val(legacy, 'merged_additions', lambda v: f'+{v}')} | {val(redesigned, 'merged_additions', lambda v: f'+{v}')} |")
-    lines.append(f"| Lines removed (merged) | {val(legacy, 'merged_deletions', lambda v: f'-{v}')} | {val(redesigned, 'merged_deletions', lambda v: f'-{v}')} |")
-    lines.append(f"| **Total AI cost** | **{val(legacy, 'total_cost', lambda v: f'${v:.2f}')}** | **{val(redesigned, 'total_cost', lambda v: f'${v:.2f}')}** |")
-    lines.append(f"| Avg cost per ticket | {val(legacy, 'avg_cost_per_ticket', lambda v: f'${v:.2f}')} | {val(redesigned, 'avg_cost_per_ticket', lambda v: f'${v:.2f}')} |")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Total PRs | {val('total_prs')} |")
+    lines.append(f"| Merged | {val('merged')} |")
+    lines.append(f"| Closed (rejected) | {val('closed')} |")
+    lines.append(f"| Open | {val('open')} |")
+    lines.append(f"| **Merge rate** | **{pct('merge_rate')}** |")
+    lines.append(f"| CI pass rate | {ci_str} |")
+    lines.append(f"| Unique tickets | {val('unique_tickets')} |")
+    lines.append(f"| Tickets resolved | {val('resolved_tickets')} |")
+    lines.append(f"| **Resolution rate** | **{pct('resolution_rate')}** |")
+    lines.append(f"| Avg PRs per ticket | {val('avg_prs_per_ticket', lambda v: f'{v:.1f}')} |")
+    lines.append(f"| Avg reviews (merged) | {val('avg_reviews_merged', lambda v: f'{v:.1f}')} |")
+    lines.append(f"| Avg time to merge | {format_merge_time(m['avg_merge_hours'])} |")
+    lines.append(f"| Lines added (merged) | {val('merged_additions', lambda v: f'+{v}')} |")
+    lines.append(f"| Lines removed (merged) | {val('merged_deletions', lambda v: f'-{v}')} |")
+    lines.append(f"| **Total AI cost** | **{val('total_cost', lambda v: f'${v:.2f}')}** |")
+    lines.append(f"| Avg cost per ticket | {val('avg_cost_per_ticket', lambda v: f'${v:.2f}')} |")
     lines.append("")
 
     return lines
 
 
-def format_section_detail(label, m):
-    """Render per-ticket breakdown, monthly trend, and repo breakdown for one section."""
-    if m is None:
-        return []
-
+def format_detail_sections(m):
+    """Render per-ticket breakdown, monthly trend, and repo breakdown."""
     lines = []
 
     # -- Per-repo breakdown (multi-repo only) --
     if m["repo_breakdown"]:
-        lines.append(f"### {label}: Per-Repo Breakdown")
+        lines.append("### Per-Repo Breakdown")
         lines.append("")
         lines.append("| Repository | PRs | Merged | Merge Rate |")
         lines.append("|------------|-----|--------|------------|")
@@ -447,7 +439,7 @@ def format_section_detail(label, m):
         lines.append("")
 
     # -- PR size distribution --
-    lines.append(f"### {label}: PR Size Distribution")
+    lines.append("### PR Size Distribution")
     lines.append("")
     lines.append("| Size | Count |")
     lines.append("|------|-------|")
@@ -459,7 +451,7 @@ def format_section_detail(label, m):
 
     # -- Monthly trend --
     if m["monthly_trend"]:
-        lines.append(f"### {label}: Monthly Trend")
+        lines.append("### Monthly Trend")
         lines.append("")
         lines.append("| Month | Total | Merged | Closed | Open | Merge Rate |")
         lines.append("|-------|-------|--------|--------|------|------------|")
@@ -473,7 +465,7 @@ def format_section_detail(label, m):
         lines.append("")
 
     # -- Per-ticket breakdown --
-    lines.append(f"### {label}: Per-Ticket Breakdown")
+    lines.append("### Per-Ticket Breakdown")
     lines.append("")
     lines.append("| Ticket | PRs | Merged | Closed | Open | CI Pass | Cost | Resolved |")
     lines.append("|--------|-----|--------|--------|------|---------|------|----------|")
@@ -489,37 +481,34 @@ def format_section_detail(label, m):
     return lines
 
 
-def format_report(legacy_metrics, redesigned_metrics, excluded_count, filtered_count):
-    """Render the full before/after comparison report."""
+def format_report(metrics, excluded_count, filtered_count):
+    """Render the metrics report."""
     lines = []
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines.append("# AI Bot Adoption Metrics")
     lines.append("")
-    lines.append(f"*Generated: {now}*")
-    lines.append(f"*Repos: {', '.join(TARGET_REPOS)}*")
-    lines.append(f"*Cutoff date: {CUTOFF_DATE} (legacy before, redesigned from)*")
+    meta = [
+        f"*Generated: {now}*",
+        f"*Repos: {', '.join(TARGET_REPOS)}*",
+        f"*Data collected since: {START_DATE}*",
+    ]
     if JIRA_PROJECTS:
-        lines.append(f"*Jira projects: {', '.join(JIRA_PROJECTS)}*")
+        meta.append(f"*Jira projects: {', '.join(JIRA_PROJECTS)}*")
     if excluded_count:
-        lines.append(
+        meta.append(
             f"*Excluded {excluded_count} PRs from test tickets: "
             f"{', '.join(EXCLUDED_TICKETS)}*"
         )
     if filtered_count:
-        lines.append(
+        meta.append(
             f"*Filtered {filtered_count} PRs not matching project filter*"
         )
+    lines.append("  \n".join(meta))
     lines.append("")
 
-    # -- Side-by-side comparison --
-    lines.extend(format_comparison_table(legacy_metrics, redesigned_metrics))
-
-    # -- Detail sections (redesigned first) --
-    if redesigned_metrics:
-        lines.extend(format_section_detail("Redesigned Bot", redesigned_metrics))
-    if legacy_metrics:
-        lines.extend(format_section_detail("Legacy Bot", legacy_metrics))
+    lines.extend(format_summary_table(metrics))
+    lines.extend(format_detail_sections(metrics))
 
     return "\n".join(lines)
 
@@ -544,35 +533,32 @@ def main():
         sys.exit(0)
     print(f"Found {len(prs)} total bot PRs", file=sys.stderr)
 
-    legacy_prs, redesigned_prs, excluded_count, filtered_count = filter_and_split(prs)
+    filtered_prs, excluded_count, filtered_count = filter_prs(prs)
     print(
-        f"Legacy: {len(legacy_prs)}, Redesigned: {len(redesigned_prs)}, "
+        f"Included: {len(filtered_prs)}, "
         f"Excluded: {excluded_count}, Filtered: {filtered_count}",
         file=sys.stderr,
     )
 
-    if not legacy_prs and not redesigned_prs:
+    if not filtered_prs:
         print(
             f"No PRs remaining after filtering "
             f"({excluded_count} excluded, {filtered_count} filtered)."
         )
         sys.exit(0)
 
-    # Fetch CI status for all non-excluded PRs
-    all_filtered = legacy_prs + redesigned_prs
     print(
-        f"Fetching CI status for {len(all_filtered)} PRs...",
+        f"Fetching CI status for {len(filtered_prs)} PRs...",
         file=sys.stderr,
     )
-    ci_status = fetch_ci_status(all_filtered)
+    ci_status = fetch_ci_status(filtered_prs)
 
-    # Fetch cost data from PR comments
     print(
-        f"Fetching AI cost data for {len(all_filtered)} PRs...",
+        f"Fetching AI cost data for {len(filtered_prs)} PRs...",
         file=sys.stderr,
     )
     pr_costs = {}
-    for pr in all_filtered:
+    for pr in filtered_prs:
         repo = pr["_repo"]
         num = pr["number"]
         cost = fetch_pr_cost(repo, num)
@@ -585,31 +571,25 @@ def main():
             file=sys.stderr,
         )
 
-    legacy_metrics = compute_metrics(legacy_prs, ci_status, pr_costs)
-    redesigned_metrics = compute_metrics(redesigned_prs, ci_status, pr_costs)
+    metrics = compute_metrics(filtered_prs, ci_status, pr_costs)
 
-    report = format_report(
-        legacy_metrics, redesigned_metrics, excluded_count, filtered_count
-    )
+    report = format_report(metrics, excluded_count, filtered_count)
 
-    # Write to GitHub Actions job summary if available
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a") as f:
             f.write(report)
-        total = len(legacy_prs) + len(redesigned_prs)
-        print(f"Report written to job summary ({total} PRs analyzed)")
+        print(f"Report written to job summary ({len(filtered_prs)} PRs analyzed)")
     else:
         print(report)
 
-    # Export redesigned bot metrics as step outputs (primary interest)
-    if redesigned_metrics:
-        write_output("total_prs", redesigned_metrics["total_prs"])
-        write_output("merge_rate", f"{redesigned_metrics['merge_rate']:.1f}")
-        write_output("resolution_rate", f"{redesigned_metrics['resolution_rate']:.1f}")
-        write_output("unique_tickets", redesigned_metrics["unique_tickets"])
-        write_output("resolved_tickets", redesigned_metrics["resolved_tickets"])
-        write_output("total_cost", f"{redesigned_metrics['total_cost']:.2f}")
+    if metrics:
+        write_output("total_prs", metrics["total_prs"])
+        write_output("merge_rate", f"{metrics['merge_rate']:.1f}")
+        write_output("resolution_rate", f"{metrics['resolution_rate']:.1f}")
+        write_output("unique_tickets", metrics["unique_tickets"])
+        write_output("resolved_tickets", metrics["resolved_tickets"])
+        write_output("total_cost", f"{metrics['total_cost']:.2f}")
     else:
         write_output("total_prs", 0)
         write_output("merge_rate", "0.0")

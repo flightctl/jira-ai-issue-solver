@@ -9,8 +9,8 @@ on:
         description: 'Comma-separated Jira project prefixes to include (empty = all)'
         required: false
         default: ''
-      cutoff_date:
-        description: 'YYYY-MM-DD boundary between legacy and redesigned bot'
+      start_date:
+        description: 'YYYY-MM-DD start date for data collection (PRs before this are excluded)'
         required: false
         default: '2026-03-23'
       excluded_tickets:
@@ -35,5 +35,5 @@ jobs:
           TARGET_REPOS: 'flightctl/flightctl'
           JIRA_PROJECTS: ${{ inputs.jira_projects || '' }}
           EXCLUDED_TICKETS: ${{ inputs.excluded_tickets || 'EDM-2747' }}
-          CUTOFF_DATE: ${{ inputs.cutoff_date || '2026-03-23' }}
+          START_DATE: ${{ inputs.start_date || '2026-03-23' }}
         run: python3 .github/scripts/bot-metrics.py
