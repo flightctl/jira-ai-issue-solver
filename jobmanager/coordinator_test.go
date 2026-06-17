@@ -96,6 +96,45 @@ func TestSubmit_CreatesJobWithCorrectState(t *testing.T) {
 	}
 }
 
+func TestSubmit_CleanRetryPropagated(t *testing.T) {
+	coord := mustCoordinator(t, jobmanager.Config{
+		MaxConcurrent: 1,
+		MaxRetries:    -1,
+	}, blockForever)
+	defer coord.Shutdown()
+
+	job, err := coord.Submit(jobmanager.Event{
+		Type:       jobmanager.JobTypeNewTicket,
+		TicketKey:  "PROJ-1",
+		CleanRetry: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !job.CleanRetry {
+		t.Error("expected CleanRetry to be true on job")
+	}
+}
+
+func TestSubmit_CleanRetryDefaultFalse(t *testing.T) {
+	coord := mustCoordinator(t, jobmanager.Config{
+		MaxConcurrent: 1,
+		MaxRetries:    -1,
+	}, blockForever)
+	defer coord.Shutdown()
+
+	job, err := coord.Submit(jobmanager.Event{
+		Type:      jobmanager.JobTypeNewTicket,
+		TicketKey: "PROJ-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if job.CleanRetry {
+		t.Error("expected CleanRetry to be false by default")
+	}
+}
+
 func TestSubmit_RejectsEmptyTicketKey(t *testing.T) {
 	coord := mustCoordinator(t, jobmanager.Config{
 		MaxConcurrent: 1,

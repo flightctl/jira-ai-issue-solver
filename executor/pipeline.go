@@ -128,6 +128,11 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		return result, fmt.Errorf("resolve project: %w", err)
 	}
 
+	// --- Clean retry: delete stale branches and workspace ---
+	if job.CleanRetry {
+		p.cleanRetryState(logger, job.TicketKey, settings)
+	}
+
 	// --- Step 3: Transition to in-progress ---
 	if err := p.tracker.TransitionStatus(job.TicketKey, settings.InProgressStatus); err != nil {
 		return result, fmt.Errorf("transition to in-progress: %w", err)
@@ -1180,6 +1185,41 @@ func (p *Pipeline) prepareBranchForRepo(
 		return fmt.Errorf("recreate branch in %s: %w", repo.Name, err)
 	}
 	return nil
+}
+
+// cleanRetryState deletes remote branches and the local workspace to
+// ensure a clean slate for a retry. Errors are logged but not
+// propagated — cleanup is best-effort so the retry proceeds even if
+// partial cleanup fails.
+func (p *Pipeline) cleanRetryState(
+	logger *zap.Logger,
+	ticketKey string,
+	settings *models.ProjectSettings,
+) {
+	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, ticketKey)
+
+	for _, repo := range settings.Repos {
+		owner := settings.CommitOwnerFor(repo)
+		if err := p.git.DeleteRemoteBranch(owner, repo.Repo, branchName); err != nil {
+			logger.Warn("Clean retry: failed to delete remote branch",
+				zap.String("repo", owner+"/"+repo.Repo),
+				zap.String("branch", branchName),
+				zap.Error(err))
+		} else {
+			logger.Info("Clean retry: deleted remote branch",
+				zap.String("repo", owner+"/"+repo.Repo),
+				zap.String("branch", branchName))
+		}
+	}
+
+	if err := p.workspaces.Cleanup(ticketKey); err != nil {
+		logger.Warn("Clean retry: failed to delete workspace",
+			zap.String("ticket", ticketKey),
+			zap.Error(err))
+	} else {
+		logger.Info("Clean retry: deleted workspace",
+			zap.String("ticket", ticketKey))
+	}
 }
 
 // cloneImportEntries clones the given imports into the workspace,

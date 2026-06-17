@@ -2523,6 +2523,36 @@ func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool
 	return true, nil
 }
 
+// DeleteRemoteBranch deletes a branch from the remote repository via
+// the GitHub Refs API. Returns nil if the branch does not exist
+// (idempotent). Deleting a branch auto-closes any PR whose head
+// matches the branch.
+func (s *GitHubServiceImpl) DeleteRemoteBranch(owner, repo, branch string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, err = client.Git.DeleteRef(ctx, owner, repo, "refs/heads/"+branch)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return fmt.Errorf("delete ref refs/heads/%s: %w", branch, err)
+	}
+
+	return nil
+}
+
 // SyncFork syncs a fork's branch with its upstream parent using the
 // GitHub merge-upstream API. This ensures the fork's default branch
 // is current before creating feature branches, preventing PRs that

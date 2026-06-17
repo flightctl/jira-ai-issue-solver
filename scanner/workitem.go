@@ -230,8 +230,9 @@ func (s *WorkItemScanner) handleRetryLabel(item models.WorkItem) bool {
 	}
 
 	event := jobmanager.Event{
-		Type:      jobmanager.JobTypeNewTicket,
-		TicketKey: item.Key,
+		Type:       jobmanager.JobTypeNewTicket,
+		TicketKey:  item.Key,
+		CleanRetry: true,
 	}
 	if _, err := s.submitter.Submit(event); err != nil {
 		s.logger.Error("Failed to resubmit after retry reset",

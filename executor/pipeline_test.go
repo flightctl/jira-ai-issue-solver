@@ -3438,6 +3438,90 @@ func TestMultiRepoNewTicket_ForwardsRootRepoURL(t *testing.T) {
 	}
 }
 
+// --- Clean retry tests ---
+
+func TestExecuteNewTicket_CleanRetry_DeletesBranchAndWorkspace(t *testing.T) {
+	d := newTestDeps(t)
+
+	var deletedBranches []string
+	d.git.DeleteRemoteBranchFunc = func(owner, repo, branch string) error {
+		deletedBranches = append(deletedBranches, owner+"/"+repo+":"+branch)
+		return nil
+	}
+
+	var cleanedTicket string
+	d.workspaces.CleanupFunc = func(ticketKey string) error {
+		cleanedTicket = ticketKey
+		return nil
+	}
+
+	p := d.pipeline(t)
+	job := newTicketJob("PROJ-1")
+	job.CleanRetry = true
+	_, err := p.Execute(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(deletedBranches) != 1 {
+		t.Fatalf("deletedBranches = %v, want 1 entry", deletedBranches)
+	}
+	if want := "org/repo:ai-bot/PROJ-1"; deletedBranches[0] != want {
+		t.Errorf("deleted branch = %q, want %q", deletedBranches[0], want)
+	}
+	if cleanedTicket != "PROJ-1" {
+		t.Errorf("cleaned ticket = %q, want PROJ-1", cleanedTicket)
+	}
+}
+
+func TestExecuteNewTicket_CleanRetry_CleanupErrorsNonFatal(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.git.DeleteRemoteBranchFunc = func(owner, repo, branch string) error {
+		return errors.New("branch delete failed")
+	}
+	d.workspaces.CleanupFunc = func(ticketKey string) error {
+		return errors.New("cleanup failed")
+	}
+
+	p := d.pipeline(t)
+	job := newTicketJob("PROJ-1")
+	job.CleanRetry = true
+	_, err := p.Execute(context.Background(), job)
+	if err != nil {
+		t.Fatalf("pipeline should succeed despite cleanup errors: %v", err)
+	}
+}
+
+func TestExecuteNewTicket_NoCleanRetry_SkipsCleanup(t *testing.T) {
+	d := newTestDeps(t)
+
+	branchDeleteCalled := false
+	d.git.DeleteRemoteBranchFunc = func(owner, repo, branch string) error {
+		branchDeleteCalled = true
+		return nil
+	}
+
+	cleanupCalled := false
+	d.workspaces.CleanupFunc = func(ticketKey string) error {
+		cleanupCalled = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if branchDeleteCalled {
+		t.Error("DeleteRemoteBranch should not be called for normal job")
+	}
+	if cleanupCalled {
+		t.Error("Cleanup should not be called for normal job")
+	}
+}
+
 func equalSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
