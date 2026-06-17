@@ -724,11 +724,12 @@ Execute the following workflow phases in order:
 3. Read and execute .ai-workflows/bugfix/skills/test.md
 4. Read and execute .ai-workflows/bugfix/skills/review.md
 
-Write a PR title and description to .ai-bot/pr.md.
+Write a PR title and description to .ai-session/pr.md.
 ```
 
-For the complete reference on all `.ai-bot/` files, field formats, container
-configuration resolution, and the full file contract between bot and AI, see
+For the complete reference on all `.ai-bot/` and `.ai-session/` files, field
+formats, container configuration resolution, and the full file contract
+between bot and AI, see
 [repo-configuration.md](repo-configuration.md).
 
 ## Next Steps

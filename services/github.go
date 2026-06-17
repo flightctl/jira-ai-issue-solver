@@ -287,7 +287,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 			return fmt.Errorf("failed to clone repository: %w, stderr: %s", err, cmd.getStderr())
 		}
 
-		s.logger.Debug("git clone", fn, zap.String("url", repoURL), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+		s.logger.Debug("git clone", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 	}
 
 	// Configure git user for GitHub App
@@ -304,7 +304,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 		return fmt.Errorf("failed to configure git user email: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git config user.email", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git config user.email", fn, zap.String("stderr", cmd.getStderr()))
 
 	// Configure SSH signing if a key is specified
 	exists := false
@@ -316,7 +316,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 			return fmt.Errorf("failed to check if SSH key file exists: %w", err)
 		}
 
-		s.logger.Debug("SSH key file exists", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath), zap.Bool("exists", exists))
+		s.logger.Debug("SSH key file exists", fn, zap.Bool("exists", exists))
 	}
 
 	if exists {
@@ -343,7 +343,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 
 		s.logger.Debug("git config commit.gpgsign", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-		s.logger.Info("Configured SSH signing for repository", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
+		s.logger.Debug("Configured SSH signing for repository", fn)
 	} else {
 		s.logger.Info("SSH signing not configured for repository")
 	}
@@ -921,12 +921,18 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 // the path is a directory or a bot artifact).
 var errSkipEntry = errors.New("skip entry")
 
-// builtinExcludes lists directories that are always excluded from
-// commits. Import-declared excludes are merged at call time.
-var builtinExcludes = []string{".ai-bot/"}
+// builtinExcludes lists path prefixes that are always excluded from
+// commits. Entries without a trailing slash are prefix matches — e.g.,
+// ".ai-bot" excludes .ai-bot/, .ai-bot.preserve/, and any other path
+// starting with ".ai-bot". Entries with a trailing slash match only
+// that exact directory. Import-declared excludes are merged at call
+// time.
+var builtinExcludes = []string{".ai-bot", ".ai-session"}
 
-// mergeExcludes combines builtin excludes with import-declared excludes,
-// normalizing each entry to have a trailing slash for prefix matching.
+// mergeExcludes combines builtin excludes with import-declared excludes.
+// Builtin entries are kept as-is (no trailing slash = broad prefix match).
+// Import-declared entries are normalized to have a trailing slash for
+// exact directory matching.
 func mergeExcludes(importExcludes []string) []string {
 	all := make([]string, len(builtinExcludes), len(builtinExcludes)+len(importExcludes))
 	copy(all, builtinExcludes)

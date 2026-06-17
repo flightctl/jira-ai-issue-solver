@@ -122,8 +122,8 @@ type GitService interface {
 	// identifies where the parent commit originated so the tree
 	// can be resolved there when the fork API cannot find it.
 	// importExcludes lists additional directories (from import
-	// config) to exclude from commits beyond the built-in .ai-bot/
-	// exclusion.
+	// config) to exclude from commits beyond the built-in .ai-bot
+	// and .ai-session exclusions.
 	CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string,
 		coAuthor *models.Author, importExcludes []string) (string, error)
 

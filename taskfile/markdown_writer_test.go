@@ -365,10 +365,10 @@ func TestWriteNewTicketTask_CreatesDirectory(t *testing.T) {
 		Summary: "Test dir creation",
 	}
 
-	// Verify .ai-bot/ doesn't exist yet.
-	aiBotDir := filepath.Join(dir, ".ai-bot")
-	if _, err := os.Stat(aiBotDir); err == nil {
-		t.Fatal(".ai-bot directory should not exist before write")
+	// Verify .ai-session/ doesn't exist yet.
+	sessionDir := filepath.Join(dir, ".ai-session")
+	if _, err := os.Stat(sessionDir); err == nil {
+		t.Fatal(".ai-session directory should not exist before write")
 	}
 
 	if err := writer.WriteNewTicketTask(workItem, dir, "", ""); err != nil {
@@ -376,8 +376,8 @@ func TestWriteNewTicketTask_CreatesDirectory(t *testing.T) {
 	}
 
 	// Verify directory was created and file exists.
-	if _, err := os.Stat(aiBotDir); err != nil {
-		t.Fatalf(".ai-bot directory should exist after write: %v", err)
+	if _, err := os.Stat(sessionDir); err != nil {
+		t.Fatalf(".ai-session directory should exist after write: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, taskfile.TaskFilePath)); err != nil {
 		t.Fatalf("task file should exist: %v", err)

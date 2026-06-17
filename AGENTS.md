@@ -70,7 +70,7 @@ Key configuration features:
    - Generates a task file describing the work (per-repo instructions sections for multi-repo)
    - Resolves container image (workspace-level for multi-repo, profile for single-repo)
    - Starts a container, runs import install commands (if configured), then runs the AI provider
-   - Reads AI-generated PR description (`.ai-bot/pr.md`) if present; falls back to Jira-derived content
+   - Reads AI-generated PR description (`.ai-session/pr.md`) if present; falls back to Jira-derived content
    - For single-repo: commits changes and creates one PR
    - For multi-repo: fans out commit + PR creation per repo with changes (N repos → up to N PRs)
    - Transitions the ticket through configured statuses and posts PR link(s)

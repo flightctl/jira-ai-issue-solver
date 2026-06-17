@@ -23,34 +23,35 @@ The bot checks for the following repo-level files:
 ### Runtime Files (Bot ↔ AI Contract)
 
 The bot writes input files for the AI and reads output files after the
-session. All `.ai-bot/` runtime files are automatically excluded from
-commits at the GitHub API level.
+session. Runtime files live under `.ai-session/` (separate from the
+repo-owned `.ai-bot/` config directory) and are automatically excluded
+from commits at the GitHub API level.
 
 **Bot → AI (inputs):**
 
 | File | Written by | Purpose |
 |------|-----------|---------|
-| `.ai-bot/task.md` | Bot | Session-specific instructions (what to do) |
-| `.ai-bot/issue.md` | Bot | Original ticket context (key, summary, description) |
-| `.ai-bot/attachments/` | Bot | Downloaded Jira attachments |
+| `.ai-session/task.md` | Bot | Session-specific instructions (what to do) |
+| `.ai-session/issue.md` | Bot | Original ticket context (key, summary, description) |
+| `.ai-session/attachments/` | Bot | Downloaded Jira attachments |
 
 **AI → Bot (outputs):**
 
 | File | Written by | Purpose | Session type |
 |------|-----------|---------|--------------|
-| `.ai-bot/pr.md` | AI | PR title and description (see [format](#pr-description-format)) | Both |
-| `.ai-bot/comment-responses.json` | AI | Per-comment response summaries (see format below) | Feedback only |
-| `.ai-bot/session-output.json` | Wrapper script | Session metadata (cost, exit code, validation status) | Both |
+| `.ai-session/pr.md` | AI | PR title and description (see [format](#pr-description-format)) | Both |
+| `.ai-session/comment-responses.json` | AI | Per-comment response summaries (see format below) | Feedback only |
+| `.ai-session/session-output.json` | Wrapper script | Session metadata (cost, exit code, validation status) | Both |
 
 **AI → AI (cross-session context):**
 
 | File | Written by | Purpose |
 |------|-----------|---------|
-| `.ai-bot/session-context.md` | AI workflow | Decision log — initial session context plus feedback round summaries |
-| `.ai-bot/diagnosis.md` | AI workflow | Root cause analysis |
-| `.ai-bot/implementation-notes.md` | AI workflow | File changes, design rationale, test strategy |
-| `.ai-bot/test-verification.md` | AI workflow | Test results summary |
-| `.ai-bot/review.md` | AI workflow | Self-review findings |
+| `.ai-session/session-context.md` | AI workflow | Decision log — initial session context plus feedback round summaries |
+| `.ai-session/diagnosis.md` | AI workflow | Root cause analysis |
+| `.ai-session/implementation-notes.md` | AI workflow | File changes, design rationale, test strategy |
+| `.ai-session/test-verification.md` | AI workflow | Test results summary |
+| `.ai-session/review.md` | AI workflow | Self-review findings |
 
 Cross-session files are written by the AI workflow (not the bot) and
 persist across sessions. The feedback workflow reads these to recover
@@ -75,7 +76,7 @@ Keep responses concise (1-2 sentences).
 
 #### PR Description Format
 
-The bot reads `.ai-bot/pr.md` after AI sessions to extract a PR title
+The bot reads `.ai-session/pr.md` after AI sessions to extract a PR title
 and body. The parser supports three formats (tried in order):
 
 1. **Labeled title** (scanned in first 10 lines):
@@ -311,11 +312,11 @@ Execute the following bugfix workflow phases in order.
 Each phase is defined in the corresponding skill file.
 
 1. Read and execute .ai-workflows/bugfix/skills/assess.md
-   The bug report is in .ai-bot/task.md. Do not ask clarifying
+   The bug report is in .ai-session/task.md. Do not ask clarifying
    questions — make reasonable assumptions where needed.
 
 2. Read and execute .ai-workflows/bugfix/skills/diagnose.md
-   Write your root cause analysis to .ai-bot/diagnosis.md.
+   Write your root cause analysis to .ai-session/diagnosis.md.
 
 3. Read and execute .ai-workflows/bugfix/skills/fix.md
    Implement the minimal fix. Do not run tests yet.
@@ -328,9 +329,9 @@ Each phase is defined in the corresponding skill file.
    Self-review your changes. If issues are found, correct them,
    retest, and re-review (up to 4 iterations).
 
-6. Write a PR title and description to .ai-bot/pr.md.
+6. Write a PR title and description to .ai-session/pr.md.
    Use the ## Title heading format (see PR Description Format below).
-   Include a Root Cause section from .ai-bot/diagnosis.md.
+   Include a Root Cause section from .ai-session/diagnosis.md.
 ```
 
 **Key characteristics:**
@@ -454,7 +455,7 @@ config, etc.).
 | You want shared AI skills/guidelines from another repo | `imports` in `.ai-bot/config.yaml` |
 | You want provider-agnostic coding standards | `.ai-bot/instructions.md` |
 | You want structured feedback handling with session continuity | `.ai-bot/feedback-workflow.md` + `imports` in `.ai-bot/config.yaml` |
-| You want the AI to generate PR titles/descriptions | Reference `.ai-bot/pr.md` in `new-ticket-workflow.md` |
+| You want the AI to generate PR titles/descriptions | Reference `.ai-session/pr.md` in `new-ticket-workflow.md` |
 
 ## Complete Example
 
@@ -511,11 +512,11 @@ Execute the following bugfix workflow phases in order.
 Each phase is defined in the corresponding skill file.
 
 1. Read and execute .ai-workflows/bugfix/skills/assess.md
-   The bug report is in .ai-bot/task.md. Do not ask clarifying
+   The bug report is in .ai-session/task.md. Do not ask clarifying
    questions — make reasonable assumptions where needed.
 
 2. Read and execute .ai-workflows/bugfix/skills/diagnose.md
-   Write your root cause analysis to .ai-bot/diagnosis.md.
+   Write your root cause analysis to .ai-session/diagnosis.md.
 
 3. Read and execute .ai-workflows/bugfix/skills/fix.md
    Implement the minimal fix. Do not run tests yet.
@@ -528,9 +529,9 @@ Each phase is defined in the corresponding skill file.
    Self-review your changes. If issues are found, correct them,
    retest, and re-review (up to 4 iterations).
 
-6. Write a PR title and description to .ai-bot/pr.md.
+6. Write a PR title and description to .ai-session/pr.md.
    Use the ## Title heading format (see PR Description Format below).
-   Include a Root Cause section from .ai-bot/diagnosis.md.
+   Include a Root Cause section from .ai-session/diagnosis.md.
 ```
 
 ### What the AI sees

@@ -512,7 +512,7 @@ func writeFile(dir, relPath, content string) error {
 	return nil
 }
 
-// writeTaskFile writes content to <dir>/.ai-bot/task.md.
+// writeTaskFile writes content to <dir>/.ai-session/task.md.
 func writeTaskFile(dir, content string) error {
 	return writeFile(dir, TaskFilePath, content)
 }
