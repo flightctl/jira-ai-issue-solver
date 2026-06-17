@@ -118,6 +118,20 @@ type RepoLocator interface {
 	ForkOwner(workItem models.WorkItem) string
 }
 
+// MergeabilityChecker retrieves the merge status of a pull request.
+// Used by [MergeScanner] to detect PRs that cannot be merged due to
+// conflicts with the target branch.
+type MergeabilityChecker interface {
+	GetPRMergeability(owner, repo string, number int) (*models.PRMergeState, error)
+}
+
+// PRLabeler manages labels on pull requests. Used by [MergeScanner]
+// to mark idle PRs and check whether the idle label is present.
+type PRLabeler interface {
+	AddPRLabel(owner, repo string, number int, label string) error
+	HasPRLabel(owner, repo string, number int, label string) (bool, error)
+}
+
 // CIChecker checks the CI status of a commit.
 type CIChecker interface {
 	ListCheckRunsForRef(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)

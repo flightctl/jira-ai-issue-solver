@@ -101,6 +101,8 @@ func (p *Pipeline) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager
 		return p.executeNewTicket(ctx, job)
 	case jobmanager.JobTypeFeedback:
 		return p.executeFeedback(ctx, job)
+	case jobmanager.JobTypeMerge:
+		return p.executeMerge(ctx, job)
 	default:
 		return jobmanager.JobResult{}, fmt.Errorf("unknown job type: %s", job.Type)
 	}
