@@ -208,51 +208,64 @@ func TestEnrichFromCLIOutput_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestParseClaudeCost_SingleObject(t *testing.T) {
-	cost, ok := parseClaudeCost([]byte(`{"total_cost_usd": 3.14}`))
-	if !ok || cost != 3.14 {
-		t.Errorf("parseClaudeCost single object = (%v, %v), want (3.14, true)", cost, ok)
+func TestParseClaudeCost(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantCost float64
+		wantOK   bool
+	}{
+		{
+			name:     "single object",
+			input:    `{"total_cost_usd": 3.14}`,
+			wantCost: 3.14,
+			wantOK:   true,
+		},
+		{
+			name: "array with cost on last element",
+			input: `[
+				{"type": "system"},
+				{"type": "result", "total_cost_usd": 6.50}
+			]`,
+			wantCost: 6.50,
+			wantOK:   true,
+		},
+		{
+			name: "array with cost not on last element",
+			input: `[
+				{"type": "result", "total_cost_usd": 4.25},
+				{"type": "summary"}
+			]`,
+			wantCost: 4.25,
+			wantOK:   true,
+		},
+		{
+			name:     "empty array",
+			input:    `[]`,
+			wantCost: 0,
+			wantOK:   false,
+		},
+		{
+			name:     "zero cost",
+			input:    `{"total_cost_usd": 0}`,
+			wantCost: 0,
+			wantOK:   false,
+		},
+		{
+			name:     "invalid JSON",
+			input:    `not json`,
+			wantCost: 0,
+			wantOK:   false,
+		},
 	}
-}
 
-func TestParseClaudeCost_Array(t *testing.T) {
-	cost, ok := parseClaudeCost([]byte(`[
-		{"type": "system"},
-		{"type": "result", "total_cost_usd": 6.50}
-	]`))
-	if !ok || cost != 6.50 {
-		t.Errorf("parseClaudeCost array = (%v, %v), want (6.50, true)", cost, ok)
-	}
-}
-
-func TestParseClaudeCost_ArrayCostNotOnLastElement(t *testing.T) {
-	cost, ok := parseClaudeCost([]byte(`[
-		{"type": "result", "total_cost_usd": 4.25},
-		{"type": "summary"}
-	]`))
-	if !ok || cost != 4.25 {
-		t.Errorf("parseClaudeCost array cost on non-last = (%v, %v), want (4.25, true)", cost, ok)
-	}
-}
-
-func TestParseClaudeCost_EmptyArray(t *testing.T) {
-	cost, ok := parseClaudeCost([]byte(`[]`))
-	if ok || cost != 0 {
-		t.Errorf("parseClaudeCost empty array = (%v, %v), want (0, false)", cost, ok)
-	}
-}
-
-func TestParseClaudeCost_ZeroCost(t *testing.T) {
-	cost, ok := parseClaudeCost([]byte(`{"total_cost_usd": 0}`))
-	if ok {
-		t.Errorf("parseClaudeCost zero cost = (%v, %v), want (0, false)", cost, ok)
-	}
-}
-
-func TestParseClaudeCost_InvalidJSON(t *testing.T) {
-	cost, ok := parseClaudeCost([]byte(`not json`))
-	if ok {
-		t.Errorf("parseClaudeCost invalid json = (%v, %v), want (0, false)", cost, ok)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost, ok := parseClaudeCost([]byte(tt.input))
+			if ok != tt.wantOK || cost != tt.wantCost {
+				t.Errorf("parseClaudeCost() = (%v, %v), want (%v, %v)", cost, ok, tt.wantCost, tt.wantOK)
+			}
+		})
 	}
 }
 
