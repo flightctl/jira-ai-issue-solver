@@ -54,15 +54,18 @@ type FeedbackScannerConfig struct {
 // GitHub for actionable PR comments. Applies bot-loop prevention via
 // [commentfilter.HasNewActionable] before emitting events.
 type FeedbackScanner struct {
-	searcher      IssueSearcher
-	submitter     JobSubmitter
-	prs           PRFetcher
-	repos         RepoLocator
-	ci            CIChecker
-	labels        LabelManager
-	labelResolver FailureLabelResolver
-	cfg           FeedbackScannerConfig
-	logger        *zap.Logger
+	searcher               IssueSearcher
+	submitter              JobSubmitter
+	prs                    PRFetcher
+	repos                  RepoLocator
+	ci                     CIChecker
+	labels                 LabelManager
+	labelResolver          FailureLabelResolver
+	lifecycleLabelResolver LifecycleLabelResolver
+	mergedStatusResolver   MergedStatusResolver
+	statusTransitioner     StatusTransitioner
+	cfg                    FeedbackScannerConfig
+	logger                 *zap.Logger
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -115,6 +118,9 @@ func NewFeedbackScanner(
 	for _, opt := range opts {
 		opt(fs)
 	}
+	if fs.lifecycleLabelResolver != nil && fs.labels == nil {
+		logger.Warn("Lifecycle label resolver configured without a LabelManager — lifecycle labeling will be disabled")
+	}
 	return fs, nil
 }
 
@@ -130,6 +136,26 @@ func WithLabelManager(lm LabelManager, lr FailureLabelResolver) FeedbackScannerO
 		if lm != nil && lr != nil {
 			fs.labels = lm
 			fs.labelResolver = lr
+		}
+	}
+}
+
+// WithLifecycleLabelManager enables lifecycle label management and
+// merged-status transitions on the scanner. Requires [WithLabelManager]
+// to also be configured; lifecycle operations use the same [LabelManager]
+// for add/remove calls. If lr is nil, lifecycle labeling is silently
+// disabled. mr and st are optional — nil disables merged-status
+// transitions without affecting label management.
+func WithLifecycleLabelManager(lr LifecycleLabelResolver, mr MergedStatusResolver, st StatusTransitioner) FeedbackScannerOption {
+	return func(fs *FeedbackScanner) {
+		if lr != nil {
+			fs.lifecycleLabelResolver = lr
+		}
+		if mr != nil {
+			fs.mergedStatusResolver = mr
+		}
+		if st != nil {
+			fs.statusTransitioner = st
 		}
 	}
 }
@@ -225,6 +251,7 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 
 	obs := s.observeRepos(logger, repos, head)
 	s.updateFailureLabels(logger, item, repos, head, obs)
+	s.checkAndApplyMergedLabel(logger, item, repos, head)
 
 	if !obs.actionable {
 		return false
@@ -406,6 +433,93 @@ func (s *FeedbackScanner) applyFailureLabel(
 	if target != "" {
 		if err := s.labels.AddLabel(ticketKey, target); err != nil {
 			logger.Warn("Failed to add failure label",
+				zap.String("label", target), zap.Error(err))
+		}
+	}
+}
+
+// checkAndApplyMergedLabel checks whether all repos' PRs are merged
+// and, if so, applies the "merged" lifecycle label and optionally
+// transitions the ticket to the configured merged status. The "review"
+// lifecycle label is handled by the executor at PR creation time.
+// No-op when lifecycle labeling is not configured.
+func (s *FeedbackScanner) checkAndApplyMergedLabel(
+	logger *zap.Logger,
+	item models.WorkItem,
+	repos []models.RepoCoord,
+	head string,
+) {
+	if s.labels == nil || s.lifecycleLabelResolver == nil {
+		return
+	}
+	ll := s.lifecycleLabelResolver.ResolveLifecycleLabels(item)
+	if ll == (models.LifecycleLabels{}) {
+		return
+	}
+
+	if !s.detectMerge(logger, repos, head) {
+		return
+	}
+
+	s.applyLifecycleLabel(logger, item.Key, ll, ll.Merged)
+
+	if s.mergedStatusResolver == nil || s.statusTransitioner == nil {
+		return
+	}
+	mergedStatus := s.mergedStatusResolver.ResolveMergedStatus(item)
+	if mergedStatus != "" {
+		if err := s.statusTransitioner.TransitionStatus(item.Key, mergedStatus); err != nil {
+			logger.Warn("Failed to transition to merged status",
+				zap.String("status", mergedStatus), zap.Error(err))
+		}
+	}
+}
+
+// detectMerge checks whether all repos have a merged PR. Returns true
+// only when every repo has a merged PR — a ticket is not fully merged
+// until all its PRs land.
+func (s *FeedbackScanner) detectMerge(
+	logger *zap.Logger,
+	repos []models.RepoCoord,
+	head string,
+) bool {
+	for _, r := range repos {
+		pr, err := s.prs.GetMergedPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Debug("Error checking for merged PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
+			return false
+		}
+		if pr == nil {
+			return false
+		}
+	}
+	if len(repos) > 0 {
+		logger.Info("All PRs merged")
+	}
+	return len(repos) > 0
+}
+
+// applyLifecycleLabel sets one lifecycle label and removes the others.
+// Skips labels that are empty (not configured).
+func (s *FeedbackScanner) applyLifecycleLabel(
+	logger *zap.Logger,
+	ticketKey string,
+	ll models.LifecycleLabels,
+	target string,
+) {
+	for _, label := range ll.All() {
+		if label != "" && label != target {
+			if err := s.labels.RemoveLabel(ticketKey, label); err != nil {
+				logger.Debug("Failed to remove lifecycle label",
+					zap.String("label", label), zap.Error(err))
+			}
+		}
+	}
+	if target != "" {
+		if err := s.labels.AddLabel(ticketKey, target); err != nil {
+			logger.Warn("Failed to add lifecycle label",
 				zap.String("label", target), zap.Error(err))
 		}
 	}

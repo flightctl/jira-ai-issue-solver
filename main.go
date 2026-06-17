@@ -251,6 +251,7 @@ func main() {
 		},
 		logger,
 		scanner.WithLabelManager(issueTracker, resolver),
+		scanner.WithLifecycleLabelManager(resolver, resolver, issueTracker),
 	)
 	if err != nil {
 		logger.Fatal("Failed to create feedback scanner", zap.Error(err))

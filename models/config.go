@@ -221,6 +221,7 @@ type StatusTransitions struct {
 	Todo       string `yaml:"todo" mapstructure:"todo" default:"To Do"`
 	InProgress string `yaml:"in_progress" mapstructure:"in_progress" default:"In Progress"`
 	InReview   string `yaml:"in_review" mapstructure:"in_review" default:"In Review"`
+	Merged     string `yaml:"merged" mapstructure:"merged"`
 }
 
 // TicketTypeStatusTransitions maps ticket types to their specific status transitions
@@ -273,6 +274,9 @@ func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) er
 				if inReview, ok := transitionMap["in_review"].(string); ok {
 					transitions.InReview = inReview
 				}
+				if merged, ok := transitionMap["merged"].(string); ok {
+					transitions.Merged = merged
+				}
 				(*t)[ticketType] = transitions
 			}
 		}
@@ -294,6 +298,9 @@ func (t *TicketTypeStatusTransitions) UnmarshalMapstructure(data interface{}) er
 				}
 				if inReview, ok := transitionMap["in_review"].(string); ok {
 					transitions.InReview = inReview
+				}
+				if merged, ok := transitionMap["merged"].(string); ok {
+					transitions.Merged = merged
 				}
 				(*t)[ticketType] = transitions
 			}
@@ -336,6 +343,11 @@ type ProjectConfig struct {
 	// tickets in failure states. Empty strings disable the
 	// corresponding label.
 	FailureLabels FailureLabels `yaml:"failure_labels" mapstructure:"failure_labels"`
+
+	// LifecycleLabels configures optional Jira labels that track
+	// ticket progression through the autofix pipeline. Empty strings
+	// disable the corresponding label.
+	LifecycleLabels LifecycleLabels `yaml:"lifecycle_labels" mapstructure:"lifecycle_labels"`
 }
 
 // FailureLabels holds optional Jira label names applied to tickets in
@@ -359,6 +371,30 @@ type FailureLabels struct {
 // strings (disabled labels) are included; callers should skip them.
 func (fl FailureLabels) All() []string {
 	return []string{fl.CIFailing, fl.Rejected, fl.Blocked}
+}
+
+// LifecycleLabels holds optional Jira label names that track ticket
+// progression through the autofix pipeline. Labels are mutually
+// exclusive: setting one removes the others. Empty strings disable
+// the corresponding label.
+type LifecycleLabels struct {
+	// Queued is set externally (e.g., by a triage bot) to indicate
+	// the ticket is waiting for the autofix bot. This bot never
+	// sets it, but removes it when applying Review.
+	Queued string `yaml:"queued" mapstructure:"queued"`
+
+	// Review is applied when the bot creates a PR and the ticket
+	// moves to "in review" status.
+	Review string `yaml:"review" mapstructure:"review"`
+
+	// Merged is applied when all PRs for the ticket are merged.
+	Merged string `yaml:"merged" mapstructure:"merged"`
+}
+
+// All returns the configured label strings in a fixed order. Empty
+// strings (disabled labels) are included; callers should skip them.
+func (ll LifecycleLabels) All() []string {
+	return []string{ll.Queued, ll.Review, ll.Merged}
 }
 
 // ImportConfig declares an auxiliary repository to clone into the workspace.
