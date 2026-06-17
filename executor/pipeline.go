@@ -101,6 +101,8 @@ func (p *Pipeline) Execute(ctx context.Context, job *jobmanager.Job) (jobmanager
 		return p.executeNewTicket(ctx, job)
 	case jobmanager.JobTypeFeedback:
 		return p.executeFeedback(ctx, job)
+	case jobmanager.JobTypeMerge:
+		return p.executeMerge(ctx, job)
 	default:
 		return jobmanager.JobResult{}, fmt.Errorf("unknown job type: %s", job.Type)
 	}
@@ -535,7 +537,7 @@ func collectExcludes(imports []importEntry) []string {
 const maxAttachmentSize = 1 << 20 // 1 MiB
 
 // downloadAttachments fetches qualifying Jira attachments into the
-// workspace's .ai-bot/attachments/ directory and returns the list of
+// workspace's .ai-session/attachments/ directory and returns the list of
 // filenames that were written. Attachments exceeding maxAttachmentSize
 // are skipped with a log message; download failures are logged and
 // skipped (non-fatal).

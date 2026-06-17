@@ -25,7 +25,7 @@ type scriptParams struct {
 // wrapper script saves the raw JSON output from the AI CLI. The Go code
 // parses this to extract cost and token data — no jq required in the
 // container.
-const cliOutputPath = ".ai-bot/cli-output.json"
+const cliOutputPath = ".ai-session/cli-output.json"
 
 // buildExecCommand returns the command to pass to container Exec.
 // The command runs the AI CLI with --output-format json, saves the
@@ -45,7 +45,7 @@ func buildExecCommand(params scriptParams) []string {
 
 	script := fmt.Sprintf(`%s \
     > /workspace/%s \
-    2> >(tee /workspace/.ai-bot/session.log >&2)
+    2> >(tee /workspace/.ai-session/session.log >&2)
 AI_EXIT=${PIPESTATUS[0]}
 
 printf '{"exit_code": %%d}\n' "$AI_EXIT" > /workspace/%s
@@ -56,7 +56,7 @@ exit ${AI_EXIT}
 	return []string{"bash", "-c", script}
 }
 
-const taskPrompt = "Read /workspace/.ai-bot/task.md and complete the task described there."
+const taskPrompt = "Read /workspace/.ai-session/task.md and complete the task described there."
 
 func buildClaudeCommand(allowedTools, model string) string {
 	var parts []string

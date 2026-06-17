@@ -27,6 +27,8 @@ var (
 	_ scanner.MergedStatusResolver   = (*StubMergedStatusResolver)(nil)
 	_ scanner.StatusTransitioner     = (*StubStatusTransitioner)(nil)
 	_ scanner.RetryResetter          = (*StubRetryResetter)(nil)
+	_ scanner.MergeabilityChecker    = (*StubMergeabilityChecker)(nil)
+	_ scanner.PRLabeler              = (*StubPRLabeler)(nil)
 )
 
 // StubScanner is a test double for [scanner.Scanner].
@@ -280,4 +282,36 @@ func (s *StubStatusTransitioner) TransitionStatus(key, status string) error {
 		return s.TransitionStatusFunc(key, status)
 	}
 	return nil
+}
+
+// StubMergeabilityChecker is a test double for [scanner.MergeabilityChecker].
+type StubMergeabilityChecker struct {
+	GetPRMergeabilityFunc func(owner, repo string, number int) (*models.PRMergeState, error)
+}
+
+func (s *StubMergeabilityChecker) GetPRMergeability(owner, repo string, number int) (*models.PRMergeState, error) {
+	if s.GetPRMergeabilityFunc != nil {
+		return s.GetPRMergeabilityFunc(owner, repo, number)
+	}
+	return &models.PRMergeState{}, nil
+}
+
+// StubPRLabeler is a test double for [scanner.PRLabeler].
+type StubPRLabeler struct {
+	AddPRLabelFunc func(owner, repo string, number int, label string) error
+	HasPRLabelFunc func(owner, repo string, number int, label string) (bool, error)
+}
+
+func (s *StubPRLabeler) AddPRLabel(owner, repo string, number int, label string) error {
+	if s.AddPRLabelFunc != nil {
+		return s.AddPRLabelFunc(owner, repo, number, label)
+	}
+	return nil
+}
+
+func (s *StubPRLabeler) HasPRLabel(owner, repo string, number int, label string) (bool, error) {
+	if s.HasPRLabelFunc != nil {
+		return s.HasPRLabelFunc(owner, repo, number, label)
+	}
+	return false, nil
 }

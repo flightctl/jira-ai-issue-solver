@@ -35,6 +35,10 @@ const (
 
 	// JobTypeFeedback processes PR review feedback.
 	JobTypeFeedback JobType = "feedback"
+
+	// JobTypeMerge merges the target branch into a PR branch to
+	// resolve conflicts, optionally using AI for conflict resolution.
+	JobTypeMerge JobType = "merge"
 )
 
 // JobStatus represents the lifecycle state of a job.

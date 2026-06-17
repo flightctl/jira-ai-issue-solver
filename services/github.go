@@ -28,6 +28,10 @@ import (
 // are bot artifacts and there is nothing to commit.
 var ErrNoChanges = errors.New("no committable changes")
 
+// ErrMergeConflict is returned by MergeBase when git merge produces
+// conflicts. The working tree contains conflict markers for resolution.
+var ErrMergeConflict = errors.New("merge conflict")
+
 // fileExists returns true if the file exists, false if it does not exist,
 // and an error if the existence check failed for reasons other than the file not existing.
 func fileExists(path string) (bool, error) {
@@ -283,7 +287,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 			return fmt.Errorf("failed to clone repository: %w, stderr: %s", err, cmd.getStderr())
 		}
 
-		s.logger.Debug("git clone", fn, zap.String("url", repoURL), zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+		s.logger.Debug("git clone", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 	}
 
 	// Configure git user for GitHub App
@@ -300,7 +304,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 		return fmt.Errorf("failed to configure git user email: %w, stderr: %s", err, cmd.getStderr())
 	}
 
-	s.logger.Debug("git config user.email", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
+	s.logger.Debug("git config user.email", fn, zap.String("stderr", cmd.getStderr()))
 
 	// Configure SSH signing if a key is specified
 	exists := false
@@ -312,7 +316,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 			return fmt.Errorf("failed to check if SSH key file exists: %w", err)
 		}
 
-		s.logger.Debug("SSH key file exists", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath), zap.Bool("exists", exists))
+		s.logger.Debug("SSH key file exists", fn, zap.Bool("exists", exists))
 	}
 
 	if exists {
@@ -339,7 +343,7 @@ func (s *GitHubServiceImpl) CloneRepository(repoURL, directory string) error {
 
 		s.logger.Debug("git config commit.gpgsign", fn, zap.String("stdout", cmd.getStdout()), zap.String("stderr", cmd.getStderr()))
 
-		s.logger.Info("Configured SSH signing for repository", zap.String("sshKeyPath", s.config.GitHub.SSHKeyPath))
+		s.logger.Debug("Configured SSH signing for repository", fn)
 	} else {
 		s.logger.Info("SSH signing not configured for repository")
 	}
@@ -917,12 +921,18 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 // the path is a directory or a bot artifact).
 var errSkipEntry = errors.New("skip entry")
 
-// builtinExcludes lists directories that are always excluded from
-// commits. Import-declared excludes are merged at call time.
-var builtinExcludes = []string{".ai-bot/"}
+// builtinExcludes lists path prefixes that are always excluded from
+// commits. Entries without a trailing slash are prefix matches — e.g.,
+// ".ai-bot" excludes .ai-bot/, .ai-bot.preserve/, and any other path
+// starting with ".ai-bot". Entries with a trailing slash match only
+// that exact directory. Import-declared excludes are merged at call
+// time.
+var builtinExcludes = []string{".ai-bot", ".ai-session"}
 
-// mergeExcludes combines builtin excludes with import-declared excludes,
-// normalizing each entry to have a trailing slash for prefix matching.
+// mergeExcludes combines builtin excludes with import-declared excludes.
+// Builtin entries are kept as-is (no trailing slash = broad prefix match).
+// Import-declared entries are normalized to have a trailing slash for
+// exact directory matching.
 func mergeExcludes(importExcludes []string) []string {
 	all := make([]string, len(builtinExcludes), len(builtinExcludes)+len(importExcludes))
 	copy(all, builtinExcludes)
@@ -2332,7 +2342,10 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	prs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 		State: "open",
 		Head:  head,
 	})
@@ -2378,7 +2391,10 @@ func (s *GitHubServiceImpl) GetClosedPRForBranch(owner, repo, head string) (*mod
 		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	prs, _, err := client.PullRequests.List(context.Background(), owner, repo, &github.PullRequestListOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	prs, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
 		State: "closed",
 		Head:  head,
 	})
@@ -2465,8 +2481,11 @@ func (s *GitHubServiceImpl) BranchHasCommits(owner, repo, branch, base string) (
 		return false, fmt.Errorf("get GitHub client: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
 	comparison, _, err := client.Repositories.CompareCommits(
-		context.Background(), owner, repo, base, branch, nil)
+		ctx, owner, repo, base, branch, nil)
 	if err != nil {
 		return false, fmt.Errorf("compare %s...%s: %w", base, branch, err)
 	}
@@ -2489,10 +2508,16 @@ func (s *GitHubServiceImpl) RemoteBranchExists(owner, repo, branch string) (bool
 		return false, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	_, _, err = client.Git.GetRef(context.Background(), owner, repo, "refs/heads/"+branch)
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, _, err = client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branch)
 	if err != nil {
-		// go-github returns an error for 404 responses.
-		return false, nil
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("get ref refs/heads/%s: %w", branch, err)
 	}
 
 	return true, nil
@@ -2558,4 +2583,137 @@ func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("merge-upstream failed for %s/%s: %s, status: %d",
 		forkOwner, repo, string(body), resp.StatusCode)
+}
+
+// MergeBase merges origin/{branch} into the current branch in the
+// workspace. On a clean merge, returns nil and an empty slice. On
+// conflict, returns [ErrMergeConflict] and the list of conflicted
+// file paths (conflict markers are left in the working tree).
+func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
+	fetchCmd := s.executor("git", "fetch", "origin", branch)
+	fetchCmd.Dir = dir
+	if _, err := fetchCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git fetch origin %s: %w", branch, err)
+	}
+
+	mergeCmd := s.executor("git", "merge", "--no-edit", "origin/"+branch)
+	mergeCmd.Dir = dir
+	_, err := mergeCmd.CombinedOutput()
+	if err != nil {
+		conflictFiles := s.listConflictFiles(dir)
+		if len(conflictFiles) > 0 {
+			return conflictFiles, fmt.Errorf("%w: conflicted files: %v", ErrMergeConflict, conflictFiles)
+		}
+		return nil, fmt.Errorf("git merge origin/%s failed: %w", branch, err)
+	}
+
+	return []string{}, nil
+}
+
+// listConflictFiles returns file paths with unresolved merge conflicts
+// by parsing git status porcelain output for unmerged entries.
+func (s *GitHubServiceImpl) listConflictFiles(dir string) []string {
+	cmd := s.executor("git", "status", "--porcelain")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return []string{}
+	}
+
+	var files []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		xy := line[:2]
+		if xy == "UU" || xy == "AA" || xy == "DD" ||
+			xy == "AU" || xy == "UA" || xy == "DU" || xy == "UD" {
+			files = append(files, strings.TrimSpace(line[3:]))
+		}
+	}
+	if files == nil {
+		files = []string{}
+	}
+	return files
+}
+
+// GetPRMergeability fetches the mergeability status of a pull request.
+// GitHub computes mergeability asynchronously; when the result is not
+// yet available, Mergeable is nil.
+func (s *GitHubServiceImpl) GetPRMergeability(owner, repo string, number int) (*models.PRMergeState, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return nil, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("get PR #%d: %w", number, err)
+	}
+
+	return &models.PRMergeState{
+		Mergeable:  pr.Mergeable,
+		BaseBranch: pr.GetBase().GetRef(),
+	}, nil
+}
+
+// AddPRLabel adds a label to a pull request. If the label does not
+// exist on the repository, GitHub creates it automatically.
+func (s *GitHubServiceImpl) AddPRLabel(owner, repo string, number int, label string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, _, err = client.Issues.AddLabelsToIssue(
+		ctx, owner, repo, number, []string{label})
+	if err != nil {
+		return fmt.Errorf("add label %q to PR #%d: %w", label, number, err)
+	}
+	return nil
+}
+
+// HasPRLabel reports whether a pull request has the given label.
+func (s *GitHubServiceImpl) HasPRLabel(owner, repo string, number int, label string) (bool, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return false, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return false, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	labels, _, err := client.Issues.ListLabelsByIssue(
+		ctx, owner, repo, number, nil)
+	if err != nil {
+		return false, fmt.Errorf("list labels for PR #%d: %w", number, err)
+	}
+
+	for _, l := range labels {
+		if l.GetName() == label {
+			return true, nil
+		}
+	}
+	return false, nil
 }

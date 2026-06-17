@@ -122,8 +122,8 @@ type GitService interface {
 	// identifies where the parent commit originated so the tree
 	// can be resolved there when the fork API cannot find it.
 	// importExcludes lists additional directories (from import
-	// config) to exclude from commits beyond the built-in .ai-bot/
-	// exclusion.
+	// config) to exclude from commits beyond the built-in .ai-bot
+	// and .ai-session exclusions.
 	CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string,
 		coAuthor *models.Author, importExcludes []string) (string, error)
 
@@ -182,6 +182,13 @@ type GitService interface {
 	// the pull request reactions API for review comments and the issue
 	// comment reactions API for conversation comments.
 	AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error
+
+	// MergeBase merges origin/{branch} into the current branch in the
+	// workspace. On a clean merge, returns nil and an empty slice. On
+	// conflict, returns [services.ErrMergeConflict] and the list of
+	// conflicted file paths (conflict markers are left in the working
+	// tree for resolution).
+	MergeBase(dir, branch string) ([]string, error)
 
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after

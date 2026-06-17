@@ -512,7 +512,78 @@ func writeFile(dir, relPath, content string) error {
 	return nil
 }
 
-// writeTaskFile writes content to <dir>/.ai-bot/task.md.
+// writeTaskFile writes content to <dir>/.ai-session/task.md.
 func writeTaskFile(dir, content string) error {
 	return writeFile(dir, TaskFilePath, content)
+}
+
+func (w *MarkdownWriter) WriteMergeConflictTask(
+	prDetails models.PRDetails,
+	conflictFiles []string,
+	dir, overrideInstructions string,
+) error {
+	var b strings.Builder
+
+	b.WriteString("# Task: Resolve Merge Conflicts\n\n")
+	fmt.Fprintf(&b, "The original ticket is described in `%s`.\n\n", IssueFilePath)
+
+	fmt.Fprintf(&b, "## PR Context\n")
+	fmt.Fprintf(&b, "PR #%d: %s\n", prDetails.Number, prDetails.Title)
+	fmt.Fprintf(&b, "Branch: %s\n", prDetails.Branch)
+	fmt.Fprintf(&b, "Base: %s\n\n", prDetails.BaseBranch)
+
+	writeMergeConflictBody(&b, conflictFiles)
+
+	if err := appendInstructions(&b, dir, overrideInstructions, 2); err != nil {
+		return err
+	}
+
+	return writeTaskFile(dir, b.String())
+}
+
+func (w *MarkdownWriter) WriteMultiRepoMergeConflictTask(
+	prDetails models.PRDetails,
+	conflictFiles []string,
+	wsDir string, repos []RepoContext,
+) error {
+	var b strings.Builder
+
+	b.WriteString("# Task: Resolve Merge Conflicts (Multi-Repo)\n\n")
+	fmt.Fprintf(&b, "The original ticket is described in `%s`.\n\n", IssueFilePath)
+
+	fmt.Fprintf(&b, "## PR Context\n")
+	fmt.Fprintf(&b, "PR #%d: %s\n", prDetails.Number, prDetails.Title)
+	fmt.Fprintf(&b, "Branch: %s\n", prDetails.Branch)
+	fmt.Fprintf(&b, "Base: %s\n\n", prDetails.BaseBranch)
+
+	writeMergeConflictBody(&b, conflictFiles)
+
+	for _, repo := range repos {
+		if err := appendInstructions(&b, repo.Dir, repo.OverrideInstructions, 2); err != nil {
+			return err
+		}
+	}
+
+	return writeTaskFile(wsDir, b.String())
+}
+
+func writeMergeConflictBody(b *strings.Builder, conflictFiles []string) {
+	b.WriteString("## Conflict Details\n\n")
+	b.WriteString("The target branch has been merged into this PR branch, but ")
+	b.WriteString("there are conflicts that need to be resolved.\n\n")
+
+	if len(conflictFiles) > 0 {
+		b.WriteString("### Conflicted Files\n\n")
+		sort.Strings(conflictFiles)
+		for _, f := range conflictFiles {
+			fmt.Fprintf(b, "- `%s`\n", f)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("## Instructions\n\n")
+	b.WriteString("1. Resolve all merge conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) in the files listed above.\n")
+	b.WriteString("2. Preserve the intent of the PR's changes while incorporating the updates from the target branch.\n")
+	b.WriteString("3. After resolving conflicts, run the validation commands in the Project Instructions section below to verify the resolution is correct.\n")
+	b.WriteString("4. Do not introduce any new features or changes beyond what is needed to resolve the conflicts.\n\n")
 }

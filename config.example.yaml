@@ -183,7 +183,7 @@ jira:
           #     branch: stay on the current branch (already created by the orchestration system)
           #     lint_command: golangci-lint run --fix
           #   All artifact paths (.artifacts/bugfix/{issue}/) should use
-          #   .ai-bot/ instead. Write the PR description to .ai-bot/pr.md.
+          #   .ai-session/ instead. Write the PR description to .ai-session/pr.md.
 
           # Workflow for PR feedback only. Appended ONLY to feedback
           # task files — new-ticket tasks do not receive this. Use for
@@ -194,7 +194,7 @@ jira:
           # feedback_workflow: |
           #   Read and execute .ai-workflows/bugfix/skills/feedback.md
           #   All artifact paths (.artifacts/bugfix/{issue}/) should use
-          #   .ai-bot/ instead.
+          #   .ai-session/ instead.
           #   Review comments are already provided in the task above
           #   (use source 1: task file).
 

@@ -1,6 +1,11 @@
 // Package taskfile generates structured files that communicate context
 // and goals from the bot to the AI agent.
 //
+// Session files (task.md, issue.md, pr.md, etc.) live under .ai-session/
+// and are ephemeral — they are never committed. Repo-owned config files
+// (instructions.md, workflow files) live under .ai-bot/ and are
+// version-controlled by the target repository.
+//
 // The bot writes three categories of file to the workspace:
 //   - issue.md: the stable Jira issue content (key, summary, description).
 //     Written once per ticket and referenced by task files in both new-ticket
@@ -25,12 +30,12 @@ const (
 	// and persists across sessions — new-ticket and feedback flows
 	// both write it so the AI always has access to the original
 	// ticket context.
-	IssueFilePath = ".ai-bot/issue.md"
+	IssueFilePath = ".ai-session/issue.md"
 
 	// TaskFilePath is the path, relative to the workspace root, where
 	// the task file is written. The AI agent reads this file to
 	// discover its task.
-	TaskFilePath = ".ai-bot/task.md"
+	TaskFilePath = ".ai-session/task.md"
 
 	// InstructionsPath is the path, relative to the workspace root,
 	// where optional project-specific AI instructions live. If this
@@ -38,6 +43,7 @@ const (
 	// "Project Instructions" section. This is the primary mechanism
 	// for teams to provide provider-agnostic guidance to the AI
 	// (workflow references, validation commands, coding standards).
+	// This is a repo-owned config file under .ai-bot/.
 	InstructionsPath = ".ai-bot/instructions.md"
 
 	// PRDescriptionPath is the path, relative to the workspace root,
@@ -45,14 +51,13 @@ const (
 	// bot parses this file after the AI session completes, trying
 	// labeled titles ("Title: ..."), heading sections ("## Title"),
 	// and first-line fallback to extract the PR title.
-	PRDescriptionPath = ".ai-bot/pr.md"
+	PRDescriptionPath = ".ai-session/pr.md"
 
 	// AttachmentsDirPath is the path, relative to the workspace
-	// root, where downloaded Jira attachments are stored. This
-	// directory lives under .ai-bot/ so it is automatically excluded
-	// from commits. Both the new-ticket and feedback pipelines write
-	// attachments here; the issue file references them when present.
-	AttachmentsDirPath = ".ai-bot/attachments"
+	// root, where downloaded Jira attachments are stored. Both the
+	// new-ticket and feedback pipelines write attachments here; the
+	// issue file references them when present.
+	AttachmentsDirPath = ".ai-session/attachments"
 
 	// NewTicketWorkflowPath is the path, relative to the workspace
 	// root, where optional workflow instructions for new tickets
@@ -60,6 +65,7 @@ const (
 	// types), this file is only appended to new-ticket task files.
 	// Use this for multi-phase workflows (assess → diagnose → fix →
 	// test → review) that don't apply to PR feedback handling.
+	// This is a repo-owned config file under .ai-bot/.
 	NewTicketWorkflowPath = ".ai-bot/new-ticket-workflow.md"
 
 	// SessionContextPath is the path, relative to the workspace root,
@@ -68,7 +74,7 @@ const (
 	// Feedback task files reference this path so the AI addressing
 	// PR review comments can recover the reasoning behind the original
 	// implementation without re-deriving it from code.
-	SessionContextPath = ".ai-bot/session-context.md"
+	SessionContextPath = ".ai-session/session-context.md"
 
 	// FeedbackWorkflowPath is the path, relative to the workspace
 	// root, where optional workflow instructions for PR feedback
@@ -76,6 +82,7 @@ const (
 	// types), this file is only appended to feedback task files.
 	// Use this for structured feedback processes that maintain
 	// session context across review rounds.
+	// This is a repo-owned config file under .ai-bot/.
 	FeedbackWorkflowPath = ".ai-bot/feedback-workflow.md"
 
 	// CommentResponsesPath is the path, relative to the workspace
@@ -86,13 +93,14 @@ const (
 	// <commit>" messages. Expected output for feedback sessions;
 	// the bot falls back to generic replies if the file is missing
 	// or unparseable.
-	CommentResponsesPath = ".ai-bot/comment-responses.json"
+	CommentResponsesPath = ".ai-session/comment-responses.json"
 )
 
 // RepoContext describes a repository within a multi-repo workspace.
-// The writer uses Dir to read repo-level .ai-bot/ files. Override
-// fields (from the repo's profile in the config) take precedence over
-// repo-level files, enabling prototyping without committing changes.
+// The writer uses Dir to read repo-level .ai-bot/ config files.
+// Override fields (from the repo's profile in the config) take
+// precedence over repo-level files, enabling prototyping without
+// committing changes.
 type RepoContext struct {
 	// Name is the display name for this repo in the task file.
 	Name string
@@ -116,17 +124,18 @@ type RepoContext struct {
 // Writer generates task files that the AI agent reads to understand
 // what work needs to be done.
 type Writer interface {
-	// WriteIssue writes the Jira issue content to <dir>/.ai-bot/issue.md.
-	// This file contains the stable problem definition (key, summary,
-	// description, comments) and is referenced by both new-ticket and
-	// feedback task files. attachmentFiles lists filenames downloaded to
-	// .ai-bot/attachments/; if non-empty, an Attachments section is
-	// added referencing them. comments are human comments from the
+	// WriteIssue writes the Jira issue content to
+	// <dir>/.ai-session/issue.md. This file contains the stable
+	// problem definition (key, summary, description, comments) and
+	// is referenced by both new-ticket and feedback task files.
+	// attachmentFiles lists filenames downloaded to
+	// .ai-session/attachments/; if non-empty, an Attachments section
+	// is added referencing them. comments are human comments from the
 	// tracker; if non-empty, a Comments section is appended.
 	WriteIssue(workItem models.WorkItem, dir string, attachmentFiles []string, comments []models.Comment) error
 
 	// WriteNewTicketTask generates a task file for implementing a new
-	// ticket. The file is written to <dir>/.ai-bot/task.md.
+	// ticket. The file is written to <dir>/.ai-session/task.md.
 	// overrideInstructions takes precedence over .ai-bot/instructions.md
 	// (for prototyping changes). overrideWorkflow takes precedence over
 	// .ai-bot/new-ticket-workflow.md.
@@ -137,7 +146,7 @@ type Writer interface {
 	// addressedComments are previously handled comments included for
 	// context. ciFailures contains failed CI check runs with their
 	// annotations and step logs. The file is written to
-	// <dir>/.ai-bot/task.md. overrideInstructions takes precedence
+	// <dir>/.ai-session/task.md. overrideInstructions takes precedence
 	// over .ai-bot/instructions.md. overrideWorkflow takes precedence
 	// over .ai-bot/feedback-workflow.md.
 	WriteFeedbackTask(prDetails models.PRDetails,
@@ -147,16 +156,32 @@ type Writer interface {
 
 	// WriteMultiRepoNewTicketTask generates a task file for a multi-repo
 	// workspace. Per-repo instruction and workflow sections use profile
-	// overrides when set, falling back to .ai-bot/ files in each repo.
-	// The task file is written to <wsDir>/.ai-bot/task.md.
+	// overrides when set, falling back to .ai-bot/ config files in each
+	// repo. The task file is written to <wsDir>/.ai-session/task.md.
 	WriteMultiRepoNewTicketTask(workItem models.WorkItem, wsDir string, repos []RepoContext) error
 
 	// WriteMultiRepoFeedbackTask generates a feedback task file for a
 	// multi-repo workspace. Per-repo instruction and workflow sections
-	// use profile overrides when set, falling back to .ai-bot/ files
-	// in each repo. The task file is written to <wsDir>/.ai-bot/task.md.
+	// use profile overrides when set, falling back to .ai-bot/ config
+	// files in each repo. The task file is written to
+	// <wsDir>/.ai-session/task.md.
 	WriteMultiRepoFeedbackTask(prDetails models.PRDetails,
 		newComments, addressedComments []models.PRComment,
 		ciFailures []models.CheckRunFailure,
+		wsDir string, repos []RepoContext) error
+
+	// WriteMergeConflictTask generates a task file for AI-assisted
+	// merge conflict resolution. conflictFiles lists the paths with
+	// unresolved conflicts (from git status). The file is written to
+	// <dir>/.ai-bot/task.md.
+	WriteMergeConflictTask(prDetails models.PRDetails,
+		conflictFiles []string,
+		dir, overrideInstructions string) error
+
+	// WriteMultiRepoMergeConflictTask generates a merge conflict task
+	// file for a multi-repo workspace. The task file is written to
+	// <wsDir>/.ai-bot/task.md.
+	WriteMultiRepoMergeConflictTask(prDetails models.PRDetails,
+		conflictFiles []string,
 		wsDir string, repos []RepoContext) error
 }

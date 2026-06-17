@@ -171,7 +171,7 @@ func TestSyncWithRemote_PreservesUntrackedFiles(t *testing.T) {
 	gitRun(t, apiClone, "push", "origin", "main")
 
 	// Add untracked files to the workspace (simulating AI-generated artifacts).
-	artifactDir := filepath.Join(workDir, ".ai-bot", "cache")
+	artifactDir := filepath.Join(workDir, ".ai-session", "cache")
 	if err := os.MkdirAll(artifactDir, 0o750); err != nil {
 		t.Fatal(err)
 	}

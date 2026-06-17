@@ -57,6 +57,18 @@ type PR struct {
 	State  string
 }
 
+// PRMergeState holds the mergeability status of a pull request.
+// Only available via the single-PR Get endpoint (not the List
+// endpoint). Used by the merge scanner to detect unmergeable PRs.
+type PRMergeState struct {
+	// Mergeable is nil when GitHub is still computing the merge
+	// status (async). False indicates merge conflicts exist.
+	Mergeable *bool
+
+	// BaseBranch is the target branch the PR merges into.
+	BaseBranch string
+}
+
 // IssueComment represents a top-level comment on a pull request
 // (via the GitHub Issues API, as distinct from review comments).
 type IssueComment struct {

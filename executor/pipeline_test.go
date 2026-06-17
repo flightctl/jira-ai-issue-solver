@@ -1938,12 +1938,12 @@ func TestExecuteNewTicket_ImportInstallFailure_StopsContainer(t *testing.T) {
 
 func TestReadPRDescription_FileExists(t *testing.T) {
 	dir := t.TempDir()
-	aiBotDir := filepath.Join(dir, ".ai-bot")
-	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+	sessionDir := filepath.Join(dir, ".ai-session")
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	content := "Fix NPE in UserService\n\n## Summary\nAdded null check for photo field.\n"
-	if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sessionDir, "pr.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1969,11 +1969,11 @@ func TestReadPRDescription_FileMissing(t *testing.T) {
 
 func TestReadPRDescription_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
-	aiBotDir := filepath.Join(dir, ".ai-bot")
-	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+	sessionDir := filepath.Join(dir, ".ai-session")
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte("  \n  \n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sessionDir, "pr.md"), []byte("  \n  \n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1985,11 +1985,11 @@ func TestReadPRDescription_EmptyFile(t *testing.T) {
 
 func TestReadPRDescription_TitleOnly(t *testing.T) {
 	dir := t.TempDir()
-	aiBotDir := filepath.Join(dir, ".ai-bot")
-	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+	sessionDir := filepath.Join(dir, ".ai-session")
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte("Just a title\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sessionDir, "pr.md"), []byte("Just a title\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2019,11 +2019,11 @@ func TestReadPRDescription_StripsMarkdownHeading(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			aiBotDir := filepath.Join(dir, ".ai-bot")
-			if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+			sessionDir := filepath.Join(dir, ".ai-session")
+			if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte(tt.content), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(sessionDir, "pr.md"), []byte(tt.content), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -2159,12 +2159,12 @@ func TestParsePRContent_LabeledTitleIgnoredAfterHeader(t *testing.T) {
 
 func TestReadPRDescription_GenericHeadingNoTitle(t *testing.T) {
 	dir := t.TempDir()
-	aiBotDir := filepath.Join(dir, ".ai-bot")
-	if err := os.MkdirAll(aiBotDir, 0o750); err != nil {
+	sessionDir := filepath.Join(dir, ".ai-session")
+	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	content := "## Summary\n- Fixed the bug\n- Added tests\n\n## Test plan\n- [ ] Manual test"
-	if err := os.WriteFile(filepath.Join(aiBotDir, "pr.md"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sessionDir, "pr.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2358,7 +2358,7 @@ func TestExecuteNewTicket_DownloadsAttachments(t *testing.T) {
 
 	// Verify files exist on disk.
 	for _, name := range []string{"crash.log", "config.yaml"} {
-		path := filepath.Join(d.wsDir, ".ai-bot", "attachments", name)
+		path := filepath.Join(d.wsDir, ".ai-session", "attachments", name)
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("expected attachment file %s to exist: %v", name, err)
 		}
@@ -2468,7 +2468,7 @@ func TestExecuteNewTicket_SanitizesAttachmentFilename(t *testing.T) {
 	}
 
 	// File should be in the attachments dir, not in ../../etc/.
-	path := filepath.Join(d.wsDir, ".ai-bot", "attachments", "passwd")
+	path := filepath.Join(d.wsDir, ".ai-session", "attachments", "passwd")
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected sanitized file at %s: %v", path, err)
 	}
@@ -2492,7 +2492,7 @@ func TestExecuteNewTicket_SkipsExistingAttachments(t *testing.T) {
 	}
 
 	// Pre-create the first attachment on disk.
-	attDir := filepath.Join(d.wsDir, ".ai-bot", "attachments")
+	attDir := filepath.Join(d.wsDir, ".ai-session", "attachments")
 	if err := os.MkdirAll(attDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -3548,7 +3548,7 @@ func newTicketJob(ticketKey string) *jobmanager.Job {
 
 func writeSessionOutput(t *testing.T, wsDir string, output executor.SessionOutput) {
 	t.Helper()
-	dir := filepath.Join(wsDir, ".ai-bot")
+	dir := filepath.Join(wsDir, ".ai-session")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}

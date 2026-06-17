@@ -270,6 +270,28 @@ func main() {
 		logger.Fatal("Failed to create workspace cleanup scanner", zap.Error(err))
 	}
 
+	mergeScanner, err := scanner.NewMergeScanner(
+		issueTracker,
+		coordinator,
+		gitService,
+		resolver,
+		gitService,
+		gitService,
+		scanner.MergeScannerConfig{
+			Criteria:          inReviewCriteria,
+			PollInterval:      time.Duration(config.Jira.IntervalSeconds) * time.Second,
+			BotUsername:       config.GitHub.BotUsername,
+			IdleDays:          config.Merge.IdleDays,
+			IdleLabel:         config.Merge.IdleLabel,
+			IgnoredUsernames:  config.GitHub.IgnoredUsernames,
+			KnownBotUsernames: config.GitHub.KnownBotUsernames,
+		},
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create merge scanner", zap.Error(err))
+	}
+
 	if err := ticketScanner.Start(ctx); err != nil {
 		logger.Fatal("Failed to start work item scanner", zap.Error(err))
 	}
@@ -278,6 +300,9 @@ func main() {
 	}
 	if err := cleanupScanner.Start(ctx); err != nil {
 		logger.Fatal("Failed to start workspace cleanup scanner", zap.Error(err))
+	}
+	if err := mergeScanner.Start(ctx); err != nil {
+		logger.Fatal("Failed to start merge scanner", zap.Error(err))
 	}
 
 	logger.Info("Scanners started")
@@ -325,6 +350,7 @@ func main() {
 	ticketScanner.Stop()
 	feedbackScanner.Stop()
 	cleanupScanner.Stop()
+	mergeScanner.Stop()
 
 	// Drain running jobs.
 	coordinator.Shutdown()
