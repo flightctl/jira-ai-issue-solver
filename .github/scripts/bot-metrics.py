@@ -14,37 +14,40 @@ Configuration via environment variables:
                      (default: 2026-03-23)
 """
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, date
+from typing import Any
 
-BOT_AUTHOR = os.environ.get(
+BOT_AUTHOR: str = os.environ.get(
     "BOT_AUTHOR", "app/bugs-buddy-jira-ai-issue-solver"
 )
-TARGET_REPOS = [
+TARGET_REPOS: list[str] = [
     r.strip()
     for r in os.environ.get("TARGET_REPOS", "").split(",")
     if r.strip()
 ]
-JIRA_PROJECTS = [
+JIRA_PROJECTS: list[str] = [
     p.strip().upper()
     for p in os.environ.get("JIRA_PROJECTS", "").split(",")
     if p.strip()
 ]
-EXCLUDED_TICKETS = [
+EXCLUDED_TICKETS: list[str] = [
     t.strip()
     for t in os.environ.get("EXCLUDED_TICKETS", "").split(",")
     if t.strip()
 ]
-START_DATE = date.fromisoformat(
+START_DATE: date = date.fromisoformat(
     os.environ.get("START_DATE", "2026-03-23")
 )
 
 
-def run_gh(*args):
+def run_gh(*args: str) -> list[dict[str, Any]] | dict[str, Any]:
     """Run a gh CLI command and return parsed JSON."""
     result = subprocess.run(
         ["gh", *args], capture_output=True, text=True, check=True
@@ -52,14 +55,14 @@ def run_gh(*args):
     return json.loads(result.stdout) if result.stdout.strip() else []
 
 
-def parse_time(iso_str):
+def parse_time(iso_str: str | None) -> datetime | None:
     """Parse an ISO-8601 timestamp from the GitHub API."""
     if not iso_str:
         return None
     return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
 
 
-def extract_ticket(title):
+def extract_ticket(title: str) -> str | None:
     """Extract ticket key from PR title (e.g., 'EDM-1234: ...' -> 'EDM-1234')."""
     colon_idx = title.find(":")
     if colon_idx == -1:
@@ -70,7 +73,7 @@ def extract_ticket(title):
     return None
 
 
-def extract_project(ticket_key):
+def extract_project(ticket_key: str | None) -> str | None:
     """Extract the Jira project prefix from a ticket key (e.g., 'EDM-1234' -> 'EDM')."""
     if not ticket_key:
         return None
@@ -80,7 +83,7 @@ def extract_project(ticket_key):
     return ticket_key[:dash_idx].upper()
 
 
-def classify_size(additions, deletions):
+def classify_size(additions: int, deletions: int) -> str:
     """Classify a PR by total lines changed."""
     total = additions + deletions
     if total <= 10:
@@ -94,7 +97,7 @@ def classify_size(additions, deletions):
     return "XL (500+)"
 
 
-def ci_passed(status_checks):
+def ci_passed(status_checks: list[dict[str, Any]] | None) -> bool | None:
     """Determine CI pass/fail from statusCheckRollup."""
     if not status_checks:
         return None
@@ -105,7 +108,7 @@ def ci_passed(status_checks):
     return True
 
 
-def fetch_prs_for_repo(repo):
+def fetch_prs_for_repo(repo: str) -> list[dict[str, Any]]:
     """Fetch all bot PRs from a single repo (metadata only)."""
     fields = ",".join([
         "number", "title", "state", "createdAt", "mergedAt", "closedAt",
@@ -119,31 +122,32 @@ def fetch_prs_for_repo(repo):
         "--limit", "500",
         "--json", fields,
     )
-    # Tag each PR with its source repo
     for pr in prs:
         pr["_repo"] = repo
     return prs
 
 
-def fetch_all_prs():
+def fetch_all_prs() -> list[dict[str, Any]]:
     """Fetch bot PRs across all target repos."""
-    all_prs = []
+    all_prs: list[dict[str, Any]] = []
     for repo in TARGET_REPOS:
         print(f"  Fetching from {repo}...", file=sys.stderr)
         all_prs.extend(fetch_prs_for_repo(repo))
     return all_prs
 
 
-def fetch_ci_status(prs):
+def fetch_ci_status(
+    prs: list[dict[str, Any]],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
     """Fetch CI check status for specific PRs individually.
 
     statusCheckRollup is too large to fetch in bulk (causes GitHub API
     timeouts), so we query one PR at a time.
     """
-    results = {}
+    results: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for pr in prs:
-        repo = pr["_repo"]
-        num = pr["number"]
+        repo: str = pr["_repo"]
+        num: int = pr["number"]
         key = (repo, num)
         try:
             data = run_gh(
@@ -157,10 +161,10 @@ def fetch_ci_status(prs):
     return results
 
 
-COST_MARKER = "<!-- AI-BOT-COST -->"
+COST_MARKER: str = "<!-- AI-BOT-COST -->"
 
 
-def fetch_pr_cost(repo, pr_number):
+def fetch_pr_cost(repo: str, pr_number: int) -> float:
     """Fetch the AI session cost from a PR's issue comments.
 
     Looks for a comment containing the AI-BOT-COST marker and parses
@@ -173,7 +177,7 @@ def fetch_pr_cost(repo, pr_number):
              "--paginate", "--jq", "[.[].body]"],
             capture_output=True, text=True, check=True,
         )
-        bodies = []
+        bodies: list[str] = []
         for line in result.stdout.strip().split("\n"):
             if line:
                 bodies.extend(json.loads(line))
@@ -195,11 +199,13 @@ def fetch_pr_cost(repo, pr_number):
     return 0.0
 
 
-def filter_prs(prs):
+def filter_prs(
+    prs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
     """Exclude PRs before start date, test tickets, and non-matching projects."""
     excluded_count = 0
     filtered_count = 0
-    result = []
+    result: list[dict[str, Any]] = []
 
     for pr in prs:
         ticket = extract_ticket(pr["title"])
@@ -226,7 +232,11 @@ def filter_prs(prs):
     return result, excluded_count, filtered_count
 
 
-def compute_metrics(prs, ci_status, pr_costs=None):
+def compute_metrics(
+    prs: list[dict[str, Any]],
+    ci_status: dict[tuple[str, int], list[dict[str, Any]]],
+    pr_costs: dict[tuple[str, int], float] | None = None,
+) -> dict[str, Any] | None:
     """Compute adoption metrics from a list of PRs. Returns None if empty."""
     if not prs:
         return None
@@ -239,7 +249,7 @@ def compute_metrics(prs, ci_status, pr_costs=None):
     open_prs = [p for p in prs if p["state"] == "OPEN"]
 
     # -- Ticket-level aggregation --
-    tickets = defaultdict(list)
+    tickets: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for pr in prs:
         ticket = extract_ticket(pr["title"]) or f"(no ticket) PR#{pr['number']}"
         tickets[ticket].append(pr)
@@ -258,7 +268,7 @@ def compute_metrics(prs, ci_status, pr_costs=None):
     ci_pass_count = sum(1 for r in ci_known if r)
 
     # -- Merge time --
-    merge_hours = []
+    merge_hours: list[float] = []
     for pr in merged:
         created = parse_time(pr["createdAt"])
         merged_at = parse_time(pr["mergedAt"])
@@ -275,14 +285,16 @@ def compute_metrics(prs, ci_status, pr_costs=None):
     )
 
     # -- Monthly trend --
-    monthly = defaultdict(lambda: {"total": 0, "merged": 0, "closed": 0, "open": 0})
+    monthly: defaultdict[str, dict[str, int]] = defaultdict(
+        lambda: {"total": 0, "merged": 0, "closed": 0, "open": 0}
+    )
     for pr in prs:
         month = pr["createdAt"][:7]
         monthly[month]["total"] += 1
         monthly[month][pr["state"].lower()] += 1
 
     # -- Per-ticket detail --
-    ticket_rows = []
+    ticket_rows: list[dict[str, Any]] = []
     total_cost = 0.0
     for ticket, t_prs in sorted(tickets.items()):
         m = sum(1 for p in t_prs if p["state"] == "MERGED")
@@ -300,7 +312,6 @@ def compute_metrics(prs, ci_status, pr_costs=None):
             pr_costs.get((p["_repo"], p["number"]), 0.0) for p in t_prs
         )
         total_cost += ticket_cost
-        # Show repo if multiple target repos
         repo_suffix = ""
         if len(TARGET_REPOS) > 1:
             repos = sorted({p["_repo"] for p in t_prs})
@@ -319,7 +330,7 @@ def compute_metrics(prs, ci_status, pr_costs=None):
     prs_per_ticket_vals = [len(t_prs) for t_prs in tickets.values()]
 
     # -- Per-repo breakdown (only if multiple repos) --
-    repo_breakdown = {}
+    repo_breakdown: dict[str, dict[str, Any]] = {}
     if len(TARGET_REPOS) > 1:
         for repo in TARGET_REPOS:
             repo_prs = [p for p in prs if p["_repo"] == repo]
@@ -368,7 +379,7 @@ def compute_metrics(prs, ci_status, pr_costs=None):
     }
 
 
-def format_merge_time(hours):
+def format_merge_time(hours: float | None) -> str:
     """Format hours as a human-readable duration."""
     if hours is None:
         return "n/a"
@@ -377,11 +388,11 @@ def format_merge_time(hours):
     return f"{hours:.1f} hours"
 
 
-def format_summary_table(m):
+def format_summary_table(m: dict[str, Any]) -> list[str]:
     """Render a single-column summary of metrics."""
-    lines = []
+    lines: list[str] = []
 
-    def val(key, fmt=None):
+    def val(key: str, fmt: Any = None) -> str:
         v = m[key]
         if v is None:
             return "—"
@@ -389,7 +400,7 @@ def format_summary_table(m):
             return fmt(v)
         return str(v)
 
-    def pct(key):
+    def pct(key: str) -> str:
         return val(key, lambda v: f"{v:.1f}%")
 
     ci_str = "—"
@@ -421,9 +432,9 @@ def format_summary_table(m):
     return lines
 
 
-def format_detail_sections(m):
+def format_detail_sections(m: dict[str, Any]) -> list[str]:
     """Render per-ticket breakdown, monthly trend, and repo breakdown."""
-    lines = []
+    lines: list[str] = []
 
     # -- Per-repo breakdown (multi-repo only) --
     if m["repo_breakdown"]:
@@ -481,9 +492,11 @@ def format_detail_sections(m):
     return lines
 
 
-def format_report(metrics, excluded_count, filtered_count):
+def format_report(
+    metrics: dict[str, Any], excluded_count: int, filtered_count: int,
+) -> str:
     """Render the metrics report."""
-    lines = []
+    lines: list[str] = []
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines.append("# AI Bot Adoption Metrics")
@@ -513,7 +526,7 @@ def format_report(metrics, excluded_count, filtered_count):
     return "\n".join(lines)
 
 
-def write_output(key, value):
+def write_output(key: str, value: str | int | float) -> None:
     """Write a key=value pair to GITHUB_OUTPUT if available."""
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
@@ -521,7 +534,7 @@ def write_output(key, value):
             f.write(f"{key}={value}\n")
 
 
-def main():
+def main() -> None:
     if not TARGET_REPOS:
         print("ERROR: TARGET_REPOS is required (comma-separated list of owner/repo).")
         sys.exit(1)
@@ -557,10 +570,10 @@ def main():
         f"Fetching AI cost data for {len(filtered_prs)} PRs...",
         file=sys.stderr,
     )
-    pr_costs = {}
+    pr_costs: dict[tuple[str, int], float] = {}
     for pr in filtered_prs:
-        repo = pr["_repo"]
-        num = pr["number"]
+        repo: str = pr["_repo"]
+        num: int = pr["number"]
         cost = fetch_pr_cost(repo, num)
         if cost > 0:
             pr_costs[(repo, num)] = cost
