@@ -3477,10 +3477,15 @@ func TestExecuteNewTicket_CleanRetry_DeletesBranchAndWorkspace(t *testing.T) {
 func TestExecuteNewTicket_CleanRetry_CleanupErrorsNonFatal(t *testing.T) {
 	d := newTestDeps(t)
 
+	branchDeleteCalled := false
 	d.git.DeleteRemoteBranchFunc = func(owner, repo, branch string) error {
+		branchDeleteCalled = true
 		return errors.New("branch delete failed")
 	}
+
+	cleanupCalled := false
 	d.workspaces.CleanupFunc = func(ticketKey string) error {
+		cleanupCalled = true
 		return errors.New("cleanup failed")
 	}
 
@@ -3490,6 +3495,54 @@ func TestExecuteNewTicket_CleanRetry_CleanupErrorsNonFatal(t *testing.T) {
 	_, err := p.Execute(context.Background(), job)
 	if err != nil {
 		t.Fatalf("pipeline should succeed despite cleanup errors: %v", err)
+	}
+
+	if !branchDeleteCalled {
+		t.Error("DeleteRemoteBranch should have been attempted despite error")
+	}
+	if !cleanupCalled {
+		t.Error("Cleanup should have been attempted despite branch delete error")
+	}
+}
+
+func TestExecuteNewTicket_CleanRetry_MultiRepo_DeletesAllBranches(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	var deletedBranches []string
+	d.git.DeleteRemoteBranchFunc = func(owner, repo, branch string) error {
+		deletedBranches = append(deletedBranches, owner+"/"+repo+":"+branch)
+		return nil
+	}
+
+	var cleanedTicket string
+	d.workspaces.CleanupFunc = func(ticketKey string) error {
+		cleanedTicket = ticketKey
+		return nil
+	}
+
+	p := d.pipeline(t)
+	job := newTicketJob("PROJ-1")
+	job.CleanRetry = true
+	_, err := p.Execute(context.Background(), job)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(deletedBranches) != 3 {
+		t.Fatalf("deletedBranches = %v, want 3 entries (one per repo)", deletedBranches)
+	}
+	wantBranches := []string{
+		"org/svc-a:ai-bot/PROJ-1",
+		"org/svc-b:ai-bot/PROJ-1",
+		"org/svc-c:ai-bot/PROJ-1",
+	}
+	for i, want := range wantBranches {
+		if deletedBranches[i] != want {
+			t.Errorf("deletedBranches[%d] = %q, want %q", i, deletedBranches[i], want)
+		}
+	}
+	if cleanedTicket != "PROJ-1" {
+		t.Errorf("cleaned ticket = %q, want PROJ-1", cleanedTicket)
 	}
 }
 
