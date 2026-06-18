@@ -269,10 +269,11 @@ func enrichFromCLIOutput(output *SessionOutput, dir string) {
 		return
 	}
 
-	// Try Claude format first (has total_cost_usd at top level).
-	var claude claudeCLIOutput
-	if json.Unmarshal(data, &claude) == nil && claude.TotalCostUSD > 0 {
-		output.CostUSD = claude.TotalCostUSD
+	// Try Claude format. With --verbose the CLI outputs a JSON
+	// array of conversation events; total_cost_usd is on the last
+	// element. Without --verbose it's a single JSON object.
+	if cost, ok := parseClaudeCost(data); ok {
+		output.CostUSD = cost
 		return
 	}
 
@@ -289,6 +290,27 @@ func enrichFromCLIOutput(output *SessionOutput, dir string) {
 
 type claudeCLIOutput struct {
 	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+// parseClaudeCost extracts total_cost_usd from Claude CLI output.
+// With --verbose the output is a JSON array (cost on the last
+// element); without --verbose it is a single JSON object.
+func parseClaudeCost(data []byte) (float64, bool) {
+	var arr []claudeCLIOutput
+	if json.Unmarshal(data, &arr) == nil {
+		for i := len(arr) - 1; i >= 0; i-- {
+			if arr[i].TotalCostUSD > 0 {
+				return arr[i].TotalCostUSD, true
+			}
+		}
+	}
+
+	var single claudeCLIOutput
+	if json.Unmarshal(data, &single) == nil && single.TotalCostUSD > 0 {
+		return single.TotalCostUSD, true
+	}
+
+	return 0, false
 }
 
 type geminiCLIOutput struct {

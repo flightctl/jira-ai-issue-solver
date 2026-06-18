@@ -126,6 +126,22 @@ func TestEnrichFromCLIOutput_Claude(t *testing.T) {
 	}
 }
 
+func TestEnrichFromCLIOutput_ClaudeVerboseArray(t *testing.T) {
+	dir := t.TempDir()
+	writeSessionFile(t, dir, "cli-output.json", `[
+		{"type": "system", "subtype": "init", "session_id": "abc"},
+		{"type": "assistant", "message": {"content": [{"type": "text", "text": "Hello"}]}},
+		{"type": "result", "total_cost_usd": 6.50, "stop_reason": "end_turn", "session_id": "abc"}
+	]`)
+
+	var output SessionOutput
+	enrichFromCLIOutput(&output, dir)
+
+	if output.CostUSD != 6.50 {
+		t.Errorf("CostUSD = %v, want 6.50", output.CostUSD)
+	}
+}
+
 func TestEnrichFromCLIOutput_Gemini(t *testing.T) {
 	dir := t.TempDir()
 	writeSessionFile(t, dir, "cli-output.json", `{
@@ -189,6 +205,67 @@ func TestEnrichFromCLIOutput_InvalidJSON(t *testing.T) {
 
 	if output.CostUSD != 0 || output.InputTokens != 0 {
 		t.Error("should leave output unchanged on invalid JSON")
+	}
+}
+
+func TestParseClaudeCost(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantCost float64
+		wantOK   bool
+	}{
+		{
+			name:     "single object",
+			input:    `{"total_cost_usd": 3.14}`,
+			wantCost: 3.14,
+			wantOK:   true,
+		},
+		{
+			name: "array with cost on last element",
+			input: `[
+				{"type": "system"},
+				{"type": "result", "total_cost_usd": 6.50}
+			]`,
+			wantCost: 6.50,
+			wantOK:   true,
+		},
+		{
+			name: "array with cost not on last element",
+			input: `[
+				{"type": "result", "total_cost_usd": 4.25},
+				{"type": "summary"}
+			]`,
+			wantCost: 4.25,
+			wantOK:   true,
+		},
+		{
+			name:     "empty array",
+			input:    `[]`,
+			wantCost: 0,
+			wantOK:   false,
+		},
+		{
+			name:     "zero cost",
+			input:    `{"total_cost_usd": 0}`,
+			wantCost: 0,
+			wantOK:   false,
+		},
+		{
+			name:     "invalid JSON",
+			input:    `not json`,
+			wantCost: 0,
+			wantOK:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost, ok := parseClaudeCost([]byte(tt.input))
+			if ok != tt.wantOK || cost != tt.wantCost {
+				t.Errorf("parseClaudeCost() = (%v, %v), want (%v, %v)", cost, ok, tt.wantCost, tt.wantOK)
+			}
+		})
 	}
 }
 
