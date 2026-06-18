@@ -515,12 +515,14 @@ func TestWorkItemScanner_RetryLabel_ResetsAndResubmits(t *testing.T) {
 	}
 
 	submitCalls := 0
+	var resubmitEvent jobmanager.Event
 	submitter := &scannertest.StubJobSubmitter{
 		SubmitFunc: func(event jobmanager.Event) (*jobmanager.Job, error) {
 			submitCalls++
 			if submitCalls == 1 {
 				return nil, jobmanager.ErrRetriesExhausted
 			}
+			resubmitEvent = event
 			return &jobmanager.Job{}, nil
 		},
 	}
@@ -564,6 +566,9 @@ func TestWorkItemScanner_RetryLabel_ResetsAndResubmits(t *testing.T) {
 	}
 	if removedLabel != "ai-retry" {
 		t.Errorf("removed label = %q, want ai-retry", removedLabel)
+	}
+	if !resubmitEvent.CleanRetry {
+		t.Error("expected resubmit event to have CleanRetry=true")
 	}
 }
 

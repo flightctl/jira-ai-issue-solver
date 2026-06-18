@@ -60,6 +60,11 @@ type Event struct {
 	// TicketKey identifies the ticket this event pertains to
 	// (e.g., "PROJ-123"). Used for deduplication and retry tracking.
 	TicketKey string
+
+	// CleanRetry signals the pipeline to delete stale remote branches
+	// and the local workspace before processing. Set when the retry
+	// label triggers resubmission of an exhausted ticket.
+	CleanRetry bool
 }
 
 // JobResult holds the outcome of a completed job.
@@ -118,6 +123,10 @@ type Job struct {
 
 	// Err is set when the job fails.
 	Err error
+
+	// CleanRetry signals the pipeline to delete stale remote branches
+	// and the local workspace before processing.
+	CleanRetry bool
 }
 
 // CostRecorder tracks AI session costs for budget enforcement. The

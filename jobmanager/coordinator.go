@@ -166,6 +166,7 @@ func (c *Coordinator) Submit(event Event) (*Job, error) {
 		Status:     JobStatusPending,
 		AttemptNum: c.failureCounts[event.TicketKey] + 1,
 		CreatedAt:  now,
+		CleanRetry: event.CleanRetry,
 	}
 
 	c.jobs[job.ID] = job

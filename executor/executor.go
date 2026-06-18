@@ -106,6 +106,11 @@ type GitService interface {
 	// a branch so the pipeline can start fresh.
 	RemoteBranchExists(owner, repo, branch string) (bool, error)
 
+	// DeleteRemoteBranch deletes a branch from the remote repository.
+	// Returns nil if the branch does not exist (idempotent). Deleting
+	// a branch auto-closes any open PR whose head matches it.
+	DeleteRemoteBranch(owner, repo, branch string) error
+
 	// HasChanges reports whether the workspace has uncommitted
 	// changes (modified, added, or deleted tracked files).
 	// baseBranch is used as a comparison ref when the remote
