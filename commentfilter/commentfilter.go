@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"jira-ai-issue-solver/models"
 )
@@ -149,8 +150,17 @@ func HasNewActionable(comments []models.PRComment, cfg Config) bool {
 // replied to. For review comments this is detected via InReplyTo;
 // for conversation comments it is detected via addressed markers
 // embedded in the bot's comment body.
+//
+// For flat review threads (where GitHub normalises every reply's
+// InReplyTo to the thread root), a second pass marks non-bot
+// comments as replied-to when a bot reply in the same thread has
+// a timestamp at or after the comment's timestamp.
 func BotRepliedTo(comments []models.PRComment, normBot string) map[int64]bool {
 	replied := make(map[int64]bool)
+
+	// Track the latest bot reply timestamp per review thread root.
+	threadBotLatest := make(map[int64]time.Time)
+
 	for _, c := range comments {
 		if normalizeUsername(c.Author.Username) != normBot {
 			continue
@@ -158,12 +168,29 @@ func BotRepliedTo(comments []models.PRComment, normBot string) map[int64]bool {
 		// Review comment reply: threaded via InReplyTo.
 		if c.InReplyTo != 0 {
 			replied[c.InReplyTo] = true
+			if c.IsReviewComment && c.Timestamp.After(threadBotLatest[c.InReplyTo]) {
+				threadBotLatest[c.InReplyTo] = c.Timestamp
+			}
 		}
 		// Conversation comment reply: marker in body.
 		for _, id := range parseAddressedIDs(c.Body) {
 			replied[id] = true
 		}
 	}
+
+	// Second pass: in flat review threads, mark non-bot follow-up
+	// comments as replied-to when the bot replied at or after them.
+	for _, c := range comments {
+		if normalizeUsername(c.Author.Username) == normBot {
+			continue
+		}
+		if c.IsReviewComment && c.InReplyTo != 0 {
+			if botLatest, ok := threadBotLatest[c.InReplyTo]; ok && !c.Timestamp.After(botLatest) {
+				replied[c.ID] = true
+			}
+		}
+	}
+
 	return replied
 }
 
@@ -227,9 +254,46 @@ func shouldSkipBotReply(c models.PRComment, byID map[int64]models.PRComment, nor
 	return normalizeUsername(parent.Author.Username) == normBot
 }
 
-// threadDepth counts how many times our bot appears in the comment
-// chain from the given comment upward through its parents.
+// threadDepth counts how many times our bot appears in a comment's
+// thread. For review comments (flat threading where all replies share
+// the same InReplyTo root), it counts bot replies in the thread. For
+// conversation comments (nested threading), it walks the parent chain.
 func threadDepth(commentID int64, normBot string, byID map[int64]models.PRComment) int {
+	c, found := byID[commentID]
+	if !found {
+		return 0
+	}
+
+	if c.IsReviewComment {
+		return reviewThreadBotCount(c, normBot, byID)
+	}
+
+	return parentChainBotCount(commentID, normBot, byID)
+}
+
+// reviewThreadBotCount counts bot replies in a flat review thread.
+// GitHub normalises all review replies to point at the thread root,
+// so we count siblings rather than walking ancestors. Root comments
+// (InReplyTo == 0) return 0 — they start the thread and should
+// never be filtered by depth.
+func reviewThreadBotCount(c models.PRComment, normBot string, byID map[int64]models.PRComment) int {
+	if c.InReplyTo == 0 {
+		return 0
+	}
+
+	count := 0
+	for _, sibling := range byID {
+		if normalizeUsername(sibling.Author.Username) == normBot && sibling.InReplyTo == c.InReplyTo {
+			count++
+		}
+	}
+	return count
+}
+
+// parentChainBotCount counts bot appearances walking from commentID
+// upward through InReplyTo parents. Used for conversation comments
+// whose reply chains are properly nested.
+func parentChainBotCount(commentID int64, normBot string, byID map[int64]models.PRComment) int {
 	depth := 0
 	currentID := commentID
 	visited := make(map[int64]bool)

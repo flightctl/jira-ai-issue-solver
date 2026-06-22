@@ -2,6 +2,7 @@ package commentfilter_test
 
 import (
 	"testing"
+	"time"
 
 	"jira-ai-issue-solver/commentfilter"
 	"jira-ai-issue-solver/models"
@@ -520,12 +521,17 @@ func TestBotRepliedTo_IgnoresNonBotMarkers(t *testing.T) {
 }
 
 func TestBotRepliedTo_BothMechanisms(t *testing.T) {
+	t0 := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
 	marker := commentfilter.AddressedMarker(10)
 	comments := []models.PRComment{
-		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Review comment", IsReviewComment: true},
-		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1, IsReviewComment: true},
-		{ID: 10, Author: models.Author{Username: "reviewer"}, Body: "Conversation comment"},
-		{ID: 20, Author: models.Author{Username: "ai-bot"}, Body: "Updated.\n" + marker},
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Review comment",
+			IsReviewComment: true, Timestamp: t0},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done",
+			InReplyTo: 1, IsReviewComment: true, Timestamp: t0.Add(time.Minute)},
+		{ID: 10, Author: models.Author{Username: "reviewer"}, Body: "Conversation comment",
+			Timestamp: t0.Add(2 * time.Minute)},
+		{ID: 20, Author: models.Author{Username: "ai-bot"}, Body: "Updated.\n" + marker,
+			Timestamp: t0.Add(3 * time.Minute)},
 	}
 
 	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
@@ -563,6 +569,184 @@ func TestHasNewActionable_TrueWhenConversationCommentNotAddressed(t *testing.T) 
 
 	if !commentfilter.HasNewActionable(comments, cfg) {
 		t.Error("expected true: conversation comment not addressed")
+	}
+}
+
+// --- Flat review thread tests (GitHub normalises InReplyTo to thread root) ---
+
+func TestFilter_ThreadDepthExceeded_FlatReviewThread(t *testing.T) {
+	// Flat review thread: root comment + 3 bot replies + 1 reviewer follow-up.
+	// All replies point to root (ID 1), simulating GitHub's normalisation.
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this", IsReviewComment: true},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1, IsReviewComment: true},
+		{ID: 3, Author: models.Author{Username: "ai-bot"}, Body: "Unable", InReplyTo: 1, IsReviewComment: true},
+		{ID: 4, Author: models.Author{Username: "ai-bot"}, Body: "Unable", InReplyTo: 1, IsReviewComment: true},
+		{ID: 5, Author: models.Author{Username: "reviewer"}, Body: "Still broken", InReplyTo: 1, IsReviewComment: true},
+	}
+
+	cfg := commentfilter.Config{
+		BotUsername:    "ai-bot",
+		MaxThreadDepth: 2, // 3 bot replies >= 2 → filter follow-ups
+	}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// Comment 5 (reviewer follow-up) should be filtered: 3 bot replies >= MaxThreadDepth 2.
+	// Comment 1 (root) has 0 bot replies in its ancestry (it IS the root) → kept.
+	// Bot comments (2, 3, 4) are always preserved.
+	ids := extractIDs(result)
+	assertIDs(t, ids, []int64{1, 2, 3, 4})
+}
+
+func TestFilter_ThreadDepthNotExceeded_FlatReviewThread(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this", IsReviewComment: true},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1, IsReviewComment: true},
+		{ID: 3, Author: models.Author{Username: "reviewer"}, Body: "One more thing", InReplyTo: 1, IsReviewComment: true},
+	}
+
+	cfg := commentfilter.Config{
+		BotUsername:    "ai-bot",
+		MaxThreadDepth: 5, // 1 bot reply < 5 → nothing filtered
+	}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 3 {
+		t.Fatalf("got %d comments, want 3 (depth not exceeded)", len(result))
+	}
+}
+
+func TestFilter_ThreadDepth_FlatReviewThread_RootNotFiltered(t *testing.T) {
+	// Root comment (InReplyTo=0) should use its own ID as thread root.
+	// Even with many bot replies, the root itself should not be filtered.
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this", IsReviewComment: true},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done", InReplyTo: 1, IsReviewComment: true},
+		{ID: 3, Author: models.Author{Username: "ai-bot"}, Body: "Unable", InReplyTo: 1, IsReviewComment: true},
+	}
+
+	cfg := commentfilter.Config{
+		BotUsername:    "ai-bot",
+		MaxThreadDepth: 1,
+	}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// Root comment 1 should NOT be filtered (its thread root is itself,
+	// and the bot replies point to 1, not to themselves).
+	ids := extractIDs(result)
+	assertIDs(t, ids, []int64{1, 2, 3})
+}
+
+func TestBotRepliedTo_FlatReviewThread_FollowUpAddressed(t *testing.T) {
+	t0 := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+
+	comments := []models.PRComment{
+		{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Fix this",
+			IsReviewComment: true, Timestamp: t0},
+		{ID: 200, Author: models.Author{Username: "reviewer"}, Body: "Also check that",
+			IsReviewComment: true, InReplyTo: 100, Timestamp: t0.Add(time.Minute)},
+		{ID: 300, Author: models.Author{Username: "ai-bot"}, Body: "Unable",
+			IsReviewComment: true, InReplyTo: 100, Timestamp: t0.Add(2 * time.Minute)},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if !replied[100] {
+		t.Error("root comment 100 should be replied-to via InReplyTo")
+	}
+	if !replied[200] {
+		t.Error("follow-up 200 should be replied-to: bot reply (T+2m) is after follow-up (T+1m)")
+	}
+}
+
+func TestBotRepliedTo_FlatReviewThread_NewFollowUpNotAddressed(t *testing.T) {
+	t0 := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+
+	comments := []models.PRComment{
+		{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Fix this",
+			IsReviewComment: true, Timestamp: t0},
+		{ID: 200, Author: models.Author{Username: "ai-bot"}, Body: "Done",
+			IsReviewComment: true, InReplyTo: 100, Timestamp: t0.Add(time.Minute)},
+		{ID: 300, Author: models.Author{Username: "reviewer"}, Body: "New feedback",
+			IsReviewComment: true, InReplyTo: 100, Timestamp: t0.Add(2 * time.Minute)},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if !replied[100] {
+		t.Error("root comment 100 should be replied-to")
+	}
+	if replied[300] {
+		t.Error("follow-up 300 should NOT be replied-to: it's newer than bot's reply")
+	}
+}
+
+func TestBotRepliedTo_FlatReviewThread_SameTimestampTreatedAsAddressed(t *testing.T) {
+	t0 := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+
+	comments := []models.PRComment{
+		{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Fix this",
+			IsReviewComment: true, Timestamp: t0},
+		{ID: 200, Author: models.Author{Username: "ai-bot"}, Body: "Unable",
+			IsReviewComment: true, InReplyTo: 100, Timestamp: t0.Add(time.Minute)},
+		{ID: 300, Author: models.Author{Username: "reviewer"}, Body: "Still wrong",
+			IsReviewComment: true, InReplyTo: 100, Timestamp: t0.Add(time.Minute)},
+	}
+
+	replied := commentfilter.BotRepliedTo(comments, "ai-bot")
+
+	if !replied[300] {
+		t.Error("same-timestamp follow-up should be treated as addressed (safe direction to prevent loops)")
+	}
+}
+
+func TestHasNewActionable_FalseWhenFlatReviewThreadFullyAddressed(t *testing.T) {
+	// Reproduces the PR #3123 scenario: reviewer posts follow-ups, bot
+	// replies with "unable". All follow-ups are older than the bot's
+	// reply, so nothing should be actionable.
+	t0 := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this",
+			IsReviewComment: true, Timestamp: t0},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Addressed in abc123",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(time.Minute)},
+		{ID: 3, Author: models.Author{Username: "reviewer"}, Body: "Not quite right",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(2 * time.Minute)},
+		{ID: 4, Author: models.Author{Username: "reviewer"}, Body: "Also wrong here",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(3 * time.Minute)},
+		{ID: 5, Author: models.Author{Username: "ai-bot"}, Body: "Unable",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(4 * time.Minute)},
+		{ID: 6, Author: models.Author{Username: "ai-bot"}, Body: "Unable",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(4 * time.Minute)},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	if commentfilter.HasNewActionable(comments, cfg) {
+		t.Error("expected false: all follow-ups are older than the bot's latest reply")
+	}
+}
+
+func TestHasNewActionable_TrueWhenNewFollowUpAfterBotReply(t *testing.T) {
+	t0 := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
+
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this",
+			IsReviewComment: true, Timestamp: t0},
+		{ID: 2, Author: models.Author{Username: "ai-bot"}, Body: "Done",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(time.Minute)},
+		{ID: 3, Author: models.Author{Username: "reviewer"}, Body: "New issue found",
+			IsReviewComment: true, InReplyTo: 1, Timestamp: t0.Add(2 * time.Minute)},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	if !commentfilter.HasNewActionable(comments, cfg) {
+		t.Error("expected true: follow-up at T+2m is newer than bot reply at T+1m")
 	}
 }
 
