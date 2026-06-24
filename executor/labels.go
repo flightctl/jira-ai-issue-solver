@@ -84,22 +84,21 @@ func (p *Pipeline) validateForkMode(
 
 	p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.ForkUserMissing)
 
-	errMsg := fmt.Sprintf(
-		"fork mode requires assignee GitHub mapping: ticket assignee %s has no entry in jira.assignee_to_github_username",
-		assigneeDesc,
-	)
-
 	if !settings.DisableErrorComments {
+		detail := fmt.Sprintf(
+			"fork mode requires assignee GitHub mapping: ticket assignee %s has no entry in jira.assignee_to_github_username",
+			assigneeDesc,
+		)
 		comment := fmt.Sprintf(
 			"%s Fork mode validation failed\n\nError: %s\n\nAdd the assignee's GitHub username to jira.assignee_to_github_username in the bot configuration.",
-			statusCommentMarker, errMsg,
+			statusCommentMarker, detail,
 		)
 		if err := p.tracker.AddComment(ticketKey, comment); err != nil {
 			logger.Warn("Failed to post fork-mode error comment", zap.Error(err))
 		}
 	}
 
-	return errors.New(errMsg)
+	return errors.New("fork mode requires assignee GitHub mapping: ticket assignee has no entry in jira.assignee_to_github_username")
 }
 
 // clearFailureLabels removes all configured failure labels from a

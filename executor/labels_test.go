@@ -313,8 +313,11 @@ func TestValidateForkMode(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !strings.Contains(err.Error(), "unassigned") {
-			t.Errorf("error = %q, want it to mention 'unassigned'", err.Error())
+		if !strings.Contains(err.Error(), "fork mode requires assignee GitHub mapping") {
+			t.Errorf("error = %q, want it to mention fork mode requirement", err.Error())
+		}
+		if strings.Contains(err.Error(), "unassigned") {
+			t.Error("error should not contain assignee details (PII redaction)")
 		}
 		if len(added) != 1 || added[0] != "fork-missing" {
 			t.Errorf("added = %v, want [fork-missing]", added)
@@ -348,8 +351,11 @@ func TestValidateForkMode(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !strings.Contains(err.Error(), "bob@example.com") {
-			t.Errorf("error = %q, want it to mention 'bob@example.com'", err.Error())
+		if !strings.Contains(err.Error(), "fork mode requires assignee GitHub mapping") {
+			t.Errorf("error = %q, want it to mention fork mode requirement", err.Error())
+		}
+		if strings.Contains(err.Error(), "bob@example.com") {
+			t.Error("error should not contain assignee email (PII redaction)")
 		}
 		if len(added) != 1 || added[0] != "fork-missing" {
 			t.Errorf("added = %v, want [fork-missing]", added)
