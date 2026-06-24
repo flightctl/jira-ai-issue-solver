@@ -135,10 +135,10 @@ type RepoLocator interface {
 	// workspaces it returns all repos in the workspace.
 	LocateRepos(workItem models.WorkItem) ([]models.RepoCoord, error)
 
-	// ForkOwner returns the GitHub username that owns the fork where
-	// the bot pushes branches. Returns empty string when the assignee
-	// has no mapping (no fork-based workflow).
-	ForkOwner(workItem models.WorkItem) string
+	// ForkOwnerHeads returns candidate PR head refs in priority
+	// order. Fork-mode projects return the fork head first with a
+	// direct-mode fallback.
+	ForkOwnerHeads(workItem models.WorkItem, branchName string) []string
 }
 
 // MergeabilityChecker retrieves the merge status of a pull request.

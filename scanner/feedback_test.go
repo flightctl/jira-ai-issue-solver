@@ -521,11 +521,11 @@ func TestFeedbackScanner_UsesBranchConvention(t *testing.T) {
 
 func TestFeedbackScanner_ForkMode_UsesOwnerPrefixedHead(t *testing.T) {
 	d := newFeedbackDeps()
-	d.repos.ForkOwnerFunc = func(workItem models.WorkItem) string {
+	d.repos.ForkOwnerHeadsFunc = func(workItem models.WorkItem, branchName string) []string {
 		if workItem.Key == "PROJ-1" {
-			return "contributor-gh"
+			return []string{"contributor-gh:" + branchName, branchName}
 		}
-		return ""
+		return []string{branchName}
 	}
 
 	var receivedHead string

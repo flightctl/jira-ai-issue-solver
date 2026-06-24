@@ -134,9 +134,9 @@ func (s *StubPRFetcher) GetPRComments(owner, repo string, number int, since time
 // Set the corresponding Func field to control each method's behavior.
 // When a Func field is nil, the method returns empty/zero values.
 type StubRepoLocator struct {
-	LocateRepoFunc  func(workItem models.WorkItem) (string, string, error)
-	LocateReposFunc func(workItem models.WorkItem) ([]models.RepoCoord, error)
-	ForkOwnerFunc   func(workItem models.WorkItem) string
+	LocateRepoFunc     func(workItem models.WorkItem) (string, string, error)
+	LocateReposFunc    func(workItem models.WorkItem) ([]models.RepoCoord, error)
+	ForkOwnerHeadsFunc func(workItem models.WorkItem, branchName string) []string
 }
 
 func (s *StubRepoLocator) LocateRepo(workItem models.WorkItem) (string, string, error) {
@@ -153,11 +153,11 @@ func (s *StubRepoLocator) LocateRepos(workItem models.WorkItem) ([]models.RepoCo
 	return []models.RepoCoord{}, nil
 }
 
-func (s *StubRepoLocator) ForkOwner(workItem models.WorkItem) string {
-	if s.ForkOwnerFunc != nil {
-		return s.ForkOwnerFunc(workItem)
+func (s *StubRepoLocator) ForkOwnerHeads(workItem models.WorkItem, branchName string) []string {
+	if s.ForkOwnerHeadsFunc != nil {
+		return s.ForkOwnerHeadsFunc(workItem, branchName)
 	}
-	return ""
+	return []string{branchName}
 }
 
 // StubCIChecker is a test double for [scanner.CIChecker].

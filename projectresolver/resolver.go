@@ -65,7 +65,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 	transitions := pc.StatusTransitions.GetStatusTransitions(workItem.Type)
 
 	var ghUsername string
-	if workItem.Assignee != nil {
+	if pc.ForkMode && workItem.Assignee != nil {
 		ghUsername = r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
 	}
 
@@ -82,6 +82,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		FailureLabels:        pc.FailureLabels,
 		LifecycleLabels:      pc.LifecycleLabels,
 		MergedStatus:         transitions.Merged,
+		ForkMode:             pc.ForkMode,
 		GitHubUsername:       ghUsername,
 	}, nil
 }
@@ -160,13 +161,32 @@ func (r *ConfigResolver) LocateRepos(workItem models.WorkItem) ([]models.RepoCoo
 }
 
 // ForkOwner returns the GitHub username that owns the assignee's fork.
-// Returns empty string if the work item has no assignee or the
-// assignee is not in the assignee-to-GitHub-username mapping.
+// Returns empty string if the project is not in fork mode, the work
+// item has no assignee, or the assignee is not in the mapping.
 func (r *ConfigResolver) ForkOwner(workItem models.WorkItem) string {
+	// Error from findProjectConfig (unknown project) is intentionally
+	// swallowed — callers treat empty as "no fork" which is correct
+	// when the project cannot be resolved.
+	pc, err := r.findProjectConfig(workItem)
+	if err != nil || !pc.ForkMode {
+		return ""
+	}
 	if workItem.Assignee == nil {
 		return ""
 	}
 	return r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
+}
+
+// ForkOwnerHeads returns candidate PR head refs in priority order.
+// For fork-mode projects with a mapped assignee, returns the fork
+// head first with a direct-mode fallback so that PRs created before
+// fork_mode was enabled can still be found.
+func (r *ConfigResolver) ForkOwnerHeads(workItem models.WorkItem, branchName string) []string {
+	forkOwner := r.ForkOwner(workItem)
+	if forkOwner != "" {
+		return []string{forkOwner + ":" + branchName, branchName}
+	}
+	return []string{branchName}
 }
 
 // ResolveFailureLabels returns the failure label configuration for the

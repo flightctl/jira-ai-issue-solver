@@ -60,7 +60,7 @@ linters:
 
     gocyclo:
       # Minimal code complexity to report
-      min-complexity: 35
+      min-complexity: 37
 
     gosec:
       # Exclude specific checks

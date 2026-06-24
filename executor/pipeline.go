@@ -128,6 +128,11 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		return result, fmt.Errorf("resolve project: %w", err)
 	}
 
+	// --- Step 2a: Validate fork-mode requirements ---
+	if err := p.validateForkMode(logger, job.TicketKey, workItem, settings); err != nil {
+		return result, err
+	}
+
 	// --- Clean retry: delete stale branches and workspace ---
 	if job.CleanRetry {
 		p.cleanRetryState(logger, job.TicketKey, settings)

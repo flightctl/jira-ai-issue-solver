@@ -2541,13 +2541,14 @@ func TestExecuteNewTicket_SkipsExistingAttachments(t *testing.T) {
 func TestNewTicketPipeline_ForkMode(t *testing.T) {
 	d := newTestDeps(t)
 
-	// Configure fork mode via GitHubUsername.
+	// Configure fork mode via ForkMode + GitHubUsername.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", CloneURL: "https://github.com/upstream-org/repo.git", BaseBranch: "main"}},
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
+			ForkMode:         true,
 			GitHubUsername:   "bot-fork",
 		}, nil
 	}
@@ -2632,6 +2633,7 @@ func TestPrepareBranch_ForkMode(t *testing.T) {
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
+			ForkMode:         true,
 			GitHubUsername:   "bot-fork",
 		}, nil
 	}
@@ -2673,6 +2675,7 @@ func TestPrepareBranch_ForkMode_SyncsForkBeforeCreateBranch(t *testing.T) {
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
+			ForkMode:         true,
 			GitHubUsername:   "adalton",
 		}, nil
 	}
@@ -2748,6 +2751,7 @@ func TestPrepareBranch_ForkMode_SyncForkErrorIsNonFatal(t *testing.T) {
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
+			ForkMode:         true,
 			GitHubUsername:   "adalton",
 		}, nil
 	}
@@ -2774,6 +2778,7 @@ func TestFeedbackPipeline_ForkMode(t *testing.T) {
 			InProgressStatus: "In Progress",
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
+			ForkMode:         true,
 			GitHubUsername:   "bot-fork",
 		}, nil
 	}
