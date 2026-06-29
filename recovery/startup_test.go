@@ -259,7 +259,7 @@ func TestRun_StuckTicketWithCommitsNoPR_CreatesPR(t *testing.T) {
 	}
 	// No PR found.
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 	// Branch has commits.
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
@@ -311,7 +311,7 @@ func TestRun_StuckTicketWithCommitsNoPR_SecurityRedacted(t *testing.T) {
 		}, nil
 	}
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
 		return true, nil
@@ -346,7 +346,7 @@ func TestRun_StuckTicketWithCommitsNoPR_CreatePRFails_LeavesInProgress(t *testin
 		}, nil
 	}
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
 		return true, nil
@@ -412,7 +412,7 @@ func TestRun_StuckTicketNoPRNoCommits_RevertsAndRequeues(t *testing.T) {
 		}, nil
 	}
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
 		return false, nil
@@ -461,7 +461,7 @@ func TestRun_BranchHasCommitsError_RevertsAndRequeues(t *testing.T) {
 		}, nil
 	}
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
 		return false, errors.New("network error")
@@ -706,7 +706,7 @@ func TestRun_MixedScenario(t *testing.T) {
 				Number: 1, URL: "https://github.com/org/repo/pull/1",
 			}, nil
 		}
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
 		return false, nil
@@ -813,7 +813,7 @@ func TestRun_BranchNameFormat(t *testing.T) {
 	var queriedBranch string
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
 		queriedBranch = head
-		return nil, errors.New("no PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(owner, repo, branch, base string) (bool, error) {
 		return false, nil
@@ -860,7 +860,7 @@ func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
 	var prHead string
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
 		prHead = head
-		return nil, errors.New("no PR")
+		return nil, nil
 	}
 
 	// CreatePR should receive "contributor-gh:ai-bot/PROJ-100" as Head.
@@ -945,7 +945,7 @@ func TestRun_MultiRepo_PRsExistInSomeRepos_CompletesTransition(t *testing.T) {
 		if repo == "svc-a" {
 			return &models.PRDetails{Number: 1, URL: "https://github.com/org/svc-a/pull/1"}, nil
 		}
-		return nil, errors.New("no PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(_, _, _, _ string) (bool, error) {
 		return false, nil
@@ -985,7 +985,7 @@ func TestRun_MultiRepo_CommitsNoPR_CreatesPR(t *testing.T) {
 
 	// No PRs, svc-b has commits.
 	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, errors.New("no PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(_, repo, _, _ string) (bool, error) {
 		return repo == "svc-b", nil
@@ -1021,7 +1021,7 @@ func TestRun_MultiRepo_NoPRsNoCommits_Reverts(t *testing.T) {
 		}, nil
 	}
 	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, errors.New("no PR")
+		return nil, nil
 	}
 	d.git.BranchHasCommitsFunc = func(_, _, _, _ string) (bool, error) {
 		return false, nil

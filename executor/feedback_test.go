@@ -293,13 +293,13 @@ func TestExecuteFeedback_ParentContextCancelled(t *testing.T) {
 func TestExecuteFeedback_PRNotFound(t *testing.T) {
 	d := newFeedbackDeps(t)
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR for branch")
+		return nil, nil
 	}
 
 	p := d.pipeline(t)
 	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
 
-	if err == nil || !strings.Contains(err.Error(), "find PR") {
+	if err == nil || !strings.Contains(err.Error(), "no open PR found") {
 		t.Fatalf("expected PR not found error, got %v", err)
 	}
 }
@@ -1260,7 +1260,7 @@ func TestMultiRepoFeedback_NoPRsFound(t *testing.T) {
 	d := newMultiRepoFeedbackDeps(t)
 
 	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("not found")
+		return nil, nil
 	}
 
 	p := d.pipeline(t)

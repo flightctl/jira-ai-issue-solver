@@ -241,7 +241,7 @@ func TestFeedbackScanner_ThreadDepthFiltered(t *testing.T) {
 func TestFeedbackScanner_PRNotFound_Skipped(t *testing.T) {
 	d := newFeedbackDeps()
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR")
+		return nil, nil
 	}
 
 	submitCalled := false
@@ -587,7 +587,7 @@ func TestFeedbackScanner_MultiRepo_CommentsOnSecondRepo(t *testing.T) {
 		if repo == "svc-b" {
 			return &models.PRDetails{Number: 99, Branch: head}, nil
 		}
-		return nil, fmt.Errorf("no PR for %s/%s", owner, repo)
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
 		if repo == "svc-b" {
@@ -1033,7 +1033,7 @@ func TestFeedbackScanner_FailureLabels_Rejected(t *testing.T) {
 	d := newFeedbackDeps()
 	// No open PR — simulate PR not found.
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	// Closed (rejected) PR exists.
 	d.prs.GetClosedPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
@@ -1103,7 +1103,7 @@ func TestFeedbackScanner_FailureLabels_Rejected_MultiRepo_ErrorOnOneRepo(t *test
 	d := newFeedbackDeps()
 	// No open PR on any repo.
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	// Multi-repo: two repos, first errors on closed PR check, second has rejected PR.
 	d.repos = &scannertest.StubRepoLocator{
@@ -1238,7 +1238,7 @@ func TestFeedbackScanner_LifecycleLabels_Merged(t *testing.T) {
 	d := newFeedbackDeps()
 	// No open PR.
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
@@ -1284,7 +1284,7 @@ func TestFeedbackScanner_LifecycleLabels_Merged(t *testing.T) {
 func TestFeedbackScanner_LifecycleLabels_MergedWithStatusTransition(t *testing.T) {
 	d := newFeedbackDeps()
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
@@ -1325,7 +1325,7 @@ func TestFeedbackScanner_LifecycleLabels_MergedWithStatusTransition(t *testing.T
 func TestFeedbackScanner_LifecycleLabels_NoTransitionWhenStatusEmpty(t *testing.T) {
 	d := newFeedbackDeps()
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
@@ -1409,7 +1409,7 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_AllMergedRequired(t *testing.
 		}, nil
 	}
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
@@ -1456,7 +1456,7 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_SkipsReposWithoutPRs(t *testi
 		}, nil
 	}
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
@@ -1515,7 +1515,7 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_NoPRsAnywhere(t *testing.T) {
 		}, nil
 	}
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil

@@ -3,6 +3,7 @@ package executor_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"jira-ai-issue-solver/container"
@@ -152,15 +153,15 @@ func TestExecuteMerge_NoPRFound(t *testing.T) {
 	d := newTestDeps(t)
 
 	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found for branch")
+		return nil, nil
 	}
 
 	p := d.pipeline(t)
 	job := mergeJob("PROJ-1")
 
 	_, err := p.Execute(context.Background(), job)
-	if err == nil {
-		t.Fatal("expected error when no PR found")
+	if err == nil || !strings.Contains(err.Error(), "no open PR found") {
+		t.Fatalf("expected 'no open PR found' error, got %v", err)
 	}
 }
 
@@ -236,7 +237,7 @@ func TestExecuteMerge_MultiRepo_ConflictRestoresAuth(t *testing.T) {
 func TestExecuteMerge_MultiRepo_NoPRs(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 	d.git.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, fmt.Errorf("no open PR found")
+		return nil, nil
 	}
 
 	p := d.pipeline(t)

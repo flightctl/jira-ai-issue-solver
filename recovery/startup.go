@@ -172,6 +172,10 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 
 	// Check for an existing PR.
 	pr, err := r.git.GetPRForBranch(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
+	if err != nil {
+		logger.Warn("Error looking up PR during recovery",
+			zap.Error(err))
+	}
 	if err == nil && pr != nil {
 		logger.Info("Found PR for stuck ticket, completing transition",
 			zap.String("case", "pr_exists"),
@@ -220,6 +224,11 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 	for _, repo := range settings.Repos {
 		// Check for an existing PR.
 		pr, err := r.git.GetPRForBranch(repo.Owner, repo.Repo, head)
+		if err != nil {
+			logger.Warn("Error looking up PR during recovery",
+				zap.String("repo", repo.Name),
+				zap.Error(err))
+		}
 		if err == nil && pr != nil {
 			logger.Info("Found PR for repo",
 				zap.String("repo", repo.Name),

@@ -615,7 +615,7 @@ func TestMergeScanner_DuplicateJobHandled(t *testing.T) {
 func TestMergeScanner_NoPRFound(t *testing.T) {
 	d := newMergeDeps()
 	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
-		return nil, errors.New("no open PR found")
+		return nil, nil
 	}
 
 	submitted := false

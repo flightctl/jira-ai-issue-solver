@@ -308,9 +308,12 @@ func (s *FeedbackScanner) observeRepos(
 	for _, r := range repos {
 		pr, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
-			logger.Debug("No PR found for repo, skipping",
+			logger.Warn("Error looking up PR for repo",
 				zap.String("repo", r.Owner+"/"+r.Repo),
 				zap.Error(err))
+			continue
+		}
+		if pr == nil {
 			continue
 		}
 		obs.hasOpenPR = true
@@ -490,7 +493,7 @@ func (s *FeedbackScanner) detectMerge(
 	for _, r := range repos {
 		merged, err := s.prs.GetMergedPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
-			logger.Debug("Error checking for merged PR",
+			logger.Warn("Error checking for merged PR",
 				zap.String("repo", r.Owner+"/"+r.Repo),
 				zap.Error(err))
 			return false
@@ -502,13 +505,19 @@ func (s *FeedbackScanner) detectMerge(
 
 		// No merged PR — check whether a PR was ever created.
 		// An open or closed-but-unmerged PR means work is outstanding.
-		open, _ := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
+		open, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Warn("Error checking for open PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
+			return false
+		}
 		if open != nil {
 			return false
 		}
 		closed, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
-			logger.Debug("Error checking for closed PR",
+			logger.Warn("Error checking for closed PR",
 				zap.String("repo", r.Owner+"/"+r.Repo),
 				zap.Error(err))
 			return false

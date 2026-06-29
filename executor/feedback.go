@@ -66,9 +66,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 3: Find PR by branch ---
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	prDetails, err := p.git.GetPRForBranch(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
+	prDetails, err := p.findOpenPR(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
 	if err != nil {
-		return result, fmt.Errorf("find PR for branch %s: %w", branchName, err)
+		return result, err
 	}
 
 	// --- Step 4: Find or create workspace (self-healing) ---
@@ -303,8 +303,12 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	for _, repo := range settings.Repos {
 		pr, err := p.git.GetPRForBranch(repo.Owner, repo.Repo, head)
 		if err != nil {
-			logger.Debug("No PR found for repo",
-				zap.String("repo", repo.Name))
+			logger.Warn("Error looking up PR for repo",
+				zap.String("repo", repo.Name),
+				zap.Error(err))
+			continue
+		}
+		if pr == nil {
 			continue
 		}
 		repoInfos = append(repoInfos, repoPRInfo{repo: repo, pr: pr})

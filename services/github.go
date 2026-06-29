@@ -2330,7 +2330,7 @@ func (s *GitHubServiceImpl) getInstallationIDForRepo(owner, repo string) (int64,
 }
 
 // GetPRForBranch finds the open pull request whose head branch matches
-// the given name. Returns an error if no matching PR is found.
+// the given name. Returns nil, nil when no matching PR is found.
 func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PRDetails, error) {
 	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
@@ -2374,7 +2374,7 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 		}
 	}
 
-	return nil, fmt.Errorf("no open PR found for branch %s", head)
+	return nil, nil
 }
 
 // GetClosedPRForBranch finds a closed (not merged) pull request whose
