@@ -3,7 +3,6 @@ package recoverytest
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"jira-ai-issue-solver/jobmanager"
@@ -89,7 +88,7 @@ func (s *StubGitService) GetPRForBranch(owner, repo, head string) (*models.PRDet
 	if s.GetPRForBranchFunc != nil {
 		return s.GetPRForBranchFunc(owner, repo, head)
 	}
-	return nil, errors.New("no PR found")
+	return nil, nil
 }
 
 func (s *StubGitService) BranchHasCommits(owner, repo, branch, base string) (bool, error) {
