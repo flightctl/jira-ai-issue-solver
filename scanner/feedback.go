@@ -438,9 +438,10 @@ func (s *FeedbackScanner) applyFailureLabel(
 	}
 }
 
-// checkAndApplyMergedLabel checks whether all repos' PRs are merged
-// and, if so, applies the "merged" lifecycle label and optionally
-// transitions the ticket to the configured merged status. The "review"
+// checkAndApplyMergedLabel checks whether all repos that had a PR
+// have it merged and, if so, applies the "merged" lifecycle label
+// and optionally transitions the ticket to the configured merged
+// status. Repos that never had a PR are skipped. The "review"
 // lifecycle label is handled by the executor at PR creation time.
 // No-op when lifecycle labeling is not configured.
 func (s *FeedbackScanner) checkAndApplyMergedLabel(
@@ -505,11 +506,18 @@ func (s *FeedbackScanner) detectMerge(
 		if open != nil {
 			return false
 		}
-		closed, _ := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
+		closed, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Debug("Error checking for closed PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
+			return false
+		}
 		if closed != nil {
 			return false
 		}
-		// No PR of any kind — repo was never touched; skip it.
+		logger.Debug("Repo skipped — no PR ever created",
+			zap.String("repo", r.Owner+"/"+r.Repo))
 	}
 	if hadPR > 0 {
 		logger.Info("All PRs merged")
