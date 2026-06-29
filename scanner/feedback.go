@@ -475,30 +475,46 @@ func (s *FeedbackScanner) checkAndApplyMergedLabel(
 	}
 }
 
-// detectMerge checks whether all repos have a merged PR. Returns true
-// only when every repo has a merged PR — a ticket is not fully merged
-// until all its PRs land.
+// detectMerge checks whether all repos that had a PR have it merged.
+// Repos where no PR was ever created for the branch are skipped —
+// in multi-repo workspaces, the AI may only change a subset of repos.
+// Returns false when any repo still has an unmerged PR or when no
+// repo had a PR at all.
 func (s *FeedbackScanner) detectMerge(
 	logger *zap.Logger,
 	repos []models.RepoCoord,
 	head string,
 ) bool {
+	hadPR := 0
 	for _, r := range repos {
-		pr, err := s.prs.GetMergedPRForBranch(r.Owner, r.Repo, head)
+		merged, err := s.prs.GetMergedPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
 			logger.Debug("Error checking for merged PR",
 				zap.String("repo", r.Owner+"/"+r.Repo),
 				zap.Error(err))
 			return false
 		}
-		if pr == nil {
+		if merged != nil {
+			hadPR++
+			continue
+		}
+
+		// No merged PR — check whether a PR was ever created.
+		// An open or closed-but-unmerged PR means work is outstanding.
+		open, _ := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
+		if open != nil {
 			return false
 		}
+		closed, _ := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
+		if closed != nil {
+			return false
+		}
+		// No PR of any kind — repo was never touched; skip it.
 	}
-	if len(repos) > 0 {
+	if hadPR > 0 {
 		logger.Info("All PRs merged")
 	}
-	return len(repos) > 0
+	return hadPR > 0
 }
 
 // applyLifecycleLabel sets one lifecycle label and removes the others.

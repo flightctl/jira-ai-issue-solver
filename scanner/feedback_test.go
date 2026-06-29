@@ -1414,10 +1414,16 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_AllMergedRequired(t *testing.
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{}, nil
 	}
-	// Only repo-a is merged; repo-b is not.
+	// repo-a is merged; repo-b has a closed (unmerged) PR — still outstanding.
 	d.prs.GetMergedPRForBranchFunc = func(_, repo, _ string) (*models.PRDetails, error) {
 		if repo == "repo-a" {
 			return &models.PRDetails{Number: 1}, nil
+		}
+		return nil, nil
+	}
+	d.prs.GetClosedPRForBranchFunc = func(_, repo, _ string) (*models.PRDetails, error) {
+		if repo == "repo-b" {
+			return &models.PRDetails{Number: 2}, nil
 		}
 		return nil, nil
 	}
@@ -1436,6 +1442,66 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_AllMergedRequired(t *testing.
 	runOneFeedbackScan(t, d.scanner(t))
 
 	if addCalled {
-		t.Error("merged label should not be applied when only some repos have merged PRs")
+		t.Error("merged label should not be applied when a repo has an unmerged PR")
+	}
+}
+
+func TestFeedbackScanner_LifecycleLabels_MultiRepo_SkipsReposWithoutPRs(t *testing.T) {
+	d := newFeedbackDeps()
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
+			{Owner: "org", Repo: "repo-a"},
+			{Owner: "org", Repo: "repo-b"},
+			{Owner: "org", Repo: "repo-c"},
+		}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, fmt.Errorf("no open PR found")
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	// Only repo-a had a PR, and it's merged. repo-b and repo-c never
+	// had PRs (no open, closed, or merged) — they should be skipped.
+	d.prs.GetMergedPRForBranchFunc = func(_, repo, _ string) (*models.PRDetails, error) {
+		if repo == "repo-a" {
+			return &models.PRDetails{Number: 1}, nil
+		}
+		return nil, nil
+	}
+	d.prs.GetClosedPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, nil
+	}
+
+	var added []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { added = append(added, label); return nil },
+		RemoveLabelFunc: func(_, _ string) error { return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{}
+	d.lifecycleLabelResolver = &scannertest.StubLifecycleLabelResolver{
+		ResolveLifecycleLabelsFunc: func(_ models.WorkItem) models.LifecycleLabels {
+			return models.LifecycleLabels{Merged: "merged"}
+		},
+	}
+
+	var transitioned string
+	d.mergedStatusResolver = &scannertest.StubMergedStatusResolver{
+		ResolveMergedStatusFunc: func(_ models.WorkItem) string { return "MODIFIED" },
+	}
+	d.statusTransitioner = &scannertest.StubStatusTransitioner{
+		TransitionStatusFunc: func(_, status string) error {
+			transitioned = status
+			return nil
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "merged" {
+		t.Errorf("added = %v, want [merged]", added)
+	}
+	if transitioned != "MODIFIED" {
+		t.Errorf("transitioned = %q, want %q", transitioned, "MODIFIED")
 	}
 }
