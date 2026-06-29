@@ -463,6 +463,21 @@ func TestFilter_BotIgnoreDirective_NewlineBetweenMentionAndIgnore(t *testing.T) 
 	}
 }
 
+func TestFilter_BotIgnoreDirective_MentionInsideLargerToken(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "contact-foo@ai-bot ignore this"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// @ inside a larger token (e.g., email-like) should NOT match.
+	if len(result) != 1 {
+		t.Fatalf("got %d comments, want 1 (mention inside larger token should not match)", len(result))
+	}
+}
+
 func TestFilter_BotIgnoreDirective_DoesNotAffectBotOwnComments(t *testing.T) {
 	comments := []models.PRComment{
 		{ID: 1, Author: models.Author{Username: "ai-bot"}, Body: "@ai-bot ignore\nSome bot message"},

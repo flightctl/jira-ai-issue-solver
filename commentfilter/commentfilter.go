@@ -254,9 +254,10 @@ func isSlashCommandOnly(body string) bool {
 // (case-insensitive), where the [bot] suffix is optional. The word
 // boundary after "ignore" prevents false positives like "ignoring".
 // Horizontal whitespace only ([ \t]+) prevents matching when the
-// mention and "ignore" are on separate lines.
+// mention and "ignore" are on separate lines. A left boundary
+// ensures the @ is not part of a larger token (e.g., an email).
 func botIgnoreDirectiveRe(normBot string) *regexp.Regexp {
-	pattern := `(?i)@` + regexp.QuoteMeta(normBot) + `(\[bot\])?[ \t]+ignore\b`
+	pattern := `(?i)(^|[^[:alnum:]_])@` + regexp.QuoteMeta(normBot) + `(\[bot\])?[ \t]+ignore\b`
 	return regexp.MustCompile(pattern)
 }
 
