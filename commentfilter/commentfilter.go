@@ -8,6 +8,8 @@
 //
 // Filtering rules:
 //   - Comments from ignored usernames are removed entirely
+//   - Comments containing only slash commands (e.g. /lgtm) are removed
+//   - Comments containing @<botUsername> ignore are removed
 //   - Known bot comments replying to our bot are removed (prevents
 //     bot-to-bot ping-pong)
 //   - Comments in threads where our bot has replied at or beyond
@@ -89,6 +91,7 @@ func Filter(comments []models.PRComment, cfg Config) []models.PRComment {
 
 	byID := buildLookup(comments)
 	normBot := normalizeUsername(cfg.BotUsername)
+	ignoreRe := botIgnoreDirectiveRe(normBot)
 
 	result := make([]models.PRComment, 0, len(comments))
 	for _, c := range comments {
@@ -105,6 +108,10 @@ func Filter(comments []models.PRComment, cfg Config) []models.PRComment {
 		}
 
 		if isSlashCommandOnly(c.Body) {
+			continue
+		}
+
+		if ignoreRe.MatchString(c.Body) {
 			continue
 		}
 
@@ -241,6 +248,17 @@ func isSlashCommandOnly(body string) bool {
 		hasCommand = true
 	}
 	return hasCommand
+}
+
+// botIgnoreDirectiveRe builds a regexp matching @<botUsername> ignore
+// (case-insensitive), where the [bot] suffix is optional. The word
+// boundary after "ignore" prevents false positives like "ignoring".
+// Horizontal whitespace only ([ \t]+) prevents matching when the
+// mention and "ignore" are on separate lines. A left boundary
+// ensures the @ is not part of a larger token (e.g., an email).
+func botIgnoreDirectiveRe(normBot string) *regexp.Regexp {
+	pattern := `(?i)(^|[^[:alnum:]_])@` + regexp.QuoteMeta(normBot) + `(\[bot\])?[ \t]+ignore\b`
+	return regexp.MustCompile(pattern)
 }
 
 // shouldSkipBotReply returns true if a known bot is replying to our
