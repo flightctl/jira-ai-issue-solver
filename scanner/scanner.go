@@ -104,7 +104,8 @@ type StatusTransitioner interface {
 // PRFetcher retrieves PR details and comments from GitHub.
 type PRFetcher interface {
 	// GetPRForBranch finds the open pull request whose head
-	// branch matches the given name.
+	// branch matches the given name. Returns nil, nil when no
+	// matching PR is found.
 	GetPRForBranch(owner, repo, head string) (*models.PRDetails, error)
 
 	// GetClosedPRForBranch finds a closed (not merged) pull request

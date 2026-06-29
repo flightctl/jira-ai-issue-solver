@@ -258,8 +258,12 @@ func (s *MergeScanner) hasUnmergeablePR(
 	for _, r := range repos {
 		pr, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
-			logger.Debug("No PR found for repo, skipping",
-				zap.String("repo", r.Owner+"/"+r.Repo))
+			logger.Warn("Error looking up PR for repo",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.Error(err))
+			continue
+		}
+		if pr == nil {
 			continue
 		}
 

@@ -63,7 +63,8 @@ type IssueTracker interface {
 // only the methods required to detect and resolve interrupted work.
 type GitService interface {
 	// GetPRForBranch finds the open pull request whose head branch
-	// matches the given name. Returns an error if no matching PR exists.
+	// matches the given name. Returns nil, nil when no matching PR
+	// is found.
 	GetPRForBranch(owner, repo, head string) (*models.PRDetails, error)
 
 	// BranchHasCommits reports whether the branch has commits beyond

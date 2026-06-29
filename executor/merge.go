@@ -71,9 +71,9 @@ func (p *Pipeline) executeSingleRepoMerge(
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
 
 	// --- Step 3: Find PR by branch ---
-	prDetails, err := p.git.GetPRForBranch(repo.Owner, repo.Repo, settings.PRHead(branchName))
+	prDetails, err := p.findOpenPR(repo.Owner, repo.Repo, settings.PRHead(branchName))
 	if err != nil {
-		return result, fmt.Errorf("find PR for branch %s: %w", branchName, err)
+		return result, err
 	}
 
 	// --- Step 4: Find or create workspace ---
@@ -365,8 +365,12 @@ func (p *Pipeline) findMergeRepoPRs(
 	for _, repo := range settings.Repos {
 		pr, err := p.git.GetPRForBranch(repo.Owner, repo.Repo, head)
 		if err != nil {
-			logger.Debug("No PR found for repo",
-				zap.String("repo", repo.Name))
+			logger.Warn("Error looking up PR for repo",
+				zap.String("repo", repo.Name),
+				zap.Error(err))
+			continue
+		}
+		if pr == nil {
 			continue
 		}
 		repoInfos = append(repoInfos, mergeRepoPR{repo: repo, pr: pr})

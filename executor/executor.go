@@ -157,8 +157,8 @@ type GitService interface {
 	CreatePR(params models.PRParams) (*models.PR, error)
 
 	// GetPRForBranch finds the open pull request whose head branch
-	// matches the given branch name. Returns an error if no matching
-	// PR exists.
+	// matches the given branch name. Returns nil, nil when no
+	// matching PR is found.
 	GetPRForBranch(owner, repo, head string) (*models.PRDetails, error)
 
 	// GetPRComments returns comments on the given pull request.
