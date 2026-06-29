@@ -267,6 +267,7 @@ func TestFilter_CombinedRules(t *testing.T) {
 		{ID: 3, Author: models.Author{Username: "coderabbitai[bot]"}, Body: "Loop", InReplyTo: 2},
 		{ID: 4, Author: models.Author{Username: "packit[bot]"}, Body: "/build"},
 		{ID: 5, Author: models.Author{Username: "reviewer2"}, Body: "Update docs"},
+		{ID: 6, Author: models.Author{Username: "reviewer"}, Body: "@ai-bot ignore\nHint for CodeRabbit"},
 	}
 
 	cfg := commentfilter.Config{
@@ -279,7 +280,7 @@ func TestFilter_CombinedRules(t *testing.T) {
 	result := commentfilter.Filter(comments, cfg)
 
 	// Kept: 1 (reviewer), 2 (our bot), 5 (reviewer2)
-	// Removed: 3 (known bot replying to our bot), 4 (ignored)
+	// Removed: 3 (known bot replying to our bot), 4 (ignored), 6 (ignore directive)
 	ids := extractIDs(result)
 	assertIDs(t, ids, []int64{1, 2, 5})
 }
@@ -356,6 +357,154 @@ func TestFilter_RemovesSlashCommandWithBlankLines(t *testing.T) {
 
 	if len(result) != 0 {
 		t.Fatalf("got %d comments, want 0 (slash commands with blank lines between)", len(result))
+	}
+}
+
+// --- @botname ignore directive ---
+
+func TestFilter_RemovesBotIgnoreDirective(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@ai-bot ignore\n\nThis is for humans only."},
+		{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "Please fix this bug"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	ids := extractIDs(result)
+	assertIDs(t, ids, []int64{2})
+}
+
+func TestFilter_BotIgnoreDirective_AtEndOfComment(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "This hint is for CodeRabbit.\n\n@ai-bot ignore"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (directive at end of comment)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_InlineInComment(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Some context @ai-bot ignore more text here"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (directive inline)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_CaseInsensitive(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@AI-BOT Ignore\nNot for the bot"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (case-insensitive match)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_WithBotSuffix(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@ai-bot[bot] ignore\nNot for the bot"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (with [bot] suffix)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_WordBoundary(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@ai-bot ignoring this for now"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// "ignoring" should NOT match — word boundary prevents it.
+	if len(result) != 1 {
+		t.Fatalf("got %d comments, want 1 ('ignoring' should not match)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_NewlineBetweenMentionAndIgnore(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@ai-bot\nignore the linter warnings on line 42"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// Newline between mention and "ignore" should NOT match — only
+	// horizontal whitespace (space/tab) is accepted.
+	if len(result) != 1 {
+		t.Fatalf("got %d comments, want 1 (newline between mention and ignore should not match)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_DoesNotAffectBotOwnComments(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "ai-bot"}, Body: "@ai-bot ignore\nSome bot message"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// Bot's own comments are always preserved regardless of content.
+	if len(result) != 1 {
+		t.Fatalf("got %d comments, want 1 (bot's own comments preserved)", len(result))
+	}
+}
+
+func TestFilter_BotIgnoreDirective_ConfigUsernameWithBotSuffix(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@my-bot ignore\nHuman-only comment"},
+		{ID: 2, Author: models.Author{Username: "reviewer"}, Body: "@my-bot[bot] ignore\nAlso human-only"},
+	}
+
+	// Config username includes [bot] suffix.
+	cfg := commentfilter.Config{BotUsername: "my-bot[bot]"}
+
+	result := commentfilter.Filter(comments, cfg)
+
+	// Both should be filtered: normalizeUsername strips [bot] from config,
+	// and the regex allows an optional [bot] in the mention.
+	if len(result) != 0 {
+		t.Fatalf("got %d comments, want 0 (config username with [bot] suffix)", len(result))
+	}
+}
+
+func TestHasNewActionable_FalseWhenOnlyBotIgnoreDirective(t *testing.T) {
+	comments := []models.PRComment{
+		{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "@ai-bot ignore\nThis is for humans"},
+	}
+
+	cfg := commentfilter.Config{BotUsername: "ai-bot"}
+
+	if commentfilter.HasNewActionable(comments, cfg) {
+		t.Error("expected false: only comment has ignore directive")
 	}
 }
 
