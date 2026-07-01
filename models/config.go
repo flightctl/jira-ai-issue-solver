@@ -318,6 +318,13 @@ type ProjectConfig struct {
 	GitPullRequestFieldName string                      `yaml:"git_pull_request_field_name" mapstructure:"git_pull_request_field_name"`
 	DisableErrorComments    bool                        `yaml:"disable_error_comments" mapstructure:"disable_error_comments" default:"false"`
 
+	// ForkMode when true requires fork-based contributions for
+	// this project. Commits are pushed to the assignee's fork
+	// (looked up via jira.assignee_to_github_username) and PRs
+	// are created as cross-repo PRs. When false, commits go
+	// directly to the upstream repo.
+	ForkMode bool `yaml:"fork_mode" mapstructure:"fork_mode" default:"false"`
+
 	// DefaultWorkspace is the workspace used for tickets that have
 	// no Jira component or whose component has no mapping in
 	// Components. Projects that require explicit component mapping
@@ -352,7 +359,7 @@ type ProjectConfig struct {
 
 // FailureLabels holds optional Jira label names applied to tickets in
 // failure states. Each label is independent: an empty string disables
-// that label. All three labels are mutually exclusive by lifecycle.
+// that label. Labels are mutually exclusive by lifecycle.
 type FailureLabels struct {
 	// CIFailing is applied when the bot's PR exists but CI checks
 	// are failing. Removed when CI passes.
@@ -365,12 +372,17 @@ type FailureLabels struct {
 	// Blocked is applied when the bot cannot proceed on a ticket
 	// (workspace errors, infra failures, retry exhaustion).
 	Blocked string `yaml:"blocked" mapstructure:"blocked"`
+
+	// ForkUserMissing is applied when a fork-mode project cannot
+	// resolve the ticket assignee's GitHub username from the
+	// jira.assignee_to_github_username mapping.
+	ForkUserMissing string `yaml:"fork_user_missing" mapstructure:"fork_user_missing"`
 }
 
 // All returns the configured label strings in a fixed order. Empty
 // strings (disabled labels) are included; callers should skip them.
 func (fl FailureLabels) All() []string {
-	return []string{fl.CIFailing, fl.Rejected, fl.Blocked}
+	return []string{fl.CIFailing, fl.Rejected, fl.Blocked, fl.ForkUserMissing}
 }
 
 // LifecycleLabels holds optional Jira label names that track ticket
@@ -1113,11 +1125,6 @@ func (c *Config) validate() error {
 	// Validate bot email can be determined
 	if c.GetBotEmail() == "" {
 		return errors.New("github.bot_email is required (either set explicitly, or it will be auto-constructed from app_id)")
-	}
-
-	// Validate Jira assignee mapping (required for GitHub App fork-based workflow)
-	if len(c.Jira.AssigneeToGitHubUsername) == 0 {
-		return errors.New("jira.assignee_to_github_username is required: GitHub App mode creates PRs against assignee forks, so all ticket assignees must map to GitHub usernames - tickets must be assigned before processing")
 	}
 
 	// Validate bot username doesn't contain characters that could cause issues

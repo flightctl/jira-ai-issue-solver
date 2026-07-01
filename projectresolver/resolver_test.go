@@ -693,6 +693,7 @@ func TestResolveProject_ContainerSettingsPassedThrough(t *testing.T) {
 
 func TestConfigResolver_ForkOwner(t *testing.T) {
 	cfg := minimalConfig()
+	cfg.Jira.Projects[0].ForkMode = true
 	cfg.Jira.AssigneeToGitHubUsername = map[string]string{
 		"alice@example.com": "alice-gh",
 		"bob@example.com":   "bob-gh",
@@ -748,6 +749,67 @@ func TestConfigResolver_ForkOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigResolver_ForkOwnerHeads(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Jira.Projects[0].ForkMode = true
+	cfg.Jira.AssigneeToGitHubUsername = map[string]string{
+		"alice@example.com": "alice-gh",
+	}
+
+	r, err := projectresolver.NewConfigResolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Run("fork mode with mapped assignee returns two heads", func(t *testing.T) {
+		got := r.ForkOwnerHeads(models.WorkItem{
+			Key:      "PROJ-1",
+			Type:     "Bug",
+			Assignee: &models.Author{Email: "alice@example.com"},
+		}, "bot/PROJ-1")
+
+		want := []string{"alice-gh:bot/PROJ-1", "bot/PROJ-1"}
+		if len(got) != len(want) {
+			t.Fatalf("ForkOwnerHeads() = %v, want %v", got, want)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("ForkOwnerHeads()[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("fork mode with unmapped assignee returns one head", func(t *testing.T) {
+		got := r.ForkOwnerHeads(models.WorkItem{
+			Key:      "PROJ-2",
+			Type:     "Bug",
+			Assignee: &models.Author{Email: "charlie@example.com"},
+		}, "bot/PROJ-2")
+
+		if len(got) != 1 || got[0] != "bot/PROJ-2" {
+			t.Errorf("ForkOwnerHeads() = %v, want [bot/PROJ-2]", got)
+		}
+	})
+
+	t.Run("direct mode returns one head", func(t *testing.T) {
+		directCfg := minimalConfig()
+		dr, err := projectresolver.NewConfigResolver(directCfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		got := dr.ForkOwnerHeads(models.WorkItem{
+			Key:      "PROJ-1",
+			Type:     "Bug",
+			Assignee: &models.Author{Email: "alice@example.com"},
+		}, "bot/PROJ-1")
+
+		if len(got) != 1 || got[0] != "bot/PROJ-1" {
+			t.Errorf("ForkOwnerHeads() = %v, want [bot/PROJ-1]", got)
+		}
+	})
 }
 
 // --- Imports propagation ---
@@ -1183,6 +1245,108 @@ func TestResolveMergedStatus(t *testing.T) {
 		status := r.ResolveMergedStatus(models.WorkItem{Key: "UNKNOWN-1", Type: "Bug"})
 		if status != "" {
 			t.Errorf("MergedStatus = %q, want empty", status)
+		}
+	})
+}
+
+func TestResolveProject_ForkMode(t *testing.T) {
+	t.Run("passes through fork_mode true", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].ForkMode = true
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !ps.ForkMode {
+			t.Error("ForkMode = false, want true")
+		}
+	})
+
+	t.Run("defaults to false when not configured", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.ForkMode {
+			t.Error("ForkMode = true, want false")
+		}
+	})
+
+	t.Run("populates GitHubUsername only when fork_mode true", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].ForkMode = true
+		cfg.Jira.AssigneeToGitHubUsername = map[string]string{
+			"alice@example.com": "alice-gh",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+			Assignee:   &models.Author{Email: "alice@example.com"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !ps.ForkMode {
+			t.Error("ForkMode = false, want true")
+		}
+		if ps.GitHubUsername != "alice-gh" {
+			t.Errorf("GitHubUsername = %q, want %q", ps.GitHubUsername, "alice-gh")
+		}
+	})
+
+	t.Run("does not populate GitHubUsername when fork_mode false", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.AssigneeToGitHubUsername = map[string]string{
+			"alice@example.com": "alice-gh",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+			Assignee:   &models.Author{Email: "alice@example.com"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.ForkMode {
+			t.Error("ForkMode = true, want false")
+		}
+		if ps.GitHubUsername != "" {
+			t.Errorf("GitHubUsername = %q, want empty (fork_mode is false)", ps.GitHubUsername)
 		}
 	})
 }

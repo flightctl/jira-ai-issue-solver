@@ -244,14 +244,30 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 	}
 
 	branchName := fmt.Sprintf("%s/%s", s.cfg.BotUsername, item.Key)
-	head := branchName
-	if forkOwner := s.repos.ForkOwner(item); forkOwner != "" {
-		head = forkOwner + ":" + branchName
+	heads := s.repos.ForkOwnerHeads(item, branchName)
+
+	var obs repoObservation
+	var activeHead string
+	for _, head := range heads {
+		obs = s.observeRepos(logger, repos, head)
+		if obs.hasOpenPR {
+			activeHead = head
+			break
+		}
 	}
 
-	obs := s.observeRepos(logger, repos, head)
-	s.updateFailureLabels(logger, item, repos, head, obs)
-	s.checkAndApplyMergedLabel(logger, item, repos, head)
+	if activeHead != "" {
+		s.updateFailureLabels(logger, item, repos, activeHead, obs)
+		s.checkAndApplyMergedLabel(logger, item, repos, activeHead)
+	} else {
+		// No open PR on any head. Try each head for closed/merged
+		// detection so that direct-mode PRs merged or rejected
+		// during the fork-mode migration window are still caught.
+		for _, head := range heads {
+			s.updateFailureLabels(logger, item, repos, head, obs)
+			s.checkAndApplyMergedLabel(logger, item, repos, head)
+		}
+	}
 
 	if !obs.actionable {
 		return false

@@ -52,6 +52,7 @@ Key configuration features:
 - **Workspaces** group one or more repos into a named working environment. A single-repo project is a workspace with one entry. Multi-repo workspaces clone all repos into subdirectories and run one AI session against the whole workspace. An optional `root_repo` URL clones a scaffold repo as the workspace root before child repos are placed inside it; the scaffold provides context files (e.g., CLAUDE.md) but is never branched, committed to, or PR'd.
 - **Profiles** bundle container, imports, instructions, and workflow settings. Repos within workspaces reference profiles by name. Profile settings override repo-level `.ai-bot/` files when set, enabling prototyping without committing to the source repo.
 - `Components` maps Jira component names to workspaces (case-insensitive). `DefaultWorkspace` is used when tickets have no matching component.
+- **Fork mode**: `fork_mode: true` on a project config requires fork-based contributions. Commits are pushed to the assignee's fork (looked up via `jira.assignee_to_github_username`) and PRs are created as cross-repo PRs. When disabled (default), commits go directly to the upstream repo. Missing assignee mappings in fork-mode projects apply the `fork_user_missing` failure label and skip the ticket.
 - **Container resolution**: workspace-level container overrides per-repo profile containers. Multi-repo workspaces require a workspace-level container (fat container with all toolchains).
 - `Imports` (per-repo profile) declares auxiliary repos to clone into the workspace; merged with repo-level imports from `.ai-bot/config.yaml`; optional `install` command runs inside the container after cloning
 - `Instructions` (per-repo profile) provides universal instructions (validation commands, coding standards); appended to all task types; overrides `.ai-bot/instructions.md` when set
@@ -86,12 +87,13 @@ Configurable via `github.known_bot_usernames`, `github.ignored_usernames`, and `
 
 ### Failure-State Labels
 
-Optional per-project Jira labels (`failure_labels` in project config) that mark ticket failure states for dashboard visibility. All three are mutually exclusive by lifecycle; empty string disables the label:
+Optional per-project Jira labels (`failure_labels` in project config) that mark ticket failure states for dashboard visibility. All four are mutually exclusive by lifecycle; empty string disables the label:
 - **`ci_failing`**: Applied when the bot's PR exists but CI checks are failing. Removed when CI passes or the bot pushes new code.
 - **`rejected`**: Applied when a human reviewer closes the PR without merging.
 - **`blocked`**: Applied when the bot cannot proceed (workspace errors, infra failures). Applied by the executor on pipeline failure; removed on success.
+- **`fork_user_missing`**: Applied when a fork-mode project cannot resolve the ticket assignee's GitHub username from `jira.assignee_to_github_username`. Cleared on successful PR creation.
 
-Label management is best-effort — failures are logged but never block core operations. The feedback scanner handles `ci_failing` and `rejected` detection; the executor handles `blocked`.
+Label management is best-effort — failures are logged but never block core operations. The feedback scanner handles `ci_failing` and `rejected` detection; the executor handles `blocked` and `fork_user_missing`.
 
 ### Lifecycle Labels
 
