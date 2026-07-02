@@ -659,17 +659,6 @@ func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *mode
 	}
 }
 
-func (p *Pipeline) findOpenPR(owner, repo, head string) (*models.PRDetails, error) {
-	pr, err := p.git.GetPRForBranch(owner, repo, head)
-	if err != nil {
-		return nil, fmt.Errorf("find PR for branch %s: %w", head, err)
-	}
-	if pr == nil {
-		return nil, fmt.Errorf("no open PR found for branch %s", head)
-	}
-	return pr, nil
-}
-
 func (p *Pipeline) setMultiRepoPRURLs(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, prs []repoPR) {
 	for _, pr := range prs {
 		comment := fmt.Sprintf("[AI-BOT-PR] %s", pr.url)

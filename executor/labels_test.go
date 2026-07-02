@@ -390,6 +390,35 @@ func TestValidateForkMode(t *testing.T) {
 		}
 	})
 
+	t.Run("does not clear other labels when fork_user_missing not configured", func(t *testing.T) {
+		var added, removed []string
+		d := newTestDeps(t)
+		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
+		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
+		d.tracker.AddCommentFunc = func(_, _ string) error { return nil }
+
+		fl := models.FailureLabels{
+			CIFailing: "ci-fail",
+			Rejected:  "rejected",
+			Blocked:   "blocked",
+		}
+		p := d.pipeline(t)
+
+		err := executor.ValidateForkMode(p, zap.NewNop(), "TEST-1",
+			&models.WorkItem{Key: "TEST-1"},
+			&models.ProjectSettings{ForkMode: true, GitHubUsername: "", FailureLabels: fl},
+		)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if len(added) != 0 {
+			t.Errorf("added = %v, want empty", added)
+		}
+		if len(removed) != 0 {
+			t.Errorf("removed = %v, want empty (other labels should not be cleared)", removed)
+		}
+	})
+
 	t.Run("skips comment when error comments disabled", func(t *testing.T) {
 		var commentPosted bool
 		d := newTestDeps(t)

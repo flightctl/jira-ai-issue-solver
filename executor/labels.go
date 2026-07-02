@@ -82,7 +82,9 @@ func (p *Pipeline) validateForkMode(
 		assigneeDesc = workItem.Assignee.Email
 	}
 
-	p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.ForkUserMissing)
+	if settings.FailureLabels.ForkUserMissing != "" {
+		p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.ForkUserMissing)
+	}
 
 	if !settings.DisableErrorComments {
 		detail := fmt.Sprintf(

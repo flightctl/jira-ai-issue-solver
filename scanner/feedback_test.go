@@ -547,6 +547,64 @@ func TestFeedbackScanner_ForkMode_UsesOwnerPrefixedHead(t *testing.T) {
 	}
 }
 
+func TestFeedbackScanner_ForkMode_MultiRepo_MixedHeads(t *testing.T) {
+	d := newFeedbackDeps()
+
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
+			{Owner: "org", Repo: "svc-a"},
+			{Owner: "org", Repo: "svc-b"},
+		}, nil
+	}
+	d.repos.ForkOwnerHeadsFunc = func(_ models.WorkItem, branchName string) []string {
+		return []string{"contributor-gh:" + branchName, branchName}
+	}
+
+	// svc-a has a fork-mode PR (matches fork head), svc-b has a
+	// direct-mode PR (matches bare branch). Both should be found.
+	var queriedRepoHeads []string
+	d.prs.GetPRForBranchFunc = func(_, repo, head string) (*models.PRDetails, error) {
+		queriedRepoHeads = append(queriedRepoHeads, repo+"@"+head)
+		switch {
+		case repo == "svc-a" && head == "contributor-gh:ai-bot/PROJ-1":
+			return &models.PRDetails{Number: 10, Branch: head}, nil
+		case repo == "svc-b" && head == "ai-bot/PROJ-1":
+			return &models.PRDetails{Number: 20, Branch: head}, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	var commentRepos []string
+	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		commentRepos = append(commentRepos, repo)
+		if repo == "svc-b" {
+			return []models.PRComment{
+				{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			}, nil
+		}
+		return []models.PRComment{}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(e jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneFeedbackScan(t, s)
+
+	if !submitted {
+		t.Error("expected feedback event to be submitted")
+	}
+
+	// Both repos should have had their comments fetched.
+	if len(commentRepos) != 2 {
+		t.Errorf("comments fetched for %v, want both svc-a and svc-b", commentRepos)
+	}
+}
+
 // --- No event when no comments at all ---
 
 func TestFeedbackScanner_NoCommentsNoEvent(t *testing.T) {

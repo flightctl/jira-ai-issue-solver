@@ -1224,8 +1224,21 @@ func filterPreExistingFailures(
 }
 
 // findPRByHeads tries each candidate head ref and returns the first
-// matching PR. Used for fallback from fork-mode to direct-mode heads.
+// matching PR. Returns an error if no PR is found under any head.
 func (p *Pipeline) findPRByHeads(owner, repo string, heads []string) (*models.PRDetails, error) {
+	pr, err := p.findPRByHeadsOptional(owner, repo, heads)
+	if err != nil {
+		return nil, err
+	}
+	if pr == nil {
+		return nil, fmt.Errorf("no open PR found for heads %v", heads)
+	}
+	return pr, nil
+}
+
+// findPRByHeadsOptional tries each candidate head ref and returns the
+// first matching PR, or (nil, nil) when no PR matches any head.
+func (p *Pipeline) findPRByHeadsOptional(owner, repo string, heads []string) (*models.PRDetails, error) {
 	if len(heads) == 0 {
 		return nil, errors.New("no candidate heads provided")
 	}
@@ -1243,5 +1256,5 @@ func (p *Pipeline) findPRByHeads(owner, repo string, heads []string) (*models.PR
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return nil, fmt.Errorf("no open PR found for heads %v", heads)
+	return nil, nil
 }
