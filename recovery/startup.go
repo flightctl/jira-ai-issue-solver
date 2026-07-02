@@ -170,19 +170,23 @@ func (r *StartupRunner) recoverTicket(item models.WorkItem) {
 
 	branchName := fmt.Sprintf("%s/%s", r.cfg.BotUsername, item.Key)
 
-	// Check for an existing PR.
-	pr, err := r.git.GetPRForBranch(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
-	if err != nil {
-		logger.Warn("Error looking up PR during recovery",
-			zap.Error(err))
-	}
-	if err == nil && pr != nil {
-		logger.Info("Found PR for stuck ticket, completing transition",
-			zap.String("case", "pr_exists"),
-			zap.String("pr_url", pr.URL),
-			zap.Int("pr_number", pr.Number))
-		r.completeTransition(logger, item.Key, settings, pr.URL)
-		return
+	// Check for an existing PR (try fork head first, then direct fallback).
+	for _, head := range settings.PRHeads(branchName) {
+		pr, err := r.git.GetPRForBranch(settings.Repos[0].Owner, settings.Repos[0].Repo, head)
+		if err != nil {
+			logger.Warn("Error looking up PR during recovery",
+				zap.String("head", head),
+				zap.Error(err))
+			continue
+		}
+		if pr != nil {
+			logger.Info("Found PR for stuck ticket, completing transition",
+				zap.String("case", "pr_exists"),
+				zap.String("pr_url", pr.URL),
+				zap.Int("pr_number", pr.Number))
+			r.completeTransition(logger, item.Key, settings, pr.URL)
+			return
+		}
 	}
 
 	// No PR found. Check if the branch has commits beyond base.
@@ -217,23 +221,32 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 	settings *models.ProjectSettings,
 ) {
 	branchName := fmt.Sprintf("%s/%s", r.cfg.BotUsername, item.Key)
-	head := settings.PRHead(branchName)
+	heads := settings.PRHeads(branchName)
 
 	var prURLs []string
 
 	for _, repo := range settings.Repos {
-		// Check for an existing PR.
-		pr, err := r.git.GetPRForBranch(repo.Owner, repo.Repo, head)
-		if err != nil {
-			logger.Warn("Error looking up PR during recovery",
-				zap.String("repo", repo.Name),
-				zap.Error(err))
+		// Check for an existing PR (try fork head first, then direct fallback).
+		var foundPR *models.PRDetails
+		for _, head := range heads {
+			pr, err := r.git.GetPRForBranch(repo.Owner, repo.Repo, head)
+			if err != nil {
+				logger.Warn("Error looking up PR during recovery",
+					zap.String("repo", repo.Name),
+					zap.String("head", head),
+					zap.Error(err))
+				continue
+			}
+			if pr != nil {
+				foundPR = pr
+				break
+			}
 		}
-		if err == nil && pr != nil {
+		if foundPR != nil {
 			logger.Info("Found PR for repo",
 				zap.String("repo", repo.Name),
-				zap.String("pr_url", pr.URL))
-			prURLs = append(prURLs, pr.URL)
+				zap.String("pr_url", foundPR.URL))
+			prURLs = append(prURLs, foundPR.URL)
 			continue
 		}
 
@@ -249,7 +262,7 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 			continue
 		}
 
-		// Create PR for this repo.
+		// Create PR for this repo (always use primary head for new PRs).
 		logger.Info("Found commits without PR, creating PR",
 			zap.String("repo", repo.Name))
 		title, body := buildRecoveryPRContent(item)
@@ -260,7 +273,7 @@ func (r *StartupRunner) recoverMultiRepoTicket(
 		created, createErr := r.git.CreatePR(models.PRParams{
 			Owner: repo.Owner, Repo: repo.Repo,
 			Title: title, Body: body,
-			Head: head, Base: repo.BaseBranch,
+			Head: settings.PRHead(branchName), Base: repo.BaseBranch,
 			Assignees: assignees,
 		})
 		if createErr != nil {

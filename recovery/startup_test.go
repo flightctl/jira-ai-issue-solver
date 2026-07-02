@@ -838,13 +838,14 @@ func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
 		}, nil
 	}
 
-	// Return settings with GitHubUsername set.
+	// Return settings with ForkMode + GitHubUsername set.
 	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
 		return &models.ProjectSettings{
 			Repos:            []models.RepoSettings{{Owner: "upstream-org", Repo: "repo", BaseBranch: "main"}},
 			InReviewStatus:   "In Review",
 			TodoStatus:       "To Do",
 			InProgressStatus: "In Progress",
+			ForkMode:         true,
 			GitHubUsername:   "contributor-gh",
 		}, nil
 	}
@@ -856,10 +857,10 @@ func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
 		return true, nil
 	}
 
-	// GetPRForBranch should receive "contributor-gh:ai-bot/PROJ-100" as head.
-	var prHead string
+	// GetPRForBranch should try fork head first, then direct fallback.
+	var prHeads []string
 	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
-		prHead = head
+		prHeads = append(prHeads, head)
 		return nil, nil
 	}
 
@@ -873,9 +874,12 @@ func TestRun_ForkMode_UsesSettingsMethods(t *testing.T) {
 	r := d.runner(t)
 	_ = r.Run(context.Background())
 
-	// Verify GetPRForBranch received owner-prefixed head.
-	if prHead != "contributor-gh:ai-bot/PROJ-100" {
-		t.Errorf("GetPRForBranch head = %q, want contributor-gh:ai-bot/PROJ-100", prHead)
+	// Verify GetPRForBranch tried fork head first, then direct fallback.
+	if len(prHeads) < 1 || prHeads[0] != "contributor-gh:ai-bot/PROJ-100" {
+		t.Errorf("GetPRForBranch first head = %v, want contributor-gh:ai-bot/PROJ-100 first", prHeads)
+	}
+	if len(prHeads) < 2 || prHeads[1] != "ai-bot/PROJ-100" {
+		t.Errorf("GetPRForBranch second head = %v, want ai-bot/PROJ-100 as fallback", prHeads)
 	}
 
 	// Verify BranchHasCommits received fork owner.

@@ -545,8 +545,8 @@ func TestMergeScanner_KnownBotExcludedFromActivity(t *testing.T) {
 
 func TestMergeScanner_ForkWorkflowHead(t *testing.T) {
 	d := newMergeDeps()
-	d.repos.ForkOwnerFunc = func(_ models.WorkItem) string {
-		return "fork-user"
+	d.repos.ForkOwnerHeadsFunc = func(_ models.WorkItem, branchName string) []string {
+		return []string{"fork-user:" + branchName, branchName}
 	}
 
 	mergeable := false

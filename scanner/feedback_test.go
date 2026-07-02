@@ -521,11 +521,11 @@ func TestFeedbackScanner_UsesBranchConvention(t *testing.T) {
 
 func TestFeedbackScanner_ForkMode_UsesOwnerPrefixedHead(t *testing.T) {
 	d := newFeedbackDeps()
-	d.repos.ForkOwnerFunc = func(workItem models.WorkItem) string {
+	d.repos.ForkOwnerHeadsFunc = func(workItem models.WorkItem, branchName string) []string {
 		if workItem.Key == "PROJ-1" {
-			return "contributor-gh"
+			return []string{"contributor-gh:" + branchName, branchName}
 		}
-		return ""
+		return []string{branchName}
 	}
 
 	var receivedHead string
@@ -544,6 +544,64 @@ func TestFeedbackScanner_ForkMode_UsesOwnerPrefixedHead(t *testing.T) {
 
 	if receivedHead != "contributor-gh:ai-bot/PROJ-1" {
 		t.Errorf("head = %q, want contributor-gh:ai-bot/PROJ-1", receivedHead)
+	}
+}
+
+func TestFeedbackScanner_ForkMode_MultiRepo_MixedHeads(t *testing.T) {
+	d := newFeedbackDeps()
+
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
+			{Owner: "org", Repo: "svc-a"},
+			{Owner: "org", Repo: "svc-b"},
+		}, nil
+	}
+	d.repos.ForkOwnerHeadsFunc = func(_ models.WorkItem, branchName string) []string {
+		return []string{"contributor-gh:" + branchName, branchName}
+	}
+
+	// svc-a has a fork-mode PR (matches fork head), svc-b has a
+	// direct-mode PR (matches bare branch). Both should be found.
+	var queriedRepoHeads []string
+	d.prs.GetPRForBranchFunc = func(_, repo, head string) (*models.PRDetails, error) {
+		queriedRepoHeads = append(queriedRepoHeads, repo+"@"+head)
+		switch {
+		case repo == "svc-a" && head == "contributor-gh:ai-bot/PROJ-1":
+			return &models.PRDetails{Number: 10, Branch: head}, nil
+		case repo == "svc-b" && head == "ai-bot/PROJ-1":
+			return &models.PRDetails{Number: 20, Branch: head}, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	var commentRepos []string
+	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		commentRepos = append(commentRepos, repo)
+		if repo == "svc-b" {
+			return []models.PRComment{
+				{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			}, nil
+		}
+		return []models.PRComment{}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(e jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneFeedbackScan(t, s)
+
+	if !submitted {
+		t.Error("expected feedback event to be submitted")
+	}
+
+	// Both repos should have had their comments fetched.
+	if len(commentRepos) != 2 {
+		t.Errorf("comments fetched for %v, want both svc-a and svc-b", commentRepos)
 	}
 }
 
@@ -1443,6 +1501,55 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_AllMergedRequired(t *testing.
 
 	if addCalled {
 		t.Error("merged label should not be applied when a repo has an unmerged PR")
+	}
+}
+
+func TestFeedbackScanner_LifecycleLabels_MergedNotMaskedByStaleClosedPR(t *testing.T) {
+	d := newFeedbackDeps()
+
+	// Fork-mode: fork head is checked first, bare branch second.
+	d.repos.ForkOwnerHeadsFunc = func(_ models.WorkItem, branchName string) []string {
+		return []string{"contributor-gh:" + branchName, branchName}
+	}
+
+	// No open PR on any head.
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	// Fork head has a stale closed PR; bare branch has the merged PR.
+	d.prs.GetMergedPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		if head == "ai-bot/PROJ-1" {
+			return &models.PRDetails{Number: 1}, nil
+		}
+		return nil, nil
+	}
+	d.prs.GetClosedPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		if head == "contributor-gh:ai-bot/PROJ-1" {
+			return &models.PRDetails{Number: 2}, nil
+		}
+		return nil, nil
+	}
+
+	var mergedLabelApplied bool
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { mergedLabelApplied = (label == "merged"); return nil },
+		RemoveLabelFunc: func(_, _ string) error { return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{}
+	d.lifecycleLabelResolver = &scannertest.StubLifecycleLabelResolver{
+		ResolveLifecycleLabelsFunc: func(_ models.WorkItem) models.LifecycleLabels {
+			return models.LifecycleLabels{Merged: "merged"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !mergedLabelApplied {
+		t.Error("merged label should be applied — merged PR under bare branch must not be masked by stale closed PR under fork head")
 	}
 }
 

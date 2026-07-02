@@ -128,6 +128,11 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		return result, fmt.Errorf("resolve project: %w", err)
 	}
 
+	// --- Step 2a: Validate fork-mode requirements ---
+	if err := p.validateForkMode(logger, job.TicketKey, workItem, settings); err != nil {
+		return result, err
+	}
+
 	// --- Clean retry: delete stale branches and workspace ---
 	if job.CleanRetry {
 		p.cleanRetryState(logger, job.TicketKey, settings)
@@ -652,17 +657,6 @@ func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *mode
 			logger.Warn("Failed to add PR URL comment", zap.Error(err))
 		}
 	}
-}
-
-func (p *Pipeline) findOpenPR(owner, repo, head string) (*models.PRDetails, error) {
-	pr, err := p.git.GetPRForBranch(owner, repo, head)
-	if err != nil {
-		return nil, fmt.Errorf("find PR for branch %s: %w", head, err)
-	}
-	if pr == nil {
-		return nil, fmt.Errorf("no open PR found for branch %s", head)
-	}
-	return pr, nil
 }
 
 func (p *Pipeline) setMultiRepoPRURLs(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, prs []repoPR) {

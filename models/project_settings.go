@@ -102,12 +102,15 @@ type ProjectSettings struct {
 	// all PRs are merged. Empty means no transition on merge.
 	MergedStatus string
 
+	// ForkMode indicates this project requires fork-based
+	// contributions. When true, the bot pushes to the assignee's
+	// fork and creates cross-repo PRs.
+	ForkMode bool
+
 	// GitHubUsername is the GitHub username of the ticket assignee,
 	// resolved from the assignee-to-GitHub-username config mapping.
-	// Empty when the assignee has no mapping or the ticket is unassigned.
-	// When set, fork-based workflow is used: commits go to the
-	// assignee's fork (GitHubUsername/Repo) and PRs are created as
-	// cross-repo PRs targeting the upstream Owner/Repo.
+	// Empty when the assignee has no mapping or the ticket is
+	// unassigned. Only used when ForkMode is true.
 	GitHubUsername string
 }
 
@@ -131,18 +134,23 @@ func (s *ProjectSettings) ResolvedContainer() ContainerSettings {
 }
 
 // ForkOwner returns the GitHub owner of the assignee's fork.
-// Returns empty string if no fork is configured (no assignee mapping).
+// Returns empty string when fork mode is disabled or no assignee
+// mapping exists.
 func (s *ProjectSettings) ForkOwner() string {
+	if !s.ForkMode {
+		return ""
+	}
 	return s.GitHubUsername
 }
 
 // CommitOwner returns the repo owner to target for commits and
-// branch operations. When a fork owner is configured, commits go
-// to the fork; otherwise they go directly to the upstream repo.
-// For multi-repo workspaces use CommitOwnerFor instead; this
-// method uses Repos[0] as a convenience for single-repo callers.
+// branch operations. When fork mode is enabled and a fork owner
+// is configured, commits go to the fork; otherwise they go
+// directly to the upstream repo. For multi-repo workspaces use
+// CommitOwnerFor instead; this method uses Repos[0] as a
+// convenience for single-repo callers.
 func (s *ProjectSettings) CommitOwner() string {
-	if s.GitHubUsername != "" {
+	if s.ForkMode && s.GitHubUsername != "" {
 		return s.GitHubUsername
 	}
 	if len(s.Repos) > 0 {
@@ -155,7 +163,7 @@ func (s *ProjectSettings) CommitOwner() string {
 // given repo. Fork mode overrides the repo's owner with the
 // assignee's GitHub username.
 func (s *ProjectSettings) CommitOwnerFor(repo RepoSettings) string {
-	if s.GitHubUsername != "" {
+	if s.ForkMode && s.GitHubUsername != "" {
 		return s.GitHubUsername
 	}
 	return repo.Owner
@@ -165,8 +173,19 @@ func (s *ProjectSettings) CommitOwnerFor(repo RepoSettings) string {
 // this is "forkOwner:branch" (GitHub's cross-repo format); for
 // same-repo PRs it is just the branch name.
 func (s *ProjectSettings) PRHead(branch string) string {
-	if s.GitHubUsername != "" {
+	if s.ForkMode && s.GitHubUsername != "" {
 		return s.GitHubUsername + ":" + branch
 	}
 	return branch
+}
+
+// PRHeads returns candidate head refs in priority order for PR
+// lookup. Fork-mode projects return the fork head first with a
+// direct-mode fallback so that PRs created before fork_mode was
+// enabled can still be found.
+func (s *ProjectSettings) PRHeads(branch string) []string {
+	if s.ForkMode && s.GitHubUsername != "" {
+		return []string{s.GitHubUsername + ":" + branch, branch}
+	}
+	return []string{branch}
 }

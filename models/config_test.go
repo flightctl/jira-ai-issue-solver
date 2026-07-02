@@ -970,7 +970,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 			errMsg:  "github.private_key_path file does not exist",
 		},
 		{
-			name: "GitHub App without assignee mapping (should fail)",
+			name: "GitHub App without assignee mapping (valid for direct-mode projects)",
 			config: Config{
 				AIProvider: "claude",
 				Logging: struct {
@@ -984,7 +984,6 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					BaseURL:  "https://example.com",
 					Username: "testuser",
 					APIToken: "testtoken",
-					// No AssigneeToGitHubUsername mapping
 					Projects: []ProjectConfig{
 						{
 							ProjectKeys: ProjectKeys{"PROJ1"},
@@ -1023,9 +1022,10 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot",
 				},
+				Workspaces: WorkspacesConfig{BaseDir: "/tmp/ws", TTLDays: 7},
+				Guardrails: GuardrailsConfig{MaxConcurrentJobs: 1, MaxRetries: 1},
 			},
-			wantErr: true,
-			errMsg:  "jira.assignee_to_github_username is required",
+			wantErr: false,
 		},
 	}
 

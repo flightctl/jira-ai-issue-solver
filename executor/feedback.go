@@ -41,6 +41,11 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("resolve project: %w", err)
 	}
 
+	// --- Step 2a: Validate fork-mode requirements ---
+	if err := p.validateForkMode(logger, job.TicketKey, workItem, settings); err != nil {
+		return result, err
+	}
+
 	defer func() {
 		// On failure post error comment (but do NOT revert status --
 		// the ticket stays "in review").
@@ -66,7 +71,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 
 	// --- Step 3: Find PR by branch ---
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	prDetails, err := p.findOpenPR(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHead(branchName))
+	prDetails, err := p.findPRByHeads(settings.Repos[0].Owner, settings.Repos[0].Repo, settings.PRHeads(branchName))
 	if err != nil {
 		return result, err
 	}
@@ -296,19 +301,15 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	}()
 
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	head := settings.PRHead(branchName)
 
 	// --- Step 3: Find PRs across all repos ---
+	heads := settings.PRHeads(branchName)
 	var repoInfos []repoPRInfo
 	for _, repo := range settings.Repos {
-		pr, err := p.git.GetPRForBranch(repo.Owner, repo.Repo, head)
+		pr, err := p.findPRByHeads(repo.Owner, repo.Repo, heads)
 		if err != nil {
-			logger.Warn("Error looking up PR for repo",
-				zap.String("repo", repo.Name),
-				zap.Error(err))
-			continue
-		}
-		if pr == nil {
+			logger.Debug("No PR found for repo",
+				zap.String("repo", repo.Name))
 			continue
 		}
 		repoInfos = append(repoInfos, repoPRInfo{repo: repo, pr: pr})
@@ -1220,4 +1221,40 @@ func filterPreExistingFailures(
 		filtered = []models.CheckRunFailure{}
 	}
 	return filtered
+}
+
+// findPRByHeads tries each candidate head ref and returns the first
+// matching PR. Returns an error if no PR is found under any head.
+func (p *Pipeline) findPRByHeads(owner, repo string, heads []string) (*models.PRDetails, error) {
+	pr, err := p.findPRByHeadsOptional(owner, repo, heads)
+	if err != nil {
+		return nil, err
+	}
+	if pr == nil {
+		return nil, fmt.Errorf("no open PR found for heads %v", heads)
+	}
+	return pr, nil
+}
+
+// findPRByHeadsOptional tries each candidate head ref and returns the
+// first matching PR, or (nil, nil) when no PR matches any head.
+func (p *Pipeline) findPRByHeadsOptional(owner, repo string, heads []string) (*models.PRDetails, error) {
+	if len(heads) == 0 {
+		return nil, errors.New("no candidate heads provided")
+	}
+	var lastErr error
+	for _, head := range heads {
+		pr, err := p.git.GetPRForBranch(owner, repo, head)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if pr != nil {
+			return pr, nil
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, nil
 }

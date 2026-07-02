@@ -63,3 +63,8 @@ func ClearFailureLabels(p *Pipeline, logger *zap.Logger, ticketKey string, fl mo
 func SetLifecycleLabel(p *Pipeline, logger *zap.Logger, ticketKey string, ll models.LifecycleLabels, targetLabel string) {
 	p.setLifecycleLabel(logger, ticketKey, ll, targetLabel)
 }
+
+// ValidateForkMode exposes validateForkMode for testing.
+func ValidateForkMode(p *Pipeline, logger *zap.Logger, ticketKey string, workItem *models.WorkItem, settings *models.ProjectSettings) error {
+	return p.validateForkMode(logger, ticketKey, workItem, settings)
+}

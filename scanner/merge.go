@@ -205,12 +205,16 @@ func (s *MergeScanner) checkAndSubmit(item models.WorkItem) bool {
 	}
 
 	branchName := fmt.Sprintf("%s/%s", s.cfg.BotUsername, item.Key)
-	head := branchName
-	if forkOwner := s.repos.ForkOwner(item); forkOwner != "" {
-		head = forkOwner + ":" + branchName
-	}
+	heads := s.repos.ForkOwnerHeads(item, branchName)
 
-	if !s.hasUnmergeablePR(logger, repos, head) {
+	found := false
+	for _, head := range heads {
+		if s.hasUnmergeablePR(logger, repos, head) {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return false
 	}
 

@@ -244,14 +244,11 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 	}
 
 	branchName := fmt.Sprintf("%s/%s", s.cfg.BotUsername, item.Key)
-	head := branchName
-	if forkOwner := s.repos.ForkOwner(item); forkOwner != "" {
-		head = forkOwner + ":" + branchName
-	}
+	heads := s.repos.ForkOwnerHeads(item, branchName)
 
-	obs := s.observeRepos(logger, repos, head)
-	s.updateFailureLabels(logger, item, repos, head, obs)
-	s.checkAndApplyMergedLabel(logger, item, repos, head)
+	obs := s.observeRepos(logger, repos, heads)
+	s.updateFailureLabels(logger, item, repos, heads, obs)
+	s.checkAndApplyMergedLabel(logger, item, repos, heads)
 
 	if !obs.actionable {
 		return false
@@ -298,21 +295,17 @@ type repoObservation struct {
 }
 
 // observeRepos checks all repos for PRs with actionable review
-// comments or CI failures and captures the aggregate state.
+// comments or CI failures and captures the aggregate state. Each
+// repo independently tries all candidate heads so that mixed-head
+// scenarios (e.g., fork migration) are handled correctly.
 func (s *FeedbackScanner) observeRepos(
 	logger *zap.Logger,
 	repos []models.RepoCoord,
-	head string,
+	heads []string,
 ) repoObservation {
 	var obs repoObservation
 	for _, r := range repos {
-		pr, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
-		if err != nil {
-			logger.Warn("Error looking up PR for repo",
-				zap.String("repo", r.Owner+"/"+r.Repo),
-				zap.Error(err))
-			continue
-		}
+		pr := s.findOpenPRForRepo(logger, r, heads)
 		if pr == nil {
 			continue
 		}
@@ -349,6 +342,29 @@ func (s *FeedbackScanner) observeRepos(
 	return obs
 }
 
+// findOpenPRForRepo tries each candidate head for a repo and returns
+// the first open PR found, or nil if none match.
+func (s *FeedbackScanner) findOpenPRForRepo(
+	logger *zap.Logger,
+	r models.RepoCoord,
+	heads []string,
+) *models.PRDetails {
+	for _, head := range heads {
+		pr, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Warn("Error looking up PR for repo",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.String("head", head),
+				zap.Error(err))
+			continue
+		}
+		if pr != nil {
+			return pr
+		}
+	}
+	return nil
+}
+
 // ciCheckResult captures the CI state for a single repo.
 type ciCheckResult struct {
 	checked     bool // CI was successfully queried and all checks completed
@@ -362,7 +378,7 @@ func (s *FeedbackScanner) updateFailureLabels(
 	logger *zap.Logger,
 	item models.WorkItem,
 	repos []models.RepoCoord,
-	head string,
+	heads []string,
 	obs repoObservation,
 ) {
 	if s.labels == nil || s.labelResolver == nil {
@@ -375,7 +391,7 @@ func (s *FeedbackScanner) updateFailureLabels(
 
 	switch {
 	case !obs.hasOpenPR:
-		if s.detectRejection(logger, repos, head) {
+		if s.detectRejection(logger, repos, heads) {
 			s.applyFailureLabel(logger, item.Key, fl, fl.Rejected)
 			return
 		}
@@ -383,8 +399,6 @@ func (s *FeedbackScanner) updateFailureLabels(
 		s.applyFailureLabel(logger, item.Key, fl, fl.CIFailing)
 		return
 	case obs.ciChecked && !obs.ciIsFailing:
-		// CI was checked and is confirmed passing — remove ci-failing
-		// label if it was previously applied.
 		if fl.CIFailing != "" {
 			if err := s.labels.RemoveLabel(item.Key, fl.CIFailing); err != nil {
 				logger.Debug("Failed to remove CI-failing label", zap.Error(err))
@@ -394,24 +408,28 @@ func (s *FeedbackScanner) updateFailureLabels(
 }
 
 // detectRejection checks for a closed (not merged) PR across all
-// repos. Returns true if at least one repo has a rejected PR.
+// repos, trying each candidate head per repo. Returns true if at
+// least one repo has a rejected PR.
 func (s *FeedbackScanner) detectRejection(
 	logger *zap.Logger,
 	repos []models.RepoCoord,
-	head string,
+	heads []string,
 ) bool {
 	for _, r := range repos {
-		pr, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
-		if err != nil {
-			logger.Debug("Error checking for closed PR",
-				zap.String("repo", r.Owner+"/"+r.Repo),
-				zap.Error(err))
-			continue
-		}
-		if pr != nil {
-			logger.Info("PR rejected (closed without merge)",
-				zap.String("pr_url", pr.URL))
-			return true
+		for _, head := range heads {
+			pr, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
+			if err != nil {
+				logger.Debug("Error checking for closed PR",
+					zap.String("repo", r.Owner+"/"+r.Repo),
+					zap.String("head", head),
+					zap.Error(err))
+				continue
+			}
+			if pr != nil {
+				logger.Info("PR rejected (closed without merge)",
+					zap.String("pr_url", pr.URL))
+				return true
+			}
 		}
 	}
 	return false
@@ -451,7 +469,7 @@ func (s *FeedbackScanner) checkAndApplyMergedLabel(
 	logger *zap.Logger,
 	item models.WorkItem,
 	repos []models.RepoCoord,
-	head string,
+	heads []string,
 ) {
 	if s.labels == nil || s.lifecycleLabelResolver == nil {
 		return
@@ -461,7 +479,7 @@ func (s *FeedbackScanner) checkAndApplyMergedLabel(
 		return
 	}
 
-	if !s.detectMerge(logger, repos, head) {
+	if !s.detectMerge(logger, repos, heads) {
 		return
 	}
 
@@ -480,58 +498,97 @@ func (s *FeedbackScanner) checkAndApplyMergedLabel(
 }
 
 // detectMerge checks whether all repos that had a PR have it merged.
-// Repos where no PR was ever created for the branch are skipped —
-// in multi-repo workspaces, the AI may only change a subset of repos.
-// Returns false when any repo still has an unmerged PR or when no
-// repo had a PR at all.
+// Each repo independently tries all candidate heads so that
+// mixed-head scenarios (e.g., fork migration) are handled correctly.
+// Repos where no PR was ever created are skipped — in multi-repo
+// workspaces, the AI may only change a subset of repos. Returns
+// false when any repo still has an unmerged PR or when no repo had
+// a PR at all.
 func (s *FeedbackScanner) detectMerge(
 	logger *zap.Logger,
 	repos []models.RepoCoord,
-	head string,
+	heads []string,
 ) bool {
 	hadPR := 0
 	for _, r := range repos {
-		merged, err := s.prs.GetMergedPRForBranch(r.Owner, r.Repo, head)
-		if err != nil {
-			logger.Warn("Error checking for merged PR",
-				zap.String("repo", r.Owner+"/"+r.Repo),
-				zap.Error(err))
-			return false
-		}
-		if merged != nil {
+		state := s.detectRepoPRState(logger, r, heads)
+		switch state {
+		case prStateMerged:
 			hadPR++
-			continue
-		}
-
-		// No merged PR — check whether a PR was ever created.
-		// An open or closed-but-unmerged PR means work is outstanding.
-		open, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
-		if err != nil {
-			logger.Warn("Error checking for open PR",
-				zap.String("repo", r.Owner+"/"+r.Repo),
-				zap.Error(err))
+		case prStateOpen, prStateClosed:
 			return false
-		}
-		if open != nil {
+		case prStateError:
 			return false
+		case prStateNone:
+			logger.Debug("Repo skipped — no PR ever created",
+				zap.String("repo", r.Owner+"/"+r.Repo))
 		}
-		closed, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
-		if err != nil {
-			logger.Warn("Error checking for closed PR",
-				zap.String("repo", r.Owner+"/"+r.Repo),
-				zap.Error(err))
-			return false
-		}
-		if closed != nil {
-			return false
-		}
-		logger.Debug("Repo skipped — no PR ever created",
-			zap.String("repo", r.Owner+"/"+r.Repo))
 	}
 	if hadPR > 0 {
 		logger.Info("All PRs merged")
 	}
 	return hadPR > 0
+}
+
+type prState int
+
+const (
+	prStateNone   prState = iota // no PR ever created under any head
+	prStateMerged                // merged PR found
+	prStateOpen                  // open (unmerged) PR found
+	prStateClosed                // closed (not merged) PR found
+	prStateError                 // API error during lookup
+)
+
+// detectRepoPRState resolves the PR state for a single repo by
+// checking all candidate heads per state in priority order
+// (merged > open > closed). This ensures a merged PR under one
+// head is not masked by a stale closed PR under a different head.
+func (s *FeedbackScanner) detectRepoPRState(
+	logger *zap.Logger,
+	r models.RepoCoord,
+	heads []string,
+) prState {
+	for _, head := range heads {
+		merged, err := s.prs.GetMergedPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Warn("Error checking for merged PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.String("head", head),
+				zap.Error(err))
+			return prStateError
+		}
+		if merged != nil {
+			return prStateMerged
+		}
+	}
+	for _, head := range heads {
+		open, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Warn("Error checking for open PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.String("head", head),
+				zap.Error(err))
+			return prStateError
+		}
+		if open != nil {
+			return prStateOpen
+		}
+	}
+	for _, head := range heads {
+		closed, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
+		if err != nil {
+			logger.Warn("Error checking for closed PR",
+				zap.String("repo", r.Owner+"/"+r.Repo),
+				zap.String("head", head),
+				zap.Error(err))
+			return prStateError
+		}
+		if closed != nil {
+			return prStateClosed
+		}
+	}
+	return prStateNone
 }
 
 // applyLifecycleLabel sets one lifecycle label and removes the others.

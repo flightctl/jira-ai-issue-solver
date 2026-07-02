@@ -71,7 +71,7 @@ func (p *Pipeline) executeSingleRepoMerge(
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
 
 	// --- Step 3: Find PR by branch ---
-	prDetails, err := p.findOpenPR(repo.Owner, repo.Repo, settings.PRHead(branchName))
+	prDetails, err := p.findPRByHeads(repo.Owner, repo.Repo, settings.PRHeads(branchName))
 	if err != nil {
 		return result, err
 	}
@@ -313,10 +313,10 @@ func (p *Pipeline) executeMultiRepoMerge(
 	}()
 
 	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	head := settings.PRHead(branchName)
+	heads := settings.PRHeads(branchName)
 
 	// --- Step 3: Find PRs across all repos ---
-	repoInfos, err := p.findMergeRepoPRs(logger, settings, head)
+	repoInfos, err := p.findMergeRepoPRs(logger, settings, heads)
 	if err != nil {
 		return result, err
 	}
@@ -359,11 +359,11 @@ func (p *Pipeline) executeMultiRepoMerge(
 func (p *Pipeline) findMergeRepoPRs(
 	logger *zap.Logger,
 	settings *models.ProjectSettings,
-	head string,
+	heads []string,
 ) ([]mergeRepoPR, error) {
 	var repoInfos []mergeRepoPR
 	for _, repo := range settings.Repos {
-		pr, err := p.git.GetPRForBranch(repo.Owner, repo.Repo, head)
+		pr, err := p.findPRByHeadsOptional(repo.Owner, repo.Repo, heads)
 		if err != nil {
 			logger.Warn("Error looking up PR for repo",
 				zap.String("repo", repo.Name),
@@ -376,7 +376,7 @@ func (p *Pipeline) findMergeRepoPRs(
 		repoInfos = append(repoInfos, mergeRepoPR{repo: repo, pr: pr})
 	}
 	if len(repoInfos) == 0 {
-		return nil, fmt.Errorf("no PRs found for branch %s in any repository", head)
+		return nil, fmt.Errorf("no PRs found for heads %v in any repository", heads)
 	}
 	return repoInfos, nil
 }

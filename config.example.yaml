@@ -33,6 +33,12 @@ jira:
       git_pull_request_field_name: "Git Pull Request"  # Required for PR feedback processing - set to your custom field name for PR URL
       disable_error_comments: false
 
+      # When true, the bot pushes to the assignee's fork and creates
+      # cross-repo PRs. The assignee must have an entry in
+      # jira.assignee_to_github_username. When false (default), the
+      # bot pushes branches directly to the upstream repo.
+      fork_mode: false
+
       # Optional failure-state labels. When set, Bug Buddy applies these
       # labels to tickets in the corresponding failure state. Empty or
       # omitted values disable the label. Labels are mutually exclusive.
@@ -40,6 +46,7 @@ jira:
         ci_failing: "jira-autofix-ci-failing"    # PR exists, CI checks failing
         rejected: "jira-autofix-rejected"        # PR closed without merge
         blocked: "jira-autofix-blocked"          # Bot cannot proceed
+        fork_user_missing: "jira-autofix-fork-user-missing"  # Fork mode, assignee not in mapping
 
       # Optional lifecycle labels tracking ticket progression through
       # the autofix pipeline. Labels are mutually exclusive: setting one
