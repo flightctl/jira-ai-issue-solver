@@ -541,8 +541,9 @@ const (
 )
 
 // detectRepoPRState resolves the PR state for a single repo by
-// trying each candidate head. Returns the first definitive state
-// found (merged, open, or closed).
+// checking all candidate heads per state in priority order
+// (merged > open > closed). This ensures a merged PR under one
+// head is not masked by a stale closed PR under a different head.
 func (s *FeedbackScanner) detectRepoPRState(
 	logger *zap.Logger,
 	r models.RepoCoord,
@@ -560,7 +561,8 @@ func (s *FeedbackScanner) detectRepoPRState(
 		if merged != nil {
 			return prStateMerged
 		}
-
+	}
+	for _, head := range heads {
 		open, err := s.prs.GetPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
 			logger.Warn("Error checking for open PR",
@@ -572,7 +574,8 @@ func (s *FeedbackScanner) detectRepoPRState(
 		if open != nil {
 			return prStateOpen
 		}
-
+	}
+	for _, head := range heads {
 		closed, err := s.prs.GetClosedPRForBranch(r.Owner, r.Repo, head)
 		if err != nil {
 			logger.Warn("Error checking for closed PR",

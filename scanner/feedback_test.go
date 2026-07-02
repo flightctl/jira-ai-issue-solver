@@ -1504,6 +1504,55 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_AllMergedRequired(t *testing.
 	}
 }
 
+func TestFeedbackScanner_LifecycleLabels_MergedNotMaskedByStaleClosedPR(t *testing.T) {
+	d := newFeedbackDeps()
+
+	// Fork-mode: fork head is checked first, bare branch second.
+	d.repos.ForkOwnerHeadsFunc = func(_ models.WorkItem, branchName string) []string {
+		return []string{"contributor-gh:" + branchName, branchName}
+	}
+
+	// No open PR on any head.
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	// Fork head has a stale closed PR; bare branch has the merged PR.
+	d.prs.GetMergedPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		if head == "ai-bot/PROJ-1" {
+			return &models.PRDetails{Number: 1}, nil
+		}
+		return nil, nil
+	}
+	d.prs.GetClosedPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		if head == "contributor-gh:ai-bot/PROJ-1" {
+			return &models.PRDetails{Number: 2}, nil
+		}
+		return nil, nil
+	}
+
+	var mergedLabelApplied bool
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { mergedLabelApplied = (label == "merged"); return nil },
+		RemoveLabelFunc: func(_, _ string) error { return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{}
+	d.lifecycleLabelResolver = &scannertest.StubLifecycleLabelResolver{
+		ResolveLifecycleLabelsFunc: func(_ models.WorkItem) models.LifecycleLabels {
+			return models.LifecycleLabels{Merged: "merged"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !mergedLabelApplied {
+		t.Error("merged label should be applied — merged PR under bare branch must not be masked by stale closed PR under fork head")
+	}
+}
+
 func TestFeedbackScanner_LifecycleLabels_MultiRepo_SkipsReposWithoutPRs(t *testing.T) {
 	d := newFeedbackDeps()
 	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
