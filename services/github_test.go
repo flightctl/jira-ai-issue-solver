@@ -1402,8 +1402,8 @@ func TestGetPRMergeability_RetriesOnNilMergeable(t *testing.T) {
 	if state.BaseBranch != "main" {
 		t.Errorf("BaseBranch = %q, want %q", state.BaseBranch, "main")
 	}
-	if got := requestCount.Load(); got < 3 {
-		t.Errorf("expected at least 3 requests (initial + retries), got %d", got)
+	if got := requestCount.Load(); got != 3 {
+		t.Errorf("expected exactly 3 requests (initial + 2 retries), got %d", got)
 	}
 }
 
