@@ -294,6 +294,13 @@ github:
   ignored_usernames:
     - "packit-as-a-service"
 
+  # GitHub label that tells the bot to skip a PR entirely. When this
+  # label is present on a PR, the bot will not process review comments,
+  # CI failures, or merge conflicts for that PR. Removing the label
+  # re-enables processing on the next scan cycle. Set to empty string
+  # to disable.
+  skip_pr_label: ai-bot-skip
+
   # Check run names to exclude from CI failure detection. Use for checks
   # that are flaky, informational, or not fixable by code changes.
   # Matched case-insensitively.

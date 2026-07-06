@@ -47,6 +47,10 @@ type MergeScannerConfig struct {
 	// KnownBotUsernames lists other bots whose comments are not
 	// considered human activity for idle detection.
 	KnownBotUsernames []string
+
+	// SkipPRLabel is the GitHub label that tells the bot to skip
+	// a PR entirely. Empty disables the check.
+	SkipPRLabel string
 }
 
 // MergeScanner polls for tickets in "in review" status and checks
@@ -271,6 +275,10 @@ func (s *MergeScanner) hasUnmergeablePR(
 			continue
 		}
 
+		if s.hasSkipLabel(logger, r, pr) {
+			continue
+		}
+
 		state, err := s.mergeCheck.GetPRMergeability(r.Owner, r.Repo, pr.Number)
 		if err != nil {
 			logger.Warn("Failed to check mergeability",
@@ -360,6 +368,34 @@ func (s *MergeScanner) isIdlePR(
 	}
 
 	return false
+}
+
+// hasSkipLabel checks whether the skip-PR label is present on the
+// given PR. Returns false when skip-label checking is not configured
+// or on API error (fail-open).
+func (s *MergeScanner) hasSkipLabel(
+	logger *zap.Logger,
+	r models.RepoCoord,
+	pr *models.PRDetails,
+) bool {
+	if s.cfg.SkipPRLabel == "" {
+		return false
+	}
+	has, err := s.labeler.HasPRLabel(r.Owner, r.Repo, pr.Number, s.cfg.SkipPRLabel)
+	if err != nil {
+		logger.Warn("Failed to check skip-PR label, treating as not skipped",
+			zap.String("repo", r.Owner+"/"+r.Repo),
+			zap.Int("pr", pr.Number),
+			zap.Error(err))
+		return false
+	}
+	if has {
+		logger.Debug("PR has skip label, skipping",
+			zap.String("repo", r.Owner+"/"+r.Repo),
+			zap.Int("pr", pr.Number),
+			zap.String("label", s.cfg.SkipPRLabel))
+	}
+	return has
 }
 
 // lastHumanCommentTime returns the timestamp of the most recent PR

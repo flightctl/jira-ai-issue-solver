@@ -710,3 +710,116 @@ func runOneMergeScan(t *testing.T, s *scanner.MergeScanner) {
 	time.Sleep(50 * time.Millisecond)
 	s.Stop()
 }
+
+// --- Skip PR label ---
+
+func TestMergeScanner_SkipPRLabel_SkipsPR(t *testing.T) {
+	d := newMergeDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+	// Returns true only for the skip label. The idle label check
+	// (isIdlePR) is never reached because hasSkipLabel runs first
+	// and continues past the PR.
+	d.labeler.HasPRLabelFunc = func(_, _ string, _ int, label string) (bool, error) {
+		return label == "ai-bot-skip", nil
+	}
+
+	mergeChecked := false
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		mergeChecked = true
+		return &models.PRMergeState{Mergeable: &mergeable}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneMergeScan(t, d.scanner(t))
+
+	if mergeChecked {
+		t.Error("expected mergeability check to be skipped when PR has skip label")
+	}
+	if submitted {
+		t.Error("expected no merge event when PR has skip label")
+	}
+}
+
+func TestMergeScanner_SkipPRLabel_ErrorFailsOpen(t *testing.T) {
+	d := newMergeDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+	d.labeler.HasPRLabelFunc = func(_, _ string, _ int, label string) (bool, error) {
+		if label == "ai-bot-skip" {
+			return false, errors.New("API error")
+		}
+		return false, nil
+	}
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneMergeScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected merge event when skip label check fails (fail-open)")
+	}
+}
+
+func TestMergeScanner_SkipPRLabel_MultiRepo_SkipsOnlyLabeledPR(t *testing.T) {
+	d := newMergeDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
+			{Owner: "org", Repo: "skipped-repo"},
+			{Owner: "org", Repo: "active-repo"},
+		}, nil
+	}
+
+	d.prs.GetPRForBranchFunc = func(_, repo, head string) (*models.PRDetails, error) {
+		switch repo {
+		case "skipped-repo":
+			return &models.PRDetails{Number: 10, Branch: head}, nil
+		case "active-repo":
+			return &models.PRDetails{Number: 20, Branch: head}, nil
+		}
+		return nil, nil
+	}
+
+	d.labeler.HasPRLabelFunc = func(_, repo string, _ int, label string) (bool, error) {
+		return repo == "skipped-repo" && label == "ai-bot-skip", nil
+	}
+
+	mergeCheckedRepos := map[string]bool{}
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, repo string, _ int) (*models.PRMergeState, error) {
+		mergeCheckedRepos[repo] = true
+		return &models.PRMergeState{Mergeable: &mergeable}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneMergeScan(t, d.scanner(t))
+
+	if mergeCheckedRepos["skipped-repo"] {
+		t.Error("expected mergeability NOT to be checked for skipped-repo")
+	}
+	if !mergeCheckedRepos["active-repo"] {
+		t.Error("expected mergeability to be checked for active-repo")
+	}
+	if !submitted {
+		t.Error("expected merge event from active-repo's unmergeable PR")
+	}
+}

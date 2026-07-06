@@ -48,6 +48,10 @@ type FeedbackScannerConfig struct {
 	// MaxCIFixAttempts limits CI fix attempts per PR. Zero
 	// disables CI failure detection. Negative means unlimited.
 	MaxCIFixAttempts int
+
+	// SkipPRLabel is the GitHub label that tells the bot to skip
+	// a PR entirely. Empty disables the check.
+	SkipPRLabel string
 }
 
 // FeedbackScanner polls for tickets in "in review" status and checks
@@ -60,6 +64,7 @@ type FeedbackScanner struct {
 	repos                  RepoLocator
 	ci                     CIChecker
 	labels                 LabelManager
+	prLabeler              PRLabeler
 	labelResolver          FailureLabelResolver
 	lifecycleLabelResolver LifecycleLabelResolver
 	mergedStatusResolver   MergedStatusResolver
@@ -156,6 +161,17 @@ func WithLifecycleLabelManager(lr LifecycleLabelResolver, mr MergedStatusResolve
 		}
 		if st != nil {
 			fs.statusTransitioner = st
+		}
+	}
+}
+
+// WithPRLabeler enables skip-label checking on PRs. When configured
+// with a non-empty [FeedbackScannerConfig.SkipPRLabel], the scanner
+// skips PRs carrying that label.
+func WithPRLabeler(pl PRLabeler) FeedbackScannerOption {
+	return func(fs *FeedbackScanner) {
+		if pl != nil {
+			fs.prLabeler = pl
 		}
 	}
 }
@@ -311,6 +327,10 @@ func (s *FeedbackScanner) observeRepos(
 		}
 		obs.hasOpenPR = true
 
+		if s.hasSkipLabel(logger, r, pr) {
+			continue
+		}
+
 		comments, err := s.prs.GetPRComments(r.Owner, r.Repo, pr.Number, time.Time{})
 		if err != nil {
 			logger.Warn("Failed to fetch PR comments",
@@ -363,6 +383,34 @@ func (s *FeedbackScanner) findOpenPRForRepo(
 		}
 	}
 	return nil
+}
+
+// hasSkipLabel checks whether the skip-PR label is present on the
+// given PR. Returns false when skip-label checking is not configured
+// or on API error (fail-open).
+func (s *FeedbackScanner) hasSkipLabel(
+	logger *zap.Logger,
+	r models.RepoCoord,
+	pr *models.PRDetails,
+) bool {
+	if s.prLabeler == nil || s.cfg.SkipPRLabel == "" {
+		return false
+	}
+	has, err := s.prLabeler.HasPRLabel(r.Owner, r.Repo, pr.Number, s.cfg.SkipPRLabel)
+	if err != nil {
+		logger.Warn("Failed to check skip-PR label, treating as not skipped",
+			zap.String("repo", r.Owner+"/"+r.Repo),
+			zap.Int("pr", pr.Number),
+			zap.Error(err))
+		return false
+	}
+	if has {
+		logger.Debug("PR has skip label, skipping",
+			zap.String("repo", r.Owner+"/"+r.Repo),
+			zap.Int("pr", pr.Number),
+			zap.String("label", s.cfg.SkipPRLabel))
+	}
+	return has
 }
 
 // ciCheckResult captures the CI state for a single repo.

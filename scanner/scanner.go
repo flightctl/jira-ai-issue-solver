@@ -149,7 +149,8 @@ type MergeabilityChecker interface {
 }
 
 // PRLabeler manages labels on pull requests. Used by [MergeScanner]
-// to mark idle PRs and check whether the idle label is present.
+// for idle-label management and by [FeedbackScanner] for skip-label
+// checking.
 type PRLabeler interface {
 	AddPRLabel(owner, repo string, number int, label string) error
 	HasPRLabel(owner, repo string, number int, label string) (bool, error)
