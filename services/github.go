@@ -85,6 +85,7 @@ type GitHubServiceImpl struct {
 	installationIDs      map[string]int64                    // Cache: "owner/repo" -> installation ID
 	installationIDsMu    sync.RWMutex                        // Protects installationIDs map
 	executor             models.CommandExecutor
+	mergeRetryDelay      time.Duration
 	logger               *zap.Logger
 }
 
@@ -172,6 +173,7 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 		installationClients: make(map[int64]*github.Client),
 		installationIDs:     make(map[string]int64),
 		executor:            commandExecutor,
+		mergeRetryDelay:     mergeabilityRetryDelay,
 		logger:              logger,
 	}
 
@@ -2699,8 +2701,8 @@ func (s *GitHubServiceImpl) GetPRMergeability(owner, repo string, number int) (*
 				zap.String("repo", repo),
 				zap.Int("pr", number),
 				zap.Int("attempt", attempt),
-				zap.Duration("delay", mergeabilityRetryDelay))
-			time.Sleep(mergeabilityRetryDelay)
+				zap.Duration("delay", s.mergeRetryDelay))
+			time.Sleep(s.mergeRetryDelay)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
@@ -2713,6 +2715,14 @@ func (s *GitHubServiceImpl) GetPRMergeability(owner, repo string, number int) (*
 		if pr.Mergeable != nil {
 			break
 		}
+	}
+
+	if pr.Mergeable == nil {
+		s.logger.Warn("Mergeability still unknown after retries",
+			zap.String("owner", owner),
+			zap.String("repo", repo),
+			zap.Int("pr", number),
+			zap.Int("retries", mergeabilityMaxRetries))
 	}
 
 	return &models.PRMergeState{

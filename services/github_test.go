@@ -1323,6 +1323,10 @@ func TestAddCommentReaction_APIError(t *testing.T) {
 
 // newMergeabilityTestService creates a GitHubServiceImpl with pre-seeded
 // caches pointing at a test HTTP server, bypassing real GitHub auth.
+// The appTransport is needed only to pass the nil guard in
+// getInstallationIDForRepo; actual API calls go through the pre-seeded
+// installationClients map. mergeRetryDelay is set to zero so tests
+// don't sleep.
 func newMergeabilityTestService(t *testing.T, handler http.Handler) *GitHubServiceImpl {
 	t.Helper()
 
@@ -1335,15 +1339,8 @@ func newMergeabilityTestService(t *testing.T, handler http.Handler) *GitHubServi
 	}
 	t.Cleanup(func() { _ = os.Remove(keyPath) })
 
-	mockTransport := NewTestClient(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
-		}, nil
-	})
-
 	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
-		mockTransport.Transport, 1, keyPath,
+		http.DefaultTransport, 1, keyPath,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create app transport: %v", err)
@@ -1358,11 +1355,11 @@ func newMergeabilityTestService(t *testing.T, handler http.Handler) *GitHubServi
 
 	return &GitHubServiceImpl{
 		config:              &models.Config{},
-		client:              mockTransport,
 		appTransport:        appTransport,
 		installationAuth:    make(map[int64]*ghinstallation.Transport),
 		installationClients: map[int64]*github.Client{1: ghClient},
 		installationIDs:     map[string]int64{"test-owner/test-repo": 1},
+		mergeRetryDelay:     0,
 		logger:              zap.NewNop(),
 	}
 }
