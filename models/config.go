@@ -684,6 +684,13 @@ type GuardrailsConfig struct {
 	// comments to be included in AI task files. Comments shorter than
 	// this are filtered as noise. Zero disables length filtering.
 	MinCommentLength int `yaml:"min_comment_length" mapstructure:"min_comment_length" default:"20"`
+
+	// MaxCommitFiles is the maximum number of files allowed in a single
+	// commit created via the GitHub API. Prevents the bot from pushing
+	// oversized commits when the AI modifies more files than intended.
+	// Zero disables the configurable limit (a hard-coded 1000-file
+	// safety cap still applies).
+	MaxCommitFiles int `yaml:"max_commit_files" mapstructure:"max_commit_files" default:"100"`
 }
 
 // GetProjectConfigForTicket returns the project configuration for a given ticket key
@@ -829,6 +836,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.max_ci_fix_attempts")
 	bindEnv("guardrails.min_comment_length")
 	bindEnv("guardrails.retry_label")
+	bindEnv("guardrails.max_commit_files")
 
 	// Merge configuration
 	bindEnv("merge.idle_days")
@@ -1062,6 +1070,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.max_ci_fix_attempts", 3)
 	v.SetDefault("guardrails.retry_label", "ai-retry")
 	v.SetDefault("guardrails.min_comment_length", 20)
+	v.SetDefault("guardrails.max_commit_files", 100)
 
 	// Merge configuration defaults
 	v.SetDefault("merge.idle_days", 7)
@@ -1305,6 +1314,9 @@ func (g *GuardrailsConfig) validate() error {
 	}
 	if g.CircuitBreakerCooldownMinutes < 0 {
 		return errors.New("guardrails.circuit_breaker_cooldown_minutes must be non-negative")
+	}
+	if g.MaxCommitFiles < 0 {
+		return errors.New("guardrails.max_commit_files must be non-negative")
 	}
 	return nil
 }

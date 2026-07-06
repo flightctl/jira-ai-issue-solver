@@ -580,19 +580,43 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 		}
 	}
 	if err != nil {
-		remoteSHA, _, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
-		if remoteErr != nil {
-			return "", fmt.Errorf("failed to get base tree from first parent: %w", err)
+		// The local parent doesn't exist on the remote — this is
+		// normal when the AI created local commits during its session.
+		// Prefer git merge-base against the local remote-tracking ref
+		// (deterministic, immune to concurrent pushes) over querying
+		// the live GitHub API for the current branch HEAD.
+		//
+		// origin/<branchName> exists in feedback flows (the bot's
+		// branch was previously pushed and fetched) but not for new
+		// tickets (branch only exists locally). Failure here is
+		// expected for new branches and falls through to the API.
+		resolved := false
+		if mbSHA, mbErr := s.getMergeBase(directory, "origin/"+branchName); mbErr == nil {
+			if treeSHA, treeErr := s.getTreeSHAFromCommit(owner, repo, mbSHA, token); treeErr == nil {
+				s.logger.Debug("Resolved parent via local merge-base",
+					zap.String("localParent", firstParent),
+					zap.String("mergeBase", mbSHA))
+				firstParent = mbSHA
+				parentSHAs = []string{mbSHA}
+				baseTreeSHA = treeSHA
+				resolved = true
+			}
 		}
-		s.logger.Warn("Local parent not found on remote, falling back to remote branch HEAD",
-			zap.String("localParent", firstParent),
-			zap.String("remoteSHA", remoteSHA),
-			zap.Error(err))
-		firstParent = remoteSHA
-		parentSHAs = []string{remoteSHA}
-		baseTreeSHA, err = s.getTreeSHAFromCommit(owner, repo, firstParent, token)
-		if err != nil {
-			return "", fmt.Errorf("failed to get base tree from remote branch HEAD: %w", err)
+		if !resolved {
+			remoteSHA, _, remoteErr := s.getBranchBaseCommit(owner, repo, branchName, baseBranch, token)
+			if remoteErr != nil {
+				return "", fmt.Errorf("failed to get branch HEAD for parent fallback: %w", remoteErr)
+			}
+			s.logger.Warn("Local parent not found on remote, falling back to remote branch HEAD",
+				zap.String("localParent", firstParent),
+				zap.String("remoteSHA", remoteSHA),
+				zap.Error(err))
+			firstParent = remoteSHA
+			parentSHAs = []string{remoteSHA}
+			baseTreeSHA, err = s.getTreeSHAFromCommit(owner, repo, firstParent, token)
+			if err != nil {
+				return "", fmt.Errorf("failed to get base tree from remote branch HEAD: %w", err)
+			}
 		}
 	}
 
@@ -657,6 +681,22 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 		zap.Bool("isMergeCommit", len(parentSHAs) > 1))
 
 	return commitSHA, nil
+}
+
+// getMergeBase returns the merge-base of the given ref and HEAD in the
+// local repository. This uses the remote-tracking ref set by the last
+// git fetch, so the result is deterministic and immune to concurrent
+// pushes to the remote.
+func (s *GitHubServiceImpl) getMergeBase(directory, ref string) (string, error) {
+	cmd := newGitCommand(s.executor("git", "merge-base", ref, "HEAD"), directory, true, true)
+	if err := cmd.run(); err != nil {
+		return "", fmt.Errorf("git merge-base %s HEAD failed: %w, stderr: %s", ref, err, cmd.getStderr())
+	}
+	sha := strings.TrimSpace(cmd.getStdout())
+	if sha == "" {
+		return "", fmt.Errorf("git merge-base returned empty output")
+	}
+	return sha, nil
 }
 
 // getLocalParentSHAs gets the parent commit SHAs from local HEAD
@@ -804,9 +844,18 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 	var treeEntries []models.GitHubTreeEntry
 	lines := strings.Split(strings.TrimSpace(cmd.getStdout()), "\n")
 
-	// Check file count limit to prevent DoS and OOM
-	if len(lines) > maxMergeCommitFiles {
-		return nil, fmt.Errorf("merge commit has %d files, exceeds limit of %d - refusing to process to prevent resource exhaustion", len(lines), maxMergeCommitFiles)
+	// Check file count limit to prevent oversized commits.
+	// Use the configurable guardrail when set; fall back to the
+	// hard-coded safety cap otherwise.
+	limit := maxMergeCommitFiles
+	if s.config.Guardrails.MaxCommitFiles > 0 && s.config.Guardrails.MaxCommitFiles < limit {
+		limit = s.config.Guardrails.MaxCommitFiles
+	}
+	if len(lines) > limit {
+		if limit == maxMergeCommitFiles {
+			return nil, fmt.Errorf("commit has %d changed files, exceeds hard safety cap of %d", len(lines), limit)
+		}
+		return nil, fmt.Errorf("commit has %d changed files, exceeds guardrails.max_commit_files limit of %d — the AI likely modified more files than intended; increase the limit in config if this is expected", len(lines), limit)
 	}
 
 	for _, line := range lines {
