@@ -1386,6 +1386,39 @@ func TestConfig_validateClaudeAuth(t *testing.T) {
 
 }
 
+func TestGuardrailsConfig_ValidateMaxCommitFiles(t *testing.T) {
+	tests := []struct {
+		name          string
+		value         int
+		expectedError string
+	}{
+		{name: "positive value is valid", value: 100},
+		{name: "zero is valid (disables limit)", value: 0},
+		{name: "negative value is invalid", value: -1, expectedError: "guardrails.max_commit_files must be non-negative"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &GuardrailsConfig{
+				MaxConcurrentJobs: 1,
+				MaxCommitFiles:    tt.value,
+			}
+			err := g.validate()
+			if tt.expectedError == "" {
+				if err != nil {
+					t.Errorf("expected no error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.expectedError)
+				} else if !strings.Contains(err.Error(), tt.expectedError) {
+					t.Errorf("expected error containing %q, got: %v", tt.expectedError, err)
+				}
+			}
+		})
+	}
+}
+
 func TestConfig_validateContainerConfiguration(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -430,3 +430,9 @@ guardrails:
   # in AI task files. Comments shorter than this are filtered as noise.
   # Set to 0 to include all non-empty comments.
   min_comment_length: 20
+
+  # Maximum number of files allowed in a single commit created via
+  # the GitHub API. Prevents the bot from pushing oversized commits
+  # when the AI modifies more files than intended. Set to 0 to
+  # disable (a hard-coded 1000-file safety cap still applies).
+  max_commit_files: 100

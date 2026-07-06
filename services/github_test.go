@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -1315,4 +1316,229 @@ func TestAddCommentReaction_APIError(t *testing.T) {
 	if !strings.Contains(err.Error(), "eyes") {
 		t.Errorf("error should mention reaction type, got: %v", err)
 	}
+}
+
+func TestCreateBlobsForFilesChangedFromParent_MaxCommitFilesGuardrail(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Initialize a git repo with an initial commit.
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.name", "Test"},
+		{"config", "user.email", "test@example.com"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "base.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	// Record the base commit SHA.
+	out, err := exec.Command("git", "-C", tempDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSHA := strings.TrimSpace(string(out))
+
+	// Create more files than the limit and commit them.
+	fileCount := 15
+	subdir := filepath.Join(tempDir, "src")
+	if err := os.MkdirAll(subdir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < fileCount; i++ {
+		fname := filepath.Join(subdir, fmt.Sprintf("file_%03d.txt", i))
+		if err := os.WriteFile(fname, []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "add files"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	tests := []struct {
+		name           string
+		maxCommitFiles int
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name:           "limit exceeded",
+			maxCommitFiles: 5,
+			expectError:    true,
+			errorContains:  "guardrails.max_commit_files",
+		},
+		{
+			name:           "limit disabled falls back to hard cap",
+			maxCommitFiles: 0,
+			expectError:    false,
+		},
+		{
+			name:           "limit high enough passes",
+			maxCommitFiles: 200,
+			expectError:    false,
+		},
+		{
+			name:           "limit above hard cap uses hard cap",
+			maxCommitFiles: 2000,
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &models.Config{}
+			config.GitHub.AppID = 123456
+			config.GitHub.PrivateKeyPath = keyPath
+			config.Guardrails.MaxCommitFiles = tt.maxCommitFiles
+
+			service := NewGitHubService(config, zap.NewNop())
+
+			// createBlobsForFilesChangedFromParent will call the GitHub
+			// API for blob creation only if the file count is within the
+			// limit. When the limit is exceeded, it returns an error
+			// before any API calls.
+			_, err := service.createBlobsForFilesChangedFromParent(
+				"owner", "repo", tempDir, baseSHA, "fake-token", nil)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("error should contain %q, got: %v", tt.errorContains, err)
+				}
+			} else {
+				// When not exceeding the limit, the method proceeds to
+				// create blobs via the API — which will fail because we
+				// have no real GitHub token. That's fine; we only care
+				// that the limit check passed.
+				if err != nil && strings.Contains(err.Error(), "guardrails.max_commit_files") {
+					t.Errorf("should not fail on file count limit, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestGetMergeBase(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Initialize a git repo with a commit on main.
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.name", "Test"},
+		{"config", "user.email", "test@example.com"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "base.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	// Record the initial commit SHA.
+	out, err := exec.Command("git", "-C", tempDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSHA := strings.TrimSpace(string(out))
+
+	// Create a feature branch with additional commits (simulating AI
+	// local commits on top of a synced base).
+	for _, args := range [][]string{
+		{"checkout", "-b", "feature"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "feature work"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %s failed: %v", args[0], err)
+		}
+	}
+
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		return
+	}
+	defer func() { _ = os.Remove(keyPath) }()
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+
+	service := NewGitHubService(config, zap.NewNop())
+
+	t.Run("finds merge-base with existing ref", func(t *testing.T) {
+		// main is the common ancestor of the feature branch.
+		sha, err := service.getMergeBase(tempDir, "main")
+		if err != nil {
+			t.Fatalf("getMergeBase failed: %v", err)
+		}
+		if sha != baseSHA {
+			t.Errorf("expected merge-base %s, got %s", baseSHA, sha)
+		}
+	})
+
+	t.Run("returns error for nonexistent ref", func(t *testing.T) {
+		_, err := service.getMergeBase(tempDir, "origin/nonexistent")
+		if err == nil {
+			t.Fatal("expected error for nonexistent ref, got nil")
+		}
+	})
 }
