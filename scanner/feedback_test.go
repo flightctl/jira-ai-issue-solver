@@ -936,6 +936,7 @@ type feedbackDeps struct {
 	ci                     *scannertest.StubCIChecker
 	cfg                    scanner.FeedbackScannerConfig
 	labels                 *scannertest.StubLabelManager
+	prLabeler              *scannertest.StubPRLabeler
 	labelResolver          *scannertest.StubFailureLabelResolver
 	lifecycleLabelResolver *scannertest.StubLifecycleLabelResolver
 	mergedStatusResolver   *scannertest.StubMergedStatusResolver
@@ -980,6 +981,9 @@ func (d *feedbackDeps) scanner(t *testing.T) *scanner.FeedbackScanner {
 	var opts []scanner.FeedbackScannerOption
 	if d.labels != nil && d.labelResolver != nil {
 		opts = append(opts, scanner.WithLabelManager(d.labels, d.labelResolver))
+	}
+	if d.prLabeler != nil {
+		opts = append(opts, scanner.WithPRLabeler(d.prLabeler))
 	}
 	if d.lifecycleLabelResolver != nil {
 		var mr scanner.MergedStatusResolver
@@ -1650,5 +1654,160 @@ func TestFeedbackScanner_LifecycleLabels_MultiRepo_NoPRsAnywhere(t *testing.T) {
 
 	if addCalled {
 		t.Error("merged label should not be applied when no repo had any PR")
+	}
+}
+
+// --- Skip PR label ---
+
+func TestFeedbackScanner_SkipPRLabel_SkipsPR(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+	d.prLabeler = &scannertest.StubPRLabeler{
+		HasPRLabelFunc: func(_, _ string, _ int, label string) (bool, error) {
+			return label == "ai-bot-skip", nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	var commentsFetched bool
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		commentsFetched = true
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if submitted {
+		t.Error("expected no event to be submitted when PR has skip label")
+	}
+	if commentsFetched {
+		t.Error("expected PR comments not to be fetched when PR has skip label")
+	}
+}
+
+func TestFeedbackScanner_SkipPRLabel_ErrorFailsOpen(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+	d.prLabeler = &scannertest.StubPRLabeler{
+		HasPRLabelFunc: func(_, _ string, _ int, _ string) (bool, error) {
+			return false, errors.New("API error")
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected event to be submitted when skip label check fails (fail-open)")
+	}
+}
+
+func TestFeedbackScanner_SkipPRLabel_EmptyLabelSkipsCheck(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.SkipPRLabel = ""
+	d.prLabeler = &scannertest.StubPRLabeler{
+		HasPRLabelFunc: func(_, _ string, _ int, _ string) (bool, error) {
+			t.Error("HasPRLabel should not be called when skip label is empty")
+			return false, nil
+		},
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected event to be submitted when skip label is not configured")
+	}
+}
+
+func TestFeedbackScanner_SkipPRLabel_NoPRLabeler(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+	// prLabeler intentionally left nil
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if !submitted {
+		t.Error("expected event to be submitted when PR labeler is not configured")
+	}
+}
+
+func TestFeedbackScanner_SkipPRLabel_MultiRepo_SkipsOnlyLabeledPR(t *testing.T) {
+	d := newFeedbackDeps()
+	d.cfg.SkipPRLabel = "ai-bot-skip"
+
+	d.repos.LocateReposFunc = func(_ models.WorkItem) ([]models.RepoCoord, error) {
+		return []models.RepoCoord{
+			{Owner: "org", Repo: "skipped-repo"},
+			{Owner: "org", Repo: "active-repo"},
+		}, nil
+	}
+
+	d.prs.GetPRForBranchFunc = func(_, repo, head string) (*models.PRDetails, error) {
+		switch repo {
+		case "skipped-repo":
+			return &models.PRDetails{Number: 10, Branch: head}, nil
+		case "active-repo":
+			return &models.PRDetails{Number: 20, Branch: head}, nil
+		}
+		return nil, nil
+	}
+
+	d.prLabeler = &scannertest.StubPRLabeler{
+		HasPRLabelFunc: func(_, repo string, _ int, label string) (bool, error) {
+			return repo == "skipped-repo" && label == "ai-bot-skip", nil
+		},
+	}
+
+	commentRepos := map[string]bool{}
+	d.prs.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		commentRepos[repo] = true
+		if repo == "active-repo" {
+			return []models.PRComment{
+				{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+			}, nil
+		}
+		return []models.PRComment{}, nil
+	}
+
+	var submitted bool
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if commentRepos["skipped-repo"] {
+		t.Error("expected comments NOT to be fetched for skipped-repo")
+	}
+	if !commentRepos["active-repo"] {
+		t.Error("expected comments to be fetched for active-repo")
+	}
+	if !submitted {
+		t.Error("expected feedback event from active-repo's actionable comments")
 	}
 }

@@ -85,6 +85,10 @@ Configurable via `github.known_bot_usernames`, `github.ignored_usernames`, and `
 - **Ignored usernames**: Comments completely skipped (for CI bots like packit-as-a-service[bot])
 - **Thread depth**: Maximum bot replies per thread (default: 5)
 
+### Skip PR Label
+
+Configurable via `github.skip_pr_label` (default: `ai-bot-skip`). When this GitHub label is present on a PR, the bot skips all processing for that PR — no review comment handling, no CI failure detection, no merge conflict resolution. Removing the label re-enables processing on the next scan cycle. Set to empty string to disable the feature. The check is fail-open: API errors are logged and the PR is processed normally.
+
 ### Failure-State Labels
 
 Optional per-project Jira labels (`failure_labels` in project config) that mark ticket failure states for dashboard visibility. All four are mutually exclusive by lifecycle; empty string disables the label:

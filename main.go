@@ -248,10 +248,12 @@ func main() {
 			MaxThreadDepth:    config.GitHub.MaxThreadDepth,
 			IgnoredCheckNames: config.GitHub.IgnoredCheckNames,
 			MaxCIFixAttempts:  config.Guardrails.MaxCIFixAttempts,
+			SkipPRLabel:       config.GitHub.SkipPRLabel,
 		},
 		logger,
 		scanner.WithLabelManager(issueTracker, resolver),
 		scanner.WithLifecycleLabelManager(resolver, resolver, issueTracker),
+		scanner.WithPRLabeler(gitService),
 	)
 	if err != nil {
 		logger.Fatal("Failed to create feedback scanner", zap.Error(err))
@@ -285,6 +287,7 @@ func main() {
 			IdleLabel:         config.Merge.IdleLabel,
 			IgnoredUsernames:  config.GitHub.IgnoredUsernames,
 			KnownBotUsernames: config.GitHub.KnownBotUsernames,
+			SkipPRLabel:       config.GitHub.SkipPRLabel,
 		},
 		logger,
 	)
