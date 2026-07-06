@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
@@ -1541,4 +1544,148 @@ func TestGetMergeBase(t *testing.T) {
 			t.Fatal("expected error for nonexistent ref, got nil")
 		}
 	})
+}
+
+// newMergeabilityTestService creates a GitHubServiceImpl with pre-seeded
+// caches pointing at a test HTTP server, bypassing real GitHub auth.
+// The appTransport is needed only to pass the nil guard in
+// getInstallationIDForRepo; actual API calls go through the pre-seeded
+// installationClients map. mergeRetryDelay is set to zero so tests
+// don't sleep.
+func newMergeabilityTestService(t *testing.T, handler http.Handler) *GitHubServiceImpl {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	keyPath := generateTestRSAKey(t)
+	if keyPath == "" {
+		t.Skip("openssl not available")
+	}
+	t.Cleanup(func() { _ = os.Remove(keyPath) })
+
+	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(
+		http.DefaultTransport, 1, keyPath,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create app transport: %v", err)
+	}
+
+	baseURL, err := url.Parse(server.URL + "/")
+	if err != nil {
+		t.Fatalf("Failed to parse test server URL: %v", err)
+	}
+	ghClient := github.NewClient(nil)
+	ghClient.BaseURL = baseURL
+
+	return &GitHubServiceImpl{
+		config:              &models.Config{},
+		appTransport:        appTransport,
+		installationAuth:    make(map[int64]*ghinstallation.Transport),
+		installationClients: map[int64]*github.Client{1: ghClient},
+		installationIDs:     map[string]int64{"test-owner/test-repo": 1},
+		mergeRetryDelay:     0,
+		logger:              zap.NewNop(),
+	}
+}
+
+func TestGetPRMergeability_RetriesOnNilMergeable(t *testing.T) {
+	var requestCount atomic.Int32
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/repos/test-owner/test-repo/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		n := requestCount.Add(1)
+
+		mergeable := "null"
+		if n >= 3 {
+			mergeable = "false"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"number": 42,
+			"mergeable": %s,
+			"base": {"ref": "main"}
+		}`, mergeable)
+	})
+
+	service := newMergeabilityTestService(t, handler)
+
+	state, err := service.GetPRMergeability("test-owner", "test-repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRMergeability returned error: %v", err)
+	}
+	if state.Mergeable == nil {
+		t.Fatal("Mergeable should not be nil after retry resolved it")
+	}
+	if *state.Mergeable {
+		t.Errorf("Mergeable = %v, want false", *state.Mergeable)
+	}
+	if state.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", state.BaseBranch, "main")
+	}
+	if got := requestCount.Load(); got != 3 {
+		t.Errorf("expected exactly 3 requests (initial + 2 retries), got %d", got)
+	}
+}
+
+func TestGetPRMergeability_ReturnsNilAfterExhaustedRetries(t *testing.T) {
+	var requestCount atomic.Int32
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/repos/test-owner/test-repo/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{
+			"number": 42,
+			"mergeable": null,
+			"base": {"ref": "main"}
+		}`)
+	})
+
+	service := newMergeabilityTestService(t, handler)
+
+	state, err := service.GetPRMergeability("test-owner", "test-repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRMergeability returned error: %v", err)
+	}
+	if state.Mergeable != nil {
+		t.Errorf("Mergeable should be nil after exhausted retries, got %v", *state.Mergeable)
+	}
+
+	expectedRequests := int32(1 + mergeabilityMaxRetries)
+	if got := requestCount.Load(); got != expectedRequests {
+		t.Errorf("expected %d requests (1 initial + %d retries), got %d",
+			expectedRequests, mergeabilityMaxRetries, got)
+	}
+}
+
+func TestGetPRMergeability_NoRetryWhenMergeableKnown(t *testing.T) {
+	var requestCount atomic.Int32
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/repos/test-owner/test-repo/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{
+			"number": 42,
+			"mergeable": true,
+			"base": {"ref": "main"}
+		}`)
+	})
+
+	service := newMergeabilityTestService(t, handler)
+
+	state, err := service.GetPRMergeability("test-owner", "test-repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRMergeability returned error: %v", err)
+	}
+	if state.Mergeable == nil || !*state.Mergeable {
+		t.Errorf("Mergeable should be true, got %v", state.Mergeable)
+	}
+	if got := requestCount.Load(); got != 1 {
+		t.Errorf("expected exactly 1 request (no retries needed), got %d", got)
+	}
 }
