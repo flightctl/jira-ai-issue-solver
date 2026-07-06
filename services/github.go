@@ -59,6 +59,15 @@ const (
 	// maxMergeCommitFiles is the safety limit for files in a single merge commit
 	// Prevents DoS and OOM when processing commits with thousands of files
 	maxMergeCommitFiles = 1000
+
+	// mergeabilityMaxRetries is the number of additional GET requests when
+	// GitHub returns mergeable=null. The first request triggers the async
+	// computation; retries wait for the result.
+	mergeabilityMaxRetries = 3
+
+	// mergeabilityRetryDelay is the pause between retry attempts, giving
+	// GitHub time to finish the background merge-test computation.
+	mergeabilityRetryDelay = 3 * time.Second
 )
 
 // GitHubServiceImpl is the concrete implementation for GitHub operations.
@@ -76,6 +85,7 @@ type GitHubServiceImpl struct {
 	installationIDs      map[string]int64                    // Cache: "owner/repo" -> installation ID
 	installationIDsMu    sync.RWMutex                        // Protects installationIDs map
 	executor             models.CommandExecutor
+	mergeRetryDelay      time.Duration
 	logger               *zap.Logger
 }
 
@@ -163,6 +173,7 @@ func NewGitHubService(config *models.Config, logger *zap.Logger, executor ...mod
 		installationClients: make(map[int64]*github.Client),
 		installationIDs:     make(map[string]int64),
 		executor:            commandExecutor,
+		mergeRetryDelay:     mergeabilityRetryDelay,
 		logger:              logger,
 	}
 
@@ -2668,8 +2679,9 @@ func (s *GitHubServiceImpl) listConflictFiles(dir string) []string {
 }
 
 // GetPRMergeability fetches the mergeability status of a pull request.
-// GitHub computes mergeability asynchronously; when the result is not
-// yet available, Mergeable is nil.
+// GitHub computes mergeability asynchronously; the first GET triggers
+// the computation and may return nil. This method retries with a short
+// delay to collect the result once it's ready.
 func (s *GitHubServiceImpl) GetPRMergeability(owner, repo string, number int) (*models.PRMergeState, error) {
 	installationID, err := s.getInstallationIDForRepo(owner, repo)
 	if err != nil {
@@ -2681,12 +2693,36 @@ func (s *GitHubServiceImpl) GetPRMergeability(owner, repo string, number int) (*
 		return nil, fmt.Errorf("get GitHub client: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
-	defer cancel()
+	var pr *github.PullRequest
+	for attempt := 0; attempt <= mergeabilityMaxRetries; attempt++ {
+		if attempt > 0 {
+			s.logger.Debug("Retrying mergeability check",
+				zap.String("owner", owner),
+				zap.String("repo", repo),
+				zap.Int("pr", number),
+				zap.Int("attempt", attempt),
+				zap.Duration("delay", s.mergeRetryDelay))
+			time.Sleep(s.mergeRetryDelay)
+		}
 
-	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
-	if err != nil {
-		return nil, fmt.Errorf("get PR #%d: %w", number, err)
+		ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+		pr, _, err = client.PullRequests.Get(ctx, owner, repo, number)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("get PR #%d: %w", number, err)
+		}
+
+		if pr.Mergeable != nil {
+			break
+		}
+	}
+
+	if pr.Mergeable == nil {
+		s.logger.Warn("Mergeability still unknown after retries",
+			zap.String("owner", owner),
+			zap.String("repo", repo),
+			zap.Int("pr", number),
+			zap.Int("retries", mergeabilityMaxRetries))
 	}
 
 	return &models.PRMergeState{
