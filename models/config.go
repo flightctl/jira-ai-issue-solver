@@ -471,11 +471,12 @@ type Config struct {
 		BotUsername       string   `yaml:"bot_username" mapstructure:"bot_username"`
 		BotEmail          string   `yaml:"bot_email" mapstructure:"bot_email"` // Optional: auto-constructed for GitHub App mode
 		PRLabel           string   `yaml:"pr_label" mapstructure:"pr_label" default:"ai-pr"`
-		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                     // Path to SSH private key for commit signing
-		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"` // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
-		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`       // List of known bot usernames to prevent loops
-		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`           // List of usernames whose PR comments are completely ignored
-		IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`       // Check run names excluded from CI failure detection
+		SSHKeyPath        string   `yaml:"ssh_key_path" mapstructure:"ssh_key_path"`                         // Path to SSH private key for commit signing
+		MaxThreadDepth    int      `yaml:"max_thread_depth" mapstructure:"max_thread_depth" default:"5"`     // Maximum number of bot replies allowed in a comment thread (e.g., 5 = bot can reply up to 5 times)
+		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`           // List of known bot usernames to prevent loops
+		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`               // List of usernames whose PR comments are completely ignored
+		IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`           // Check run names excluded from CI failure detection
+		SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"` // GitHub label that tells the bot to skip a PR
 	} `yaml:"github" mapstructure:"github"`
 
 	// AI Provider selection
@@ -783,6 +784,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("github.known_bot_usernames")
 	bindEnv("github.ignored_usernames")
 	bindEnv("github.ignored_check_names")
+	bindEnv("github.skip_pr_label")
 
 	// AI configuration
 	bindEnv("ai_provider")

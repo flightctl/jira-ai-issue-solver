@@ -31,6 +31,7 @@ func getValidGitHubConfig() struct {
 	KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 	IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 	IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+	SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 } {
 	return struct {
 		AppID             int64    `yaml:"app_id" mapstructure:"app_id"`
@@ -43,6 +44,7 @@ func getValidGitHubConfig() struct {
 		KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 		IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 		IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+		SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 	}{
 		AppID:          123456,
 		PrivateKeyPath: "/tmp/test_key.pem",
@@ -112,6 +114,7 @@ func TestConfig_validateStatusTransitions(t *testing.T) {
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+					SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tmpKeyPath,
@@ -838,6 +841,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+					SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
@@ -901,6 +905,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+					SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 				}{
 					PrivateKeyPath: tempKeyFile.Name(),
 					BotUsername:    "test-bot",
@@ -960,6 +965,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+					SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: "/non/existent/path/key.pem",
@@ -1017,6 +1023,7 @@ func TestConfig_GitHubAppAuthentication(t *testing.T) {
 					KnownBotUsernames []string `yaml:"known_bot_usernames" mapstructure:"known_bot_usernames"`
 					IgnoredUsernames  []string `yaml:"ignored_usernames" mapstructure:"ignored_usernames"`
 					IgnoredCheckNames []string `yaml:"ignored_check_names" mapstructure:"ignored_check_names"`
+					SkipPRLabel       string   `yaml:"skip_pr_label" mapstructure:"skip_pr_label" default:"ai-bot-skip"`
 				}{
 					AppID:          123456,
 					PrivateKeyPath: tempKeyFile.Name(),
