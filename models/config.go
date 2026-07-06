@@ -1024,6 +1024,7 @@ func setDefaults(v *viper.Viper) {
 
 	// GitHub defaults
 	v.SetDefault("github.pr_label", "ai-pr")
+	v.SetDefault("github.skip_pr_label", "ai-bot-skip")
 	v.SetDefault("github.max_thread_depth", 5)
 	v.SetDefault("github.known_bot_usernames", []string{
 		"github-actions",
