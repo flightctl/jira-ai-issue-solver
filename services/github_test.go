@@ -1546,13 +1546,13 @@ func TestGetMergeBase(t *testing.T) {
 	})
 }
 
-// newMergeabilityTestService creates a GitHubServiceImpl with pre-seeded
+// newGitHubTestService creates a GitHubServiceImpl with pre-seeded
 // caches pointing at a test HTTP server, bypassing real GitHub auth.
 // The appTransport is needed only to pass the nil guard in
 // getInstallationIDForRepo; actual API calls go through the pre-seeded
 // installationClients map. mergeRetryDelay is set to zero so tests
 // don't sleep.
-func newMergeabilityTestService(t *testing.T, handler http.Handler) *GitHubServiceImpl {
+func newGitHubTestService(t *testing.T, handler http.Handler) *GitHubServiceImpl {
 	t.Helper()
 
 	server := httptest.NewServer(handler)
@@ -1609,7 +1609,7 @@ func TestGetPRMergeability_RetriesOnNilMergeable(t *testing.T) {
 		}`, mergeable)
 	})
 
-	service := newMergeabilityTestService(t, handler)
+	service := newGitHubTestService(t, handler)
 
 	state, err := service.GetPRMergeability("test-owner", "test-repo", 42)
 	if err != nil {
@@ -1644,7 +1644,7 @@ func TestGetPRMergeability_ReturnsNilAfterExhaustedRetries(t *testing.T) {
 		}`)
 	})
 
-	service := newMergeabilityTestService(t, handler)
+	service := newGitHubTestService(t, handler)
 
 	state, err := service.GetPRMergeability("test-owner", "test-repo", 42)
 	if err != nil {
@@ -1676,7 +1676,7 @@ func TestGetPRMergeability_NoRetryWhenMergeableKnown(t *testing.T) {
 		}`)
 	})
 
-	service := newMergeabilityTestService(t, handler)
+	service := newGitHubTestService(t, handler)
 
 	state, err := service.GetPRMergeability("test-owner", "test-repo", 42)
 	if err != nil {
@@ -1688,4 +1688,239 @@ func TestGetPRMergeability_NoRetryWhenMergeableKnown(t *testing.T) {
 	if got := requestCount.Load(); got != 1 {
 		t.Errorf("expected exactly 1 request (no retries needed), got %d", got)
 	}
+}
+
+func TestGetMergedPRForBranch(t *testing.T) {
+	t.Run("finds merged PR via merged_at when merged field is absent", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			if got := r.URL.Query().Get("state"); got != "closed" {
+				t.Errorf("expected state=closed query param, got %q", got)
+			}
+			if got := r.URL.Query().Get("head"); got != "bot/TICKET-1" {
+				t.Errorf("expected head=bot/TICKET-1 query param, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 42,
+				"state": "closed",
+				"title": "Fix bug",
+				"html_url": "https://github.com/test-owner/test-repo/pull/42",
+				"merged_at": "2026-07-07T10:00:00Z",
+				"head": {"ref": "bot/TICKET-1", "sha": "abc123"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetMergedPRForBranch("test-owner", "test-repo", "bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr == nil {
+			t.Fatal("expected merged PR to be found, got nil")
+		}
+		if pr.Number != 42 {
+			t.Errorf("Number = %d, want 42", pr.Number)
+		}
+	})
+
+	t.Run("skips unmerged closed PR", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 10,
+				"state": "closed",
+				"title": "Rejected PR",
+				"html_url": "https://github.com/test-owner/test-repo/pull/10",
+				"merged_at": null,
+				"head": {"ref": "bot/TICKET-1", "sha": "def456"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetMergedPRForBranch("test-owner", "test-repo", "bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr != nil {
+			t.Errorf("expected nil for unmerged PR, got #%d", pr.Number)
+		}
+	})
+
+	t.Run("skips PR when merged_at field is absent from JSON", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 10,
+				"state": "closed",
+				"title": "Rejected PR",
+				"html_url": "https://github.com/test-owner/test-repo/pull/10",
+				"head": {"ref": "bot/TICKET-1", "sha": "def456"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetMergedPRForBranch("test-owner", "test-repo", "bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr != nil {
+			t.Errorf("expected nil when merged_at is absent, got #%d", pr.Number)
+		}
+	})
+
+	t.Run("handles fork head format", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 55,
+				"state": "closed",
+				"title": "Fork PR",
+				"html_url": "https://github.com/test-owner/test-repo/pull/55",
+				"merged_at": "2026-07-07T12:00:00Z",
+				"head": {"ref": "bot/TICKET-1", "sha": "fed789"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetMergedPRForBranch("test-owner", "test-repo", "forkuser:bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr == nil {
+			t.Fatal("expected merged fork PR to be found, got nil")
+		}
+		if pr.Number != 55 {
+			t.Errorf("Number = %d, want 55", pr.Number)
+		}
+	})
+}
+
+func TestGetClosedPRForBranch(t *testing.T) {
+	t.Run("finds closed unmerged PR", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 10,
+				"state": "closed",
+				"title": "Rejected PR",
+				"html_url": "https://github.com/test-owner/test-repo/pull/10",
+				"merged_at": null,
+				"head": {"ref": "bot/TICKET-1", "sha": "def456"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetClosedPRForBranch("test-owner", "test-repo", "bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr == nil {
+			t.Fatal("expected closed PR to be found, got nil")
+		}
+		if pr.Number != 10 {
+			t.Errorf("Number = %d, want 10", pr.Number)
+		}
+	})
+
+	t.Run("excludes merged PR", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 42,
+				"state": "closed",
+				"title": "Merged PR",
+				"html_url": "https://github.com/test-owner/test-repo/pull/42",
+				"merged_at": "2026-07-07T10:00:00Z",
+				"head": {"ref": "bot/TICKET-1", "sha": "abc123"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetClosedPRForBranch("test-owner", "test-repo", "bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr != nil {
+			t.Errorf("expected nil for merged PR, got #%d", pr.Number)
+		}
+	})
+
+	t.Run("distinguishes merged from unmerged in mixed results", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[
+				{
+					"number": 10,
+					"state": "closed",
+					"title": "Rejected attempt",
+					"html_url": "https://github.com/test-owner/test-repo/pull/10",
+					"merged_at": null,
+					"head": {"ref": "bot/TICKET-1", "sha": "aaa"},
+					"base": {"ref": "main"}
+				},
+				{
+					"number": 42,
+					"state": "closed",
+					"title": "Merged attempt",
+					"html_url": "https://github.com/test-owner/test-repo/pull/42",
+					"merged_at": "2026-07-07T10:00:00Z",
+					"head": {"ref": "bot/TICKET-1", "sha": "bbb"},
+					"base": {"ref": "main"}
+				}
+			]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetClosedPRForBranch("test-owner", "test-repo", "bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr == nil {
+			t.Fatal("expected the unmerged PR to be found")
+		}
+		if pr.Number != 10 {
+			t.Errorf("Number = %d, want 10 (the unmerged one)", pr.Number)
+		}
+	})
+
+	t.Run("handles fork head format", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.HandleFunc("/repos/test-owner/test-repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{
+				"number": 15,
+				"state": "closed",
+				"title": "Rejected fork PR",
+				"html_url": "https://github.com/test-owner/test-repo/pull/15",
+				"merged_at": null,
+				"head": {"ref": "bot/TICKET-1", "sha": "ccc"},
+				"base": {"ref": "main"}
+			}]`)
+		})
+
+		service := newGitHubTestService(t, handler)
+		pr, err := service.GetClosedPRForBranch("test-owner", "test-repo", "forkuser:bot/TICKET-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pr == nil {
+			t.Fatal("expected closed fork PR to be found, got nil")
+		}
+		if pr.Number != 15 {
+			t.Errorf("Number = %d, want 15", pr.Number)
+		}
+	})
 }
