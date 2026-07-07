@@ -458,7 +458,7 @@ func (p *Pipeline) executeMultiRepoFeedback(
 
 	// --- Steps 12-14: Check changes, commit, reply ---
 	importExcludes := collectExcludes(mergedImports)
-	committed, err := p.commitMultiRepoFeedback(logger, commitMultiRepoParams{
+	repoSHAs, err := p.commitMultiRepoFeedback(logger, commitMultiRepoParams{
 		settings:     settings,
 		workItem:     workItem,
 		wsPath:       wsPath,
@@ -470,11 +470,15 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		repoInfos:    repoInfos,
 	})
 
-	// Record CI fix attempt per-repo so per-repo limits are enforced.
+	// Record CI fix attempt per-repo using the actual commit SHA.
 	for _, ri := range repoInfos {
+		sha := repoSHAs[ri.repo.Name]
+		if sha == "" {
+			sha = "no-changes"
+		}
 		p.postCIFixMarker(logger,
 			ri.repo.Owner, ri.repo.Repo,
-			ri.pr.Number, ri.ciFailures, "multi-repo")
+			ri.pr.Number, ri.ciFailures, sha)
 	}
 
 	// Post cost on the first PR regardless of outcome.
@@ -485,7 +489,7 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if err != nil {
 		return result, err
 	}
-	if !committed {
+	if len(repoSHAs) == 0 {
 		return result, nil
 	}
 
@@ -624,13 +628,13 @@ type commitMultiRepoParams struct {
 }
 
 // commitMultiRepoFeedback checks for changes across repos, commits
-// them, syncs with remotes, and replies to PR comments. Returns true
-// if commits were made, false if no changes (final-attempt replies
-// are posted and nil error returned in that case).
+// them, syncs with remotes, and replies to PR comments. Returns a
+// per-repo map of commit SHAs (nil when no commits were made;
+// final-attempt replies are posted and nil error returned in that case).
 func (p *Pipeline) commitMultiRepoFeedback(
 	logger *zap.Logger,
 	params commitMultiRepoParams,
-) (bool, error) {
+) (map[string]string, error) {
 	// Check for any changes across repos that have PRs.
 	repoHasChanges := make([]bool, len(params.repoInfos))
 	anyChanges := false
@@ -638,7 +642,7 @@ func (p *Pipeline) commitMultiRepoFeedback(
 		repoDir := filepath.Join(params.wsPath, ri.repo.Name)
 		has, err := p.git.HasChanges(repoDir, ri.repo.BaseBranch)
 		if err != nil {
-			return false, fmt.Errorf("check changes for %s: %w", ri.repo.Name, err)
+			return nil, fmt.Errorf("check changes for %s: %w", ri.repo.Name, err)
 		}
 		repoHasChanges[i] = has
 		if has {
@@ -653,7 +657,7 @@ func (p *Pipeline) commitMultiRepoFeedback(
 				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
 					ri.pr, ri.newCmts, "", aiResponses)
 			}
-			return false, nil
+			return nil, nil
 		}
 		if params.finalAttempt {
 			logger.Info("Final attempt produced no changes, posting unable-to-address replies")
@@ -661,14 +665,14 @@ func (p *Pipeline) commitMultiRepoFeedback(
 				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
 					ri.pr, ri.newCmts, "unable")
 			}
-			return false, nil
+			return nil, nil
 		}
-		return false, fmt.Errorf("AI produced no changes (exit code: %d)", params.exitCode)
+		return nil, fmt.Errorf("AI produced no changes (exit code: %d)", params.exitCode)
 	}
 
 	// Commit per repo.
 	commitMsg := fmt.Sprintf("%s: address PR feedback", params.ticketKey)
-	var commitSHA string
+	repoSHAs := make(map[string]string)
 
 	for i, ri := range params.repoInfos {
 		if !repoHasChanges[i] {
@@ -684,32 +688,37 @@ func (p *Pipeline) commitMultiRepoFeedback(
 			continue
 		}
 		if err != nil {
-			return false, fmt.Errorf("commit changes for %s: %w", ri.repo.Name, err)
+			return repoSHAs, fmt.Errorf("commit changes for %s: %w", ri.repo.Name, err)
 		}
-		if commitSHA == "" {
-			commitSHA = sha
-		}
+		repoSHAs[ri.repo.Name] = sha
 
 		if err := p.git.SyncWithRemote(repoDir, params.branchName, params.excludes); err != nil {
-			return false, fmt.Errorf("sync with remote for %s: %w", ri.repo.Name, err)
+			return repoSHAs, fmt.Errorf("sync with remote for %s: %w", ri.repo.Name, err)
 		}
 	}
 
-	if commitSHA == "" {
+	if len(repoSHAs) == 0 {
 		if params.finalAttempt {
 			logger.Info("Final attempt produced no committable changes, posting unable-to-address replies")
 			for _, ri := range params.repoInfos {
 				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
 					ri.pr, ri.newCmts, "unable")
 			}
-			return false, nil
+			return nil, nil
 		}
-		return false, fmt.Errorf("AI produced no committable changes (exit code: %d)", params.exitCode)
+		return nil, fmt.Errorf("AI produced no committable changes (exit code: %d)", params.exitCode)
 	}
 
-	// Reply to comments.
+	// Reply to comments using the first committed SHA as the reference.
 	aiResponses := readCommentResponses(params.wsPath)
-	shortSHA := commitSHA
+	var firstSHA string
+	for _, ri := range params.repoInfos {
+		if sha, ok := repoSHAs[ri.repo.Name]; ok {
+			firstSHA = sha
+			break
+		}
+	}
+	shortSHA := firstSHA
 	if len(shortSHA) > 7 {
 		shortSHA = shortSHA[:7]
 	}
@@ -718,7 +727,7 @@ func (p *Pipeline) commitMultiRepoFeedback(
 			ri.pr, ri.newCmts, shortSHA, aiResponses)
 	}
 
-	return true, nil
+	return repoSHAs, nil
 }
 
 // ensureForkRemoteForRepo sets a repo's origin to the assignee's fork

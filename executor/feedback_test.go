@@ -1434,6 +1434,79 @@ func TestExecuteFeedback_NoReactionsWhenNoNewComments(t *testing.T) {
 	_, _ = p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
 }
 
+func TestMultiRepoFeedback_CIFixMarkerUsesActualSHA(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// Return a per-repo SHA so we can verify the marker uses it.
+	d.git.CommitChangesFunc = func(_, _, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc123-" + repo, nil
+	}
+
+	// Set HeadSHA on PRs so CI analysis runs.
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 10, Title: "Fix", Branch: head, HeadSHA: "oldsha",
+			BaseBranch: "main",
+			URL:        fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+		}, nil
+	}
+
+	// Only svc-a has a CI failure.
+	d.git.ListCheckRunsForRefFunc = func(_, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+		if ref == "main" {
+			return nil, true, nil
+		}
+		if repo == "svc-a" {
+			return []models.CheckRunFailure{
+				{ID: 42, Name: "ci/build", Conclusion: "failure"},
+			}, true, nil
+		}
+		return nil, true, nil
+	}
+
+	type issueComment struct {
+		repo string
+		body string
+	}
+	var postedComments []issueComment
+	d.git.PostIssueCommentFunc = func(_, repo string, _ int, body string) error {
+		postedComments = append(postedComments, issueComment{repo: repo, body: body})
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:      "ai-bot",
+		DefaultProvider:  "claude",
+		AIAPIKeys:        map[string]string{"claude": "test-key"},
+		MaxCIFixAttempts: 3,
+	})
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the CI fix marker comment.
+	var markers []issueComment
+	for _, c := range postedComments {
+		if strings.Contains(c.body, "ci-fix-attempt") {
+			markers = append(markers, c)
+		}
+	}
+
+	if len(markers) != 1 {
+		t.Fatalf("expected 1 CI fix marker, got %d: %+v", len(markers), markers)
+	}
+	if markers[0].repo != "svc-a" {
+		t.Errorf("marker repo = %q, want svc-a", markers[0].repo)
+	}
+	if strings.Contains(markers[0].body, "multi-repo") {
+		t.Errorf("marker should use actual commit SHA, not 'multi-repo': %s", markers[0].body)
+	}
+	if !strings.Contains(markers[0].body, "abc123-svc-a") {
+		t.Errorf("marker should contain commit SHA 'abc123-svc-a': %s", markers[0].body)
+	}
+}
+
 func TestExecuteMultiRepoFeedback_ReactsPerRepo(t *testing.T) {
 	d := newMultiRepoFeedbackDeps(t)
 
