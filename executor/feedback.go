@@ -631,6 +631,9 @@ type commitMultiRepoParams struct {
 // them, syncs with remotes, and replies to PR comments. Returns a
 // per-repo map of commit SHAs (nil when no commits were made;
 // final-attempt replies are posted and nil error returned in that case).
+// On mid-loop errors the partial map is returned alongside the error
+// so callers can post accurate CI fix markers for repos that committed
+// before the failure.
 func (p *Pipeline) commitMultiRepoFeedback(
 	logger *zap.Logger,
 	params commitMultiRepoParams,
