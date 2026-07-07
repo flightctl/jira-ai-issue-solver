@@ -1511,15 +1511,18 @@ func TestMultiRepoFeedback_CIFixMarkerPartialMapOnSyncError(t *testing.T) {
 	d := newMultiRepoFeedbackDeps(t)
 
 	// svc-a commits successfully; svc-b will fail during sync.
+	var svcBCommitted bool
 	d.git.CommitChangesFunc = func(_, _, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		if repo == "svc-b" {
+			svcBCommitted = true
+		}
 		return "sha-" + repo, nil
 	}
-	// Only fail sync during the commit phase (second call per repo),
-	// not during the initial branch setup.
-	syncCalls := map[string]int{}
+	// Fail sync for svc-b only after its commit succeeds, so the test
+	// expresses intent ("commit succeeded, then sync failed") rather
+	// than depending on internal call ordering.
 	d.git.SyncWithRemoteFunc = func(repoDir, _ string, _ []string) error {
-		syncCalls[repoDir]++
-		if strings.Contains(repoDir, "svc-b") && syncCalls[repoDir] > 1 {
+		if strings.Contains(repoDir, "svc-b") && svcBCommitted {
 			return fmt.Errorf("sync failed for svc-b")
 		}
 		return nil
