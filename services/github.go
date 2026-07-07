@@ -2468,7 +2468,7 @@ func (s *GitHubServiceImpl) GetClosedPRForBranch(owner, repo, head string) (*mod
 	}
 
 	for _, pr := range prs {
-		if pr.GetHead().GetRef() == refToMatch && !pr.GetMerged() {
+		if pr.GetHead().GetRef() == refToMatch && pr.MergedAt == nil {
 			return &models.PRDetails{
 				Number:     pr.GetNumber(),
 				Title:      pr.GetTitle(),
@@ -2513,7 +2513,7 @@ func (s *GitHubServiceImpl) GetMergedPRForBranch(owner, repo, head string) (*mod
 	}
 
 	for _, pr := range prs {
-		if pr.GetHead().GetRef() == refToMatch && pr.GetMerged() {
+		if pr.GetHead().GetRef() == refToMatch && pr.MergedAt != nil {
 			return &models.PRDetails{
 				Number:     pr.GetNumber(),
 				Title:      pr.GetTitle(),
