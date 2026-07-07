@@ -1434,6 +1434,177 @@ func TestExecuteFeedback_NoReactionsWhenNoNewComments(t *testing.T) {
 	_, _ = p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
 }
 
+func TestMultiRepoFeedback_CIFixMarkerUsesActualSHA(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// Return a per-repo SHA so we can verify the marker uses it.
+	d.git.CommitChangesFunc = func(_, _, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		return "abc123-" + repo, nil
+	}
+
+	// Set HeadSHA on PRs so CI analysis runs.
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 10, Title: "Fix", Branch: head, HeadSHA: "oldsha",
+			BaseBranch: "main",
+			URL:        fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+		}, nil
+	}
+
+	// Only svc-a has a CI failure.
+	d.git.ListCheckRunsForRefFunc = func(_, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+		if ref == "main" {
+			return nil, true, nil
+		}
+		if repo == "svc-a" {
+			return []models.CheckRunFailure{
+				{ID: 42, Name: "ci/build", Conclusion: "failure"},
+			}, true, nil
+		}
+		return nil, true, nil
+	}
+
+	type issueComment struct {
+		repo string
+		body string
+	}
+	var postedComments []issueComment
+	d.git.PostIssueCommentFunc = func(_, repo string, _ int, body string) error {
+		postedComments = append(postedComments, issueComment{repo: repo, body: body})
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:      "ai-bot",
+		DefaultProvider:  "claude",
+		AIAPIKeys:        map[string]string{"claude": "test-key"},
+		MaxCIFixAttempts: 3,
+	})
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the CI fix marker comment.
+	var markers []issueComment
+	for _, c := range postedComments {
+		if strings.Contains(c.body, "ci-fix-attempt") {
+			markers = append(markers, c)
+		}
+	}
+
+	if len(markers) != 1 {
+		t.Fatalf("expected 1 CI fix marker, got %d: %+v", len(markers), markers)
+	}
+	if markers[0].repo != "svc-a" {
+		t.Errorf("marker repo = %q, want svc-a", markers[0].repo)
+	}
+	if strings.Contains(markers[0].body, "multi-repo") {
+		t.Errorf("marker should use actual commit SHA, not 'multi-repo': %s", markers[0].body)
+	}
+	if !strings.Contains(markers[0].body, "abc123-svc-a") {
+		t.Errorf("marker should contain commit SHA 'abc123-svc-a': %s", markers[0].body)
+	}
+}
+
+func TestMultiRepoFeedback_CIFixMarkerPartialMapOnSyncError(t *testing.T) {
+	d := newMultiRepoFeedbackDeps(t)
+
+	// svc-a commits successfully; svc-b will fail during sync.
+	var svcBCommitted bool
+	d.git.CommitChangesFunc = func(_, _, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+		if repo == "svc-b" {
+			svcBCommitted = true
+		}
+		return "sha-" + repo, nil
+	}
+	// Fail sync for svc-b only after its commit succeeds, so the test
+	// expresses intent ("commit succeeded, then sync failed") rather
+	// than depending on internal call ordering.
+	d.git.SyncWithRemoteFunc = func(repoDir, _ string, _ []string) error {
+		if strings.Contains(repoDir, "svc-b") && svcBCommitted {
+			return fmt.Errorf("sync failed for svc-b")
+		}
+		return nil
+	}
+
+	// Both repos have CI failures so markers are attempted for both.
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 10, Title: "Fix", Branch: head, HeadSHA: "oldsha",
+			BaseBranch: "main",
+			URL:        fmt.Sprintf("https://github.com/%s/%s/pull/10", owner, repo),
+		}, nil
+	}
+	d.git.GetPRCommentsFunc = func(_, repo string, _ int, _ time.Time) ([]models.PRComment, error) {
+		if repo == "svc-a" {
+			return []models.PRComment{
+				{ID: 100, Author: models.Author{Username: "reviewer"}, Body: "Fix A", IsReviewComment: true},
+			}, nil
+		}
+		return []models.PRComment{
+			{ID: 200, Author: models.Author{Username: "reviewer"}, Body: "Fix B", IsReviewComment: true},
+		}, nil
+	}
+	d.git.ListCheckRunsForRefFunc = func(_, repo, ref string) ([]models.CheckRunFailure, bool, error) {
+		if ref == "main" {
+			return nil, true, nil
+		}
+		return []models.CheckRunFailure{
+			{ID: 1, Name: "ci/build", Conclusion: "failure"},
+		}, true, nil
+	}
+
+	type issueComment struct {
+		repo string
+		body string
+	}
+	var postedComments []issueComment
+	d.git.PostIssueCommentFunc = func(_, repo string, _ int, body string) error {
+		postedComments = append(postedComments, issueComment{repo: repo, body: body})
+		return nil
+	}
+
+	p := d.pipelineWithConfig(t, executor.Config{
+		BotUsername:      "ai-bot",
+		DefaultProvider:  "claude",
+		AIAPIKeys:        map[string]string{"claude": "test-key"},
+		MaxCIFixAttempts: 3,
+	})
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	if err == nil {
+		t.Fatal("expected error from sync failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "sync failed for svc-b") {
+		t.Fatalf("expected sync error, got: %v", err)
+	}
+
+	// Despite the error, CI fix markers should still have been posted.
+	// svc-a should use its real SHA; svc-b should use its real SHA too
+	// because CommitChanges uses the Git Data API (commit exists on the
+	// remote before SyncWithRemote runs).
+	var markers []issueComment
+	for _, c := range postedComments {
+		if strings.Contains(c.body, "ci-fix-attempt") {
+			markers = append(markers, c)
+		}
+	}
+
+	if len(markers) != 2 {
+		t.Fatalf("expected 2 CI fix markers, got %d: %+v", len(markers), markers)
+	}
+
+	for _, m := range markers {
+		if strings.Contains(m.body, "multi-repo") {
+			t.Errorf("marker should not contain 'multi-repo': %s", m.body)
+		}
+		expectedSHA := "sha-" + m.repo
+		if !strings.Contains(m.body, expectedSHA) {
+			t.Errorf("marker for %s should contain %q: %s", m.repo, expectedSHA, m.body)
+		}
+	}
+}
+
 func TestExecuteMultiRepoFeedback_ReactsPerRepo(t *testing.T) {
 	d := newMultiRepoFeedbackDeps(t)
 
