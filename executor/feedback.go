@@ -19,7 +19,6 @@ import (
 	"jira-ai-issue-solver/repoconfig"
 	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/taskfile"
-	"jira-ai-issue-solver/workspace"
 )
 
 func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (result jobmanager.JobResult, retErr error) {
@@ -296,9 +295,14 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		}
 	}()
 
-	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
+	// --- Step 3: Prepare multi-repo workspace ---
+	wsPath, _, err := p.prepareMultiRepoWorkspace(logger, job.TicketKey, settings)
+	if err != nil {
+		return result, err
+	}
 
-	// --- Step 3: Find PRs across all repos ---
+	// --- Step 4: Find PRs across all repos ---
+	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
 	heads := settings.PRHeads(branchName)
 	var repoInfos []repoPRInfo
 	for _, repo := range settings.Repos {
@@ -313,19 +317,6 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if len(repoInfos) == 0 {
 		return result, fmt.Errorf("no PRs found for branch %s in any repository", branchName)
 	}
-
-	// --- Step 4: Prepare multi-repo workspace ---
-	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
-	for i, r := range settings.Repos {
-		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
-	}
-	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries, settings.RootRepoURL)
-	if err != nil {
-		return result, fmt.Errorf("prepare workspace: %w", err)
-	}
-	logger.Info("Multi-repo workspace ready",
-		zap.String("path", wsPath),
-		zap.Bool("reused", reused))
 
 	// --- Step 5: Per-repo branch setup (only repos with PRs) ---
 	if err := p.syncMultiRepoBranches(wsPath, branchName, settings, repoInfos); err != nil {
