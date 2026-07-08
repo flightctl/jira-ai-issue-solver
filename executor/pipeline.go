@@ -810,27 +810,9 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	}()
 
 	// --- Step 4: Prepare multi-repo workspace ---
-	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
-	for i, r := range settings.Repos {
-		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
-	}
-	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries, settings.RootRepoURL)
-	if err != nil {
-		return result, fmt.Errorf("prepare workspace: %w", err)
-	}
-	logger.Info("Multi-repo workspace ready",
-		zap.String("path", wsPath),
-		zap.Bool("reused", reused),
-		zap.Int("repos", len(settings.Repos)))
-
-	// Narrow to repos whose directories exist (new repos added to
-	// config after this workspace was created won't be present yet).
-	settings.Repos, err = filterPresentRepos(logger, job.TicketKey, wsPath, settings.Repos)
+	wsPath, reused, err := p.prepareMultiRepoWorkspace(logger, job.TicketKey, settings)
 	if err != nil {
 		return result, err
-	}
-	if len(settings.Repos) == 0 {
-		return result, fmt.Errorf("no repo directories found in workspace %s", wsPath)
 	}
 
 	// --- Step 5: Create or switch to branch per repo ---
@@ -1396,10 +1378,41 @@ func buildScriptParams(provider, defaultClaudeModel, defaultGeminiModel string, 
 	return params
 }
 
+// prepareMultiRepoWorkspace creates or reuses a multi-repo workspace
+// and filters settings.Repos to only repos whose directories exist
+// on disk. Repos added to the config after a workspace was created
+// won't be present yet; filtering them prevents downstream loops
+// from crashing on missing paths.
+func (p *Pipeline) prepareMultiRepoWorkspace(
+	logger *zap.Logger,
+	ticketKey string,
+	settings *models.ProjectSettings,
+) (string, bool, error) {
+	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
+	for i, r := range settings.Repos {
+		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
+	}
+	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(ticketKey, repoEntries, settings.RootRepoURL)
+	if err != nil {
+		return "", false, fmt.Errorf("prepare workspace: %w", err)
+	}
+	logger.Info("Multi-repo workspace ready",
+		zap.String("path", wsPath),
+		zap.Bool("reused", reused),
+		zap.Int("repos", len(settings.Repos)))
+
+	settings.Repos, err = filterPresentRepos(logger, ticketKey, wsPath, settings.Repos)
+	if err != nil {
+		return "", false, err
+	}
+	if len(settings.Repos) == 0 {
+		return "", false, fmt.Errorf("no repo directories found in workspace %s", wsPath)
+	}
+	return wsPath, reused, nil
+}
+
 // filterPresentRepos returns only the repos whose directories exist
-// in the workspace. Repos added to the config after a workspace was
-// created won't have directories yet; skipping them prevents every
-// downstream loop from crashing on the missing path.
+// in the workspace.
 func filterPresentRepos(logger *zap.Logger, ticketKey, wsPath string, repos []models.RepoSettings) ([]models.RepoSettings, error) {
 	present := make([]models.RepoSettings, 0, len(repos))
 	for _, repo := range repos {

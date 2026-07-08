@@ -19,7 +19,6 @@ import (
 	"jira-ai-issue-solver/repoconfig"
 	"jira-ai-issue-solver/services"
 	"jira-ai-issue-solver/taskfile"
-	"jira-ai-issue-solver/workspace"
 )
 
 func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (result jobmanager.JobResult, retErr error) {
@@ -297,26 +296,9 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	}()
 
 	// --- Step 3: Prepare multi-repo workspace ---
-	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
-	for i, r := range settings.Repos {
-		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
-	}
-	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries, settings.RootRepoURL)
-	if err != nil {
-		return result, fmt.Errorf("prepare workspace: %w", err)
-	}
-	logger.Info("Multi-repo workspace ready",
-		zap.String("path", wsPath),
-		zap.Bool("reused", reused))
-
-	// Narrow to repos whose directories exist (new repos added to
-	// config after this workspace was created won't be present yet).
-	settings.Repos, err = filterPresentRepos(logger, job.TicketKey, wsPath, settings.Repos)
+	wsPath, _, err := p.prepareMultiRepoWorkspace(logger, job.TicketKey, settings)
 	if err != nil {
 		return result, err
-	}
-	if len(settings.Repos) == 0 {
-		return result, fmt.Errorf("no repo directories found in workspace %s", wsPath)
 	}
 
 	// --- Step 4: Find PRs across all repos ---
