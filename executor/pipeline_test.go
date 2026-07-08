@@ -3665,6 +3665,7 @@ func (d *testDeps) pipeline(t *testing.T) *executor.Pipeline {
 		BotUsername:     "ai-bot",
 		DefaultProvider: "claude",
 		AIAPIKeys:       map[string]string{"claude": "test-key"},
+		MaxRetries:      3,
 	})
 }
 
