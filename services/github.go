@@ -2687,20 +2687,16 @@ func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
 // and the list of conflicted file paths (conflict markers are left
 // in the working tree).
 func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, error) {
+	remote := "origin"
 	mergeRef := "origin/" + branch
 	if fetchURL != "" {
+		remote = fetchURL
 		mergeRef = "FETCH_HEAD"
-		fetchCmd := s.executor("git", "fetch", fetchURL, branch)
-		fetchCmd.Dir = dir
-		if _, err := fetchCmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git fetch %s %s: %w", fetchURL, branch, err)
-		}
-	} else {
-		fetchCmd := s.executor("git", "fetch", "origin", branch)
-		fetchCmd.Dir = dir
-		if _, err := fetchCmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git fetch origin %s: %w", branch, err)
-		}
+	}
+	fetchCmd := s.executor("git", "fetch", remote, branch)
+	fetchCmd.Dir = dir
+	if _, err := fetchCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git fetch %s %s: %w", remote, branch, err)
 	}
 
 	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
