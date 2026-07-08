@@ -336,7 +336,12 @@ func (s *MergeScanner) isIdlePR(
 		return false
 	}
 
-	comments, err := s.prs.GetPRComments(owner, repo, pr.Number, time.Time{})
+	idleThreshold := time.Now().AddDate(0, 0, -s.cfg.IdleDays)
+
+	// Only fetch comments within the idle window — older comments
+	// can't change the idle decision and would waste API calls on
+	// long-idle PRs with large comment histories.
+	comments, err := s.prs.GetPRComments(owner, repo, pr.Number, idleThreshold)
 	if err != nil {
 		logger.Warn("Failed to fetch PR comments for idle check, treating as active",
 			zap.String("repo", owner+"/"+repo),
@@ -347,13 +352,12 @@ func (s *MergeScanner) isIdlePR(
 	lastHuman := lastHumanCommentTime(comments, s.cfg.BotUsername,
 		s.cfg.KnownBotUsernames, s.cfg.IgnoredUsernames)
 
-	// When no human has commented, use the PR creation date as
-	// baseline. A new PR isn't idle — it just hasn't been reviewed.
+	// When no human has commented within the window, use the PR
+	// creation date as baseline. A new PR isn't idle — it just
+	// hasn't been reviewed.
 	if lastHuman.IsZero() {
 		lastHuman = pr.CreatedAt
 	}
-
-	idleThreshold := time.Now().AddDate(0, 0, -s.cfg.IdleDays)
 	idle := lastHuman.IsZero() || lastHuman.Before(idleThreshold)
 
 	// Check for recent manual label removal before declaring idle.

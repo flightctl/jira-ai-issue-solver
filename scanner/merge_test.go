@@ -562,6 +562,56 @@ func TestMergeScanner_ManualLabelRemovalRespected(t *testing.T) {
 	}
 }
 
+// --- Manual label removal expires after IdleDays ---
+
+func TestMergeScanner_ManualLabelRemovalExpires(t *testing.T) {
+	d := newMergeDeps()
+
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	// PR created 30 days ago, no recent human comments.
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -30),
+		}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	// Label was removed 10 days ago — older than idle threshold of 7.
+	d.labeler.LastLabelRemovalFunc = func(_, _ string, _ int, _ string) (time.Time, error) {
+		return time.Now().AddDate(0, 0, -10), nil
+	}
+
+	labeled := false
+	d.labeler.AddPRLabelFunc = func(_, _ string, _ int, _ string) error {
+		labeled = true
+		return nil
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneMergeScan(t, s)
+
+	if !labeled {
+		t.Error("should re-apply idle label after removal override expires")
+	}
+	if submitted {
+		t.Error("should not submit event for idle PR with expired removal override")
+	}
+}
+
 // --- Active PR (recent comments) is not labeled ---
 
 func TestMergeScanner_ActivePRNotLabeled(t *testing.T) {
