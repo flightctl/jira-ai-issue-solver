@@ -12,6 +12,7 @@ type PRDetails struct {
 	BaseBranch string
 	URL        string
 	HeadSHA    string
+	CreatedAt  time.Time
 }
 
 // PRComment represents a single comment on a pull request.

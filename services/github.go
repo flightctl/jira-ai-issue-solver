@@ -2430,6 +2430,7 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
 				HeadSHA:    pr.GetHead().GetSHA(),
+				CreatedAt:  pr.GetCreatedAt().Time,
 			}, nil
 		}
 	}
@@ -2476,6 +2477,7 @@ func (s *GitHubServiceImpl) GetClosedPRForBranch(owner, repo, head string) (*mod
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
 				HeadSHA:    pr.GetHead().GetSHA(),
+				CreatedAt:  pr.GetCreatedAt().Time,
 			}, nil
 		}
 	}
@@ -2521,6 +2523,7 @@ func (s *GitHubServiceImpl) GetMergedPRForBranch(owner, repo, head string) (*mod
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
 				HeadSHA:    pr.GetHead().GetSHA(),
+				CreatedAt:  pr.GetCreatedAt().Time,
 			}, nil
 		}
 	}
@@ -2859,4 +2862,43 @@ func (s *GitHubServiceImpl) HasPRLabel(owner, repo string, number int, label str
 		}
 	}
 	return false, nil
+}
+
+// LastLabelRemoval returns the timestamp of the most recent removal of
+// the given label from a pull request. Returns zero time if the label
+// was never removed.
+func (s *GitHubServiceImpl) LastLabelRemoval(owner, repo string, number int, label string) (time.Time, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	var latest time.Time
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		events, resp, err := client.Issues.ListIssueEvents(ctx, owner, repo, number, opts)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("list events for PR #%d: %w", number, err)
+		}
+		for _, ev := range events {
+			if ev.GetEvent() == "unlabeled" && ev.GetLabel().GetName() == label {
+				if t := ev.GetCreatedAt().Time; t.After(latest) {
+					latest = t
+				}
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return latest, nil
 }
