@@ -328,7 +328,7 @@ func (p *Pipeline) executeMultiRepoMerge(
 
 	// Narrow to repos whose directories exist (new repos added to
 	// config after this workspace was created won't be present yet).
-	settings.Repos, err = filterPresentRepos(logger, wsPath, settings.Repos)
+	settings.Repos, err = filterPresentRepos(logger, job.TicketKey, wsPath, settings.Repos)
 	if err != nil {
 		return result, err
 	}

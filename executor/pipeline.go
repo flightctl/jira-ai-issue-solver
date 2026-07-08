@@ -825,7 +825,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 
 	// Narrow to repos whose directories exist (new repos added to
 	// config after this workspace was created won't be present yet).
-	settings.Repos, err = filterPresentRepos(logger, wsPath, settings.Repos)
+	settings.Repos, err = filterPresentRepos(logger, job.TicketKey, wsPath, settings.Repos)
 	if err != nil {
 		return result, err
 	}
@@ -1400,13 +1400,14 @@ func buildScriptParams(provider, defaultClaudeModel, defaultGeminiModel string, 
 // in the workspace. Repos added to the config after a workspace was
 // created won't have directories yet; skipping them prevents every
 // downstream loop from crashing on the missing path.
-func filterPresentRepos(logger *zap.Logger, wsPath string, repos []models.RepoSettings) ([]models.RepoSettings, error) {
+func filterPresentRepos(logger *zap.Logger, ticketKey, wsPath string, repos []models.RepoSettings) ([]models.RepoSettings, error) {
 	present := make([]models.RepoSettings, 0, len(repos))
 	for _, repo := range repos {
 		repoDir := filepath.Join(wsPath, repo.Name)
 		_, err := os.Stat(repoDir)
 		if errors.Is(err, os.ErrNotExist) {
 			logger.Warn("Repo directory not found in workspace, skipping",
+				zap.String("ticket", ticketKey),
 				zap.String("repo", repo.Name),
 				zap.String("expected", repoDir))
 			continue
@@ -1418,6 +1419,7 @@ func filterPresentRepos(logger *zap.Logger, wsPath string, repos []models.RepoSe
 	}
 	if len(present) < len(repos) {
 		logger.Info("Filtered workspace repos",
+			zap.String("ticket", ticketKey),
 			zap.Int("present", len(present)),
 			zap.Int("missing", len(repos)-len(present)))
 	}
