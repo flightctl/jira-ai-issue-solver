@@ -314,6 +314,10 @@ func (s *MergeScanner) hasUnmergeablePR(
 // isIdlePR checks whether a PR should be skipped due to inactivity.
 // Returns true if the PR is idle (labeled or newly labeled). Returns
 // false if idle detection is disabled, the PR is active, or on error.
+//
+// When the idle label is already present, the method rechecks comment
+// timestamps: if a human has commented since the idle threshold, the
+// label is removed and the PR is treated as active.
 func (s *MergeScanner) isIdlePR(
 	logger *zap.Logger,
 	owner, repo string,
@@ -330,12 +334,6 @@ func (s *MergeScanner) isIdlePR(
 			zap.Error(err))
 		return false
 	}
-	if hasLabel {
-		logger.Debug("PR has idle label, skipping",
-			zap.String("repo", owner+"/"+repo),
-			zap.Int("pr", pr.Number))
-		return true
-	}
 
 	comments, err := s.prs.GetPRComments(owner, repo, pr.Number, time.Time{})
 	if err != nil {
@@ -349,10 +347,27 @@ func (s *MergeScanner) isIdlePR(
 		s.cfg.KnownBotUsernames, s.cfg.IgnoredUsernames)
 	idleThreshold := time.Now().AddDate(0, 0, -s.cfg.IdleDays)
 
-	// A PR is idle when either no human has ever commented
-	// (zero time) or the last human comment is older than the
-	// threshold.
 	idle := lastHuman.IsZero() || lastHuman.Before(idleThreshold)
+
+	if hasLabel {
+		if idle {
+			logger.Debug("PR has idle label, skipping",
+				zap.String("repo", owner+"/"+repo),
+				zap.Int("pr", pr.Number))
+			return true
+		}
+		logger.Info("PR reactivated by recent human comment, removing idle label",
+			zap.String("repo", owner+"/"+repo),
+			zap.Int("pr", pr.Number),
+			zap.Time("last_human_comment", lastHuman))
+		if err := s.labeler.RemovePRLabel(owner, repo, pr.Number, s.cfg.IdleLabel); err != nil {
+			logger.Warn("Failed to remove idle label",
+				zap.String("repo", owner+"/"+repo),
+				zap.Error(err))
+		}
+		return false
+	}
+
 	if idle {
 		logger.Info("PR is idle, adding label",
 			zap.String("repo", owner+"/"+repo),

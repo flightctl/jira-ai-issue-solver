@@ -298,13 +298,21 @@ func (s *StubMergeabilityChecker) GetPRMergeability(owner, repo string, number i
 
 // StubPRLabeler is a test double for [scanner.PRLabeler].
 type StubPRLabeler struct {
-	AddPRLabelFunc func(owner, repo string, number int, label string) error
-	HasPRLabelFunc func(owner, repo string, number int, label string) (bool, error)
+	AddPRLabelFunc    func(owner, repo string, number int, label string) error
+	RemovePRLabelFunc func(owner, repo string, number int, label string) error
+	HasPRLabelFunc    func(owner, repo string, number int, label string) (bool, error)
 }
 
 func (s *StubPRLabeler) AddPRLabel(owner, repo string, number int, label string) error {
 	if s.AddPRLabelFunc != nil {
 		return s.AddPRLabelFunc(owner, repo, number, label)
+	}
+	return nil
+}
+
+func (s *StubPRLabeler) RemovePRLabel(owner, repo string, number int, label string) error {
+	if s.RemovePRLabelFunc != nil {
+		return s.RemovePRLabelFunc(owner, repo, number, label)
 	}
 	return nil
 }

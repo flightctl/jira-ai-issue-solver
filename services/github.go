@@ -2804,6 +2804,34 @@ func (s *GitHubServiceImpl) AddPRLabel(owner, repo string, number int, label str
 	return nil
 }
 
+// RemovePRLabel removes a label from a pull request. Returns nil
+// if the label is already absent (GitHub returns 404 in that case).
+func (s *GitHubServiceImpl) RemovePRLabel(owner, repo string, number int, label string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, err = client.Issues.RemoveLabelForIssue(
+		ctx, owner, repo, number, label)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return fmt.Errorf("remove label %q from PR #%d: %w", label, number, err)
+	}
+	return nil
+}
+
 // HasPRLabel reports whether a pull request has the given label.
 func (s *GitHubServiceImpl) HasPRLabel(owner, repo string, number int, label string) (bool, error) {
 	installationID, err := s.getInstallationIDForRepo(owner, repo)
