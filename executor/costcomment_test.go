@@ -244,6 +244,12 @@ func TestFeedbackLabel(t *testing.T) {
 		want       string
 	}{
 		{
+			name:       "zero attemptNum treated as new round",
+			entries:    nil,
+			attemptNum: 0,
+			want:       "Feedback (1)",
+		},
+		{
 			name:       "first attempt, no existing entries",
 			entries:    nil,
 			attemptNum: 1,

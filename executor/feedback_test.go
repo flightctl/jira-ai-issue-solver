@@ -283,7 +283,11 @@ func TestExecuteFeedback_CleanupPreservesSessionContext(t *testing.T) {
 	}
 
 	p := d.pipeline(t)
-	_, _ = p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+	// Error is expected (no changes produced); we only care that
+	// cleanup ran and preserved session-context.md.
+	if _, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1")); err != nil {
+		t.Logf("Execute returned expected error: %v", err)
+	}
 
 	if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
 		t.Error("session-context.md should be preserved across feedback sessions")
