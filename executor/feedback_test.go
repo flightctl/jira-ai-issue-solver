@@ -86,13 +86,13 @@ func TestExecuteFeedback_AIGeneratedReplies(t *testing.T) {
 		return "abc1234567890", nil
 	}
 
-	// Write comment-responses.json before the reply step runs.
-	// In the real flow the AI writes this during its session; here we
-	// simulate it by writing the file to the workspace directory that
-	// the pipeline will read from.
-	writeCommentResponses(t, d.wsDir, `[
-		{"comment_id": 1, "response": "Switched to Optional pattern as suggested."}
-	]`)
+	// AI writes comment-responses.json during the session.
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		writeCommentResponses(t, d.wsDir, `[
+			{"comment_id": 1, "response": "Switched to Optional pattern as suggested."}
+		]`)
+		return "", 0, nil
+	}
 
 	var replyBodies []string
 	d.git.ReplyToCommentFunc = func(_, _ string, _ int, _ int64, body string) error {
@@ -225,9 +225,13 @@ func TestExecuteFeedback_NoChanges_WithCommentResponses(t *testing.T) {
 		return false, nil
 	}
 
-	writeCommentResponses(t, d.wsDir, `[
-		{"comment_id": 1, "response": "No code changes needed — this is already handled."}
-	]`)
+	// AI writes comment-responses.json during the session (inside the container).
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		writeCommentResponses(t, d.wsDir, `[
+			{"comment_id": 1, "response": "No code changes needed — this is already handled."}
+		]`)
+		return "", 0, nil
+	}
 
 	var repliedTo []int64
 	d.git.ReplyToCommentFunc = func(_, _ string, _ int, commentID int64, _ string) error {
@@ -243,6 +247,50 @@ func TestExecuteFeedback_NoChanges_WithCommentResponses(t *testing.T) {
 	}
 	if len(repliedTo) != 1 || repliedTo[0] != 1 {
 		t.Errorf("expected reply to comment 1, got %v", repliedTo)
+	}
+}
+
+func TestExecuteFeedback_StaleCommentResponsesCleaned(t *testing.T) {
+	d := newFeedbackDeps(t)
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
+		return false, nil
+	}
+
+	// Stale file from a prior session — written BEFORE Execute, not
+	// by the container. The cleanup should remove it before the AI runs.
+	writeCommentResponses(t, d.wsDir, `[
+		{"comment_id": 1, "response": "Stale response from prior session"}
+	]`)
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1"))
+
+	if err == nil || !strings.Contains(err.Error(), "no changes") {
+		t.Fatalf("expected no-changes error (stale file should be cleaned), got %v", err)
+	}
+}
+
+func TestExecuteFeedback_CleanupPreservesSessionContext(t *testing.T) {
+	d := newFeedbackDeps(t)
+
+	// Write session-context.md (should survive cleanup).
+	ctxPath := filepath.Join(d.wsDir, taskfile.SessionContextPath)
+	if err := os.MkdirAll(filepath.Dir(ctxPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ctxPath, []byte("design rationale from initial session"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := d.pipeline(t)
+	// Error is expected (no changes produced); we only care that
+	// cleanup ran and preserved session-context.md.
+	if _, err := p.Execute(context.Background(), newFeedbackJob("PROJ-1")); err != nil {
+		t.Logf("Execute returned expected error: %v", err)
+	}
+
+	if _, err := os.Stat(ctxPath); os.IsNotExist(err) {
+		t.Error("session-context.md should be preserved across feedback sessions")
 	}
 }
 

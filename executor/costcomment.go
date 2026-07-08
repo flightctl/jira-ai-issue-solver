@@ -84,27 +84,47 @@ func findCostComment(comments []models.IssueComment) *models.IssueComment {
 	return nil
 }
 
-// nextFeedbackLabel derives the sequence label for a feedback entry
-// by counting existing feedback entries.
-func nextFeedbackLabel(entries []costEntry) string {
+// countFeedbackRounds returns the number of distinct feedback rounds
+// in the existing entries. A round starts with a "Feedback (N)" entry;
+// retries and error entries are excluded from the count.
+func countFeedbackRounds(entries []costEntry) int {
 	count := 0
 	for _, e := range entries {
-		if strings.HasPrefix(e.Label, "Feedback") {
+		if strings.HasPrefix(e.Label, "Feedback") &&
+			!strings.Contains(e.Label, "retry") &&
+			!strings.Contains(e.Label, "error") {
 			count++
 		}
 	}
-	return fmt.Sprintf("Feedback #%d", count+1)
+	return count
+}
+
+// feedbackLabel builds a descriptive label for a feedback cost entry.
+// attemptNum distinguishes new rounds (1) from retries (2+). suffix
+// describes the outcome (e.g., " (no changes)", " (unable)").
+func feedbackLabel(entries []costEntry, attemptNum int, suffix string) string {
+	if attemptNum <= 1 {
+		round := countFeedbackRounds(entries) + 1
+		return fmt.Sprintf("Feedback (%d)%s", round, suffix)
+	}
+	round := countFeedbackRounds(entries)
+	if round == 0 {
+		round = 1
+	}
+	retry := attemptNum - 1
+	return fmt.Sprintf("Feedback (%d) retry %d%s", round, retry, suffix)
 }
 
 // postOrUpdateCostComment posts or updates a cost comment on a PR.
-// If label is "Feedback", the sequence number is auto-derived.
-// Errors are logged but not propagated — cost comments are non-critical.
+// Labels starting with "Feedback" are auto-sequenced into rounds and
+// retries based on attemptNum. Errors are logged but not propagated.
 func (p *Pipeline) postOrUpdateCostComment(
 	logger *zap.Logger,
 	owner, repo string,
 	prNumber int,
 	cost float64,
 	label string,
+	attemptNum int,
 ) {
 	if cost <= 0 {
 		return
@@ -121,8 +141,9 @@ func (p *Pipeline) postOrUpdateCostComment(
 	existing := findCostComment(comments)
 	if existing != nil {
 		entries := parseCostComment(existing.Body)
-		if label == "Feedback" {
-			label = nextFeedbackLabel(entries)
+		if strings.HasPrefix(label, "Feedback") {
+			suffix := strings.TrimPrefix(label, "Feedback")
+			label = feedbackLabel(entries, attemptNum, suffix)
 		}
 		entries = append(entries, costEntry{Label: label, Cost: cost})
 		body := formatCostComment(entries)
@@ -135,8 +156,9 @@ func (p *Pipeline) postOrUpdateCostComment(
 		return
 	}
 
-	if label == "Feedback" {
-		label = "Feedback #1"
+	if strings.HasPrefix(label, "Feedback") {
+		suffix := strings.TrimPrefix(label, "Feedback")
+		label = feedbackLabel(nil, attemptNum, suffix)
 	}
 	body := formatCostComment([]costEntry{{Label: label, Cost: cost}})
 

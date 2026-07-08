@@ -234,7 +234,7 @@ func (p *Pipeline) executeSingleRepoMerge(
 	}
 
 	p.postOrUpdateCostComment(logger,
-		repo.Owner, repo.Repo, prDetails.Number, result.CostUSD, "Merge conflict resolution")
+		repo.Owner, repo.Repo, prDetails.Number, result.CostUSD, "Merge conflict resolution", 0)
 
 	result.PRURL = prDetails.URL
 	result.PRNumber = prDetails.Number
@@ -536,7 +536,7 @@ func (p *Pipeline) runMultiRepoMergeAI(
 
 	p.postOrUpdateCostComment(logger,
 		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
-		repoInfos[0].pr.Number, result.CostUSD, "Merge conflict resolution")
+		repoInfos[0].pr.Number, result.CostUSD, "Merge conflict resolution", 0)
 
 	result.PRURL = repoInfos[0].pr.URL
 	result.PRNumber = repoInfos[0].pr.Number
