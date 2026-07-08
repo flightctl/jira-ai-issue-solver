@@ -3443,6 +3443,76 @@ func TestMultiRepoNewTicket_ForwardsRootRepoURL(t *testing.T) {
 	}
 }
 
+func TestMultiRepoNewTicket_SkipsMissingRepoDirs(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	// svc-a, svc-b, svc-c dirs exist from newMultiRepoTestDeps.
+	// Add svc-d to config but don't create its directory.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
+				{Name: "svc-c", Owner: "org", Repo: "svc-c", CloneURL: "https://github.com/org/svc-c.git", BaseBranch: "main"},
+				{Name: "svc-d", Owner: "org", Repo: "svc-d", CloneURL: "https://github.com/org/svc-d.git", BaseBranch: "main"},
+			},
+			Container:        models.ContainerSettings{Image: "fat-container:latest"},
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	var createdBranches []string
+	d.git.CreateBranchFunc = func(dir, branch, base string) error {
+		createdBranches = append(createdBranches, filepath.Base(dir))
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// svc-d should be skipped — only svc-a, svc-b, svc-c get branches.
+	for _, name := range createdBranches {
+		if name == "svc-d" {
+			t.Error("created branch for svc-d, but its directory does not exist")
+		}
+	}
+	if len(createdBranches) != 3 {
+		t.Errorf("expected branches for 3 repos, got %d: %v", len(createdBranches), createdBranches)
+	}
+}
+
+func TestMultiRepoNewTicket_AllMissing_ReturnsError(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	// Configure repos that have no directories at all.
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "missing-x", Owner: "org", Repo: "missing-x", CloneURL: "https://github.com/org/missing-x.git", BaseBranch: "main"},
+				{Name: "missing-y", Owner: "org", Repo: "missing-y", CloneURL: "https://github.com/org/missing-y.git", BaseBranch: "main"},
+			},
+			Container:        models.ContainerSettings{Image: "fat-container:latest"},
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+		}, nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	if err == nil {
+		t.Fatal("expected error when all repo directories are missing")
+	}
+	if !strings.Contains(err.Error(), "no repo directories found") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // --- Clean retry tests ---
 
 func TestExecuteNewTicket_CleanRetry_DeletesBranchAndWorkspace(t *testing.T) {

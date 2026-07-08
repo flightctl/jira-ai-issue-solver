@@ -296,9 +296,31 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		}
 	}()
 
-	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
+	// --- Step 3: Prepare multi-repo workspace ---
+	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
+	for i, r := range settings.Repos {
+		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
+	}
+	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries, settings.RootRepoURL)
+	if err != nil {
+		return result, fmt.Errorf("prepare workspace: %w", err)
+	}
+	logger.Info("Multi-repo workspace ready",
+		zap.String("path", wsPath),
+		zap.Bool("reused", reused))
 
-	// --- Step 3: Find PRs across all repos ---
+	// Narrow to repos whose directories exist (new repos added to
+	// config after this workspace was created won't be present yet).
+	settings.Repos, err = filterPresentRepos(logger, wsPath, settings.Repos)
+	if err != nil {
+		return result, err
+	}
+	if len(settings.Repos) == 0 {
+		return result, fmt.Errorf("no repo directories found in workspace %s", wsPath)
+	}
+
+	// --- Step 4: Find PRs across all repos ---
+	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
 	heads := settings.PRHeads(branchName)
 	var repoInfos []repoPRInfo
 	for _, repo := range settings.Repos {
@@ -313,19 +335,6 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	if len(repoInfos) == 0 {
 		return result, fmt.Errorf("no PRs found for branch %s in any repository", branchName)
 	}
-
-	// --- Step 4: Prepare multi-repo workspace ---
-	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
-	for i, r := range settings.Repos {
-		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
-	}
-	wsPath, reused, err := p.workspaces.FindOrCreateMultiRepo(job.TicketKey, repoEntries, settings.RootRepoURL)
-	if err != nil {
-		return result, fmt.Errorf("prepare workspace: %w", err)
-	}
-	logger.Info("Multi-repo workspace ready",
-		zap.String("path", wsPath),
-		zap.Bool("reused", reused))
 
 	// --- Step 5: Per-repo branch setup (only repos with PRs) ---
 	if err := p.syncMultiRepoBranches(wsPath, branchName, settings, repoInfos); err != nil {

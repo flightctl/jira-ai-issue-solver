@@ -313,16 +313,7 @@ func (p *Pipeline) executeMultiRepoMerge(
 		}
 	}()
 
-	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
-	heads := settings.PRHeads(branchName)
-
-	// --- Step 3: Find PRs across all repos ---
-	repoInfos, err := p.findMergeRepoPRs(logger, settings, heads)
-	if err != nil {
-		return result, err
-	}
-
-	// --- Step 4: Prepare multi-repo workspace ---
+	// --- Step 3: Prepare multi-repo workspace ---
 	repoEntries := make([]workspace.RepoEntry, len(settings.Repos))
 	for i, r := range settings.Repos {
 		repoEntries[i] = workspace.RepoEntry{Name: r.Name, URL: r.CloneURL}
@@ -334,6 +325,24 @@ func (p *Pipeline) executeMultiRepoMerge(
 	logger.Info("Multi-repo workspace ready",
 		zap.String("path", wsPath),
 		zap.Bool("reused", reused))
+
+	// Narrow to repos whose directories exist (new repos added to
+	// config after this workspace was created won't be present yet).
+	settings.Repos, err = filterPresentRepos(logger, wsPath, settings.Repos)
+	if err != nil {
+		return result, err
+	}
+	if len(settings.Repos) == 0 {
+		return result, fmt.Errorf("no repo directories found in workspace %s", wsPath)
+	}
+
+	// --- Step 4: Find PRs across all repos ---
+	branchName := fmt.Sprintf("%s/%s", p.cfg.BotUsername, job.TicketKey)
+	heads := settings.PRHeads(branchName)
+	repoInfos, err := p.findMergeRepoPRs(logger, settings, heads)
+	if err != nil {
+		return result, err
+	}
 
 	// --- Step 5: Per-repo branch setup ---
 	if err := p.syncMultiRepoMergeBranches(wsPath, branchName, settings, repoInfos); err != nil {
