@@ -2678,18 +2678,32 @@ func (s *GitHubServiceImpl) SyncFork(forkOwner, repo, branch string) error {
 		forkOwner, repo, string(body), resp.StatusCode)
 }
 
-// MergeBase merges origin/{branch} into the current branch in the
-// workspace. On a clean merge, returns nil and an empty slice. On
-// conflict, returns [ErrMergeConflict] and the list of conflicted
-// file paths (conflict markers are left in the working tree).
-func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
-	fetchCmd := s.executor("git", "fetch", "origin", branch)
-	fetchCmd.Dir = dir
-	if _, err := fetchCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("git fetch origin %s: %w", branch, err)
+// MergeBase merges a base branch into the current branch in the
+// workspace. When fetchURL is non-empty, the base branch is fetched
+// from that URL into a temporary remote ref (for fork-mode merges
+// where origin points to the fork but the merge target is upstream).
+// When fetchURL is empty, origin is used. On a clean merge, returns
+// nil and an empty slice. On conflict, returns [ErrMergeConflict]
+// and the list of conflicted file paths (conflict markers are left
+// in the working tree).
+func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, error) {
+	mergeRef := "origin/" + branch
+	if fetchURL != "" {
+		mergeRef = "FETCH_HEAD"
+		fetchCmd := s.executor("git", "fetch", fetchURL, branch)
+		fetchCmd.Dir = dir
+		if _, err := fetchCmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git fetch %s %s: %w", fetchURL, branch, err)
+		}
+	} else {
+		fetchCmd := s.executor("git", "fetch", "origin", branch)
+		fetchCmd.Dir = dir
+		if _, err := fetchCmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git fetch origin %s: %w", branch, err)
+		}
 	}
 
-	mergeCmd := s.executor("git", "merge", "--no-edit", "origin/"+branch)
+	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
 	mergeCmd.Dir = dir
 	_, err := mergeCmd.CombinedOutput()
 	if err != nil {
@@ -2697,7 +2711,7 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch string) ([]string, error) {
 		if len(conflictFiles) > 0 {
 			return conflictFiles, fmt.Errorf("%w: conflicted files: %v", ErrMergeConflict, conflictFiles)
 		}
-		return nil, fmt.Errorf("git merge origin/%s failed: %w", branch, err)
+		return nil, fmt.Errorf("git merge %s failed: %w", mergeRef, err)
 	}
 
 	return []string{}, nil

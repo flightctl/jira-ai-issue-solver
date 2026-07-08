@@ -99,7 +99,8 @@ func (p *Pipeline) executeSingleRepoMerge(
 	}
 
 	// --- Step 6: Attempt merge ---
-	conflictFiles, mergeErr := p.git.MergeBase(wsPath, repo.BaseBranch)
+	mergeURL := p.upstreamMergeURL(settings, repo)
+	conflictFiles, mergeErr := p.git.MergeBase(wsPath, repo.BaseBranch, mergeURL)
 
 	if mergeErr == nil {
 		// Tier 1: Clean merge — commit without AI.
@@ -340,7 +341,7 @@ func (p *Pipeline) executeMultiRepoMerge(
 	}
 
 	// --- Step 6: Attempt merge per repo ---
-	hasConflicts, allConflictFiles, err := p.attemptMultiRepoMerge(wsPath, repoInfos)
+	hasConflicts, allConflictFiles, err := p.attemptMultiRepoMerge(wsPath, settings, repoInfos)
 	if err != nil {
 		return result, err
 	}
@@ -403,13 +404,15 @@ func (p *Pipeline) syncMultiRepoMergeBranches(
 
 func (p *Pipeline) attemptMultiRepoMerge(
 	wsPath string,
+	settings *models.ProjectSettings,
 	repoInfos []mergeRepoPR,
 ) (bool, []string, error) {
 	hasConflicts := false
 	var allConflictFiles []string
 	for _, ri := range repoInfos {
 		repoDir := filepath.Join(wsPath, ri.repo.Name)
-		conflicts, mergeErr := p.git.MergeBase(repoDir, ri.repo.BaseBranch)
+		mergeURL := p.upstreamMergeURL(settings, ri.repo)
+		conflicts, mergeErr := p.git.MergeBase(repoDir, ri.repo.BaseBranch, mergeURL)
 		if mergeErr == nil {
 			continue
 		}
@@ -619,6 +622,17 @@ func (p *Pipeline) commitMultiRepoMergeResolution(
 			zap.Int("repos", len(repoInfos)))
 	}
 	return committed, nil
+}
+
+// upstreamMergeURL returns the upstream clone URL when fork mode is
+// active, so MergeBase fetches the base branch from the upstream repo
+// instead of from origin (the fork). Returns empty string when fork
+// mode is off, which tells MergeBase to use origin as usual.
+func (p *Pipeline) upstreamMergeURL(settings *models.ProjectSettings, repo models.RepoSettings) string {
+	if settings.ForkOwner() == "" {
+		return ""
+	}
+	return repo.CloneURL
 }
 
 // mergeRepoPR groups a repo's settings with its PR details for

@@ -53,7 +53,7 @@ type StubGitService struct {
 	PostIssueCommentFunc        func(owner, repo string, prNumber int, body string) error
 	ListIssueCommentsFunc       func(owner, repo string, prNumber int) ([]models.IssueComment, error)
 	UpdateIssueCommentFunc      func(owner, repo string, commentID int64, body string) error
-	MergeBaseFunc               func(dir, branch string) ([]string, error)
+	MergeBaseFunc               func(dir, branch, fetchURL string) ([]string, error)
 	CloneImportFunc             func(url, destDir, ref string) error
 	ListCheckRunsForRefFunc     func(owner, repo, ref string) ([]models.CheckRunFailure, bool, error)
 	ListCheckRunAnnotationsFunc func(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
@@ -187,9 +187,9 @@ func (s *StubGitService) UpdateIssueComment(owner, repo string, commentID int64,
 	return nil
 }
 
-func (s *StubGitService) MergeBase(dir, branch string) ([]string, error) {
+func (s *StubGitService) MergeBase(dir, branch, fetchURL string) ([]string, error) {
 	if s.MergeBaseFunc != nil {
-		return s.MergeBaseFunc(dir, branch)
+		return s.MergeBaseFunc(dir, branch, fetchURL)
 	}
 	return []string{}, nil
 }
