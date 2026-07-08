@@ -554,6 +554,7 @@ func TestSwitchBranch(t *testing.T) {
 
 	// Verify the correct commands were executed
 	expectedCommands := []string{
+		"git reset --hard HEAD",
 		"git fetch origin",
 		"git checkout test-branch",
 	}
@@ -612,6 +613,100 @@ func TestSwitchBranch_NonExistentBranch(t *testing.T) {
 	err = githubService.SwitchBranch(tempDir, "non-existent-branch")
 	if err == nil {
 		t.Error("SwitchBranch() should return error for non-existent branch")
+	}
+}
+
+func TestSwitchBranch_ConflictedIndex(t *testing.T) {
+	tempDir := t.TempDir()
+
+	keyPath := generateTestRSAKey(t)
+	defer func() { _ = os.Remove(keyPath) }()
+
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", args[0], err, out)
+		}
+	}
+
+	gitRun("init", "-b", "main")
+	gitRun("config", "user.name", "Test")
+	gitRun("config", "user.email", "test@example.com")
+	// Self-referencing remote so SwitchBranch's "git fetch origin" succeeds.
+	gitRun("remote", "add", "origin", tempDir)
+
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "initial")
+
+	gitRun("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("feature-change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "feature commit")
+
+	gitRun("checkout", "main")
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("main-change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "main commit")
+
+	// Start a merge that conflicts — leaves a dirty index.
+	mergeCmd := exec.Command("git", "merge", "feature")
+	mergeCmd.Dir = tempDir
+	if err := mergeCmd.Run(); err == nil {
+		t.Fatal("expected merge to fail with conflicts")
+	}
+
+	// Verify the index is actually conflicted.
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = tempDir
+	out, err := statusCmd.Output()
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
+	if !strings.Contains(string(out), "UU") {
+		t.Fatalf("expected conflicted index, got: %s", out)
+	}
+
+	// Without the reset in SwitchBranch, this would fail with
+	// "you need to resolve your current index first."
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+	config.GitHub.BotUsername = "test-bot"
+
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	err = githubService.SwitchBranch(tempDir, "feature")
+	if err != nil {
+		t.Fatalf("SwitchBranch should recover from conflicted index, got: %v", err)
+	}
+
+	// Verify we landed on the correct branch with the right content.
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd.Dir = tempDir
+	branchOut, err := branchCmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get current branch: %v", err)
+	}
+	if got := strings.TrimSpace(string(branchOut)); got != "feature" {
+		t.Errorf("expected branch feature, got %s", got)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tempDir, "file.txt")) //nolint:gosec // test file in temp dir
+	if err != nil {
+		t.Fatalf("failed to read file.txt: %v", err)
+	}
+	if string(content) != "feature-change" {
+		t.Errorf("expected file content %q, got %q", "feature-change", string(content))
 	}
 }
 

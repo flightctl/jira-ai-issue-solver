@@ -437,6 +437,13 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName, baseBranch strin
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "CreateBranch")
 
+	// Reset any dirty state left by a previous failed attempt.
+	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", "HEAD"), directory, debugEnabled, true)
+	if err := resetCmd.run(); err != nil {
+		s.logger.Warn("git reset --hard HEAD failed (non-fatal)",
+			fn, zap.Error(err), zap.String("stderr", resetCmd.getStderr()))
+	}
+
 	// Fetch the latest changes from origin
 	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
@@ -1470,6 +1477,15 @@ func (s *GitHubServiceImpl) CreatePR(params models.PRParams) (*models.PR, error)
 func (s *GitHubServiceImpl) SwitchBranch(directory, branchName string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "SwitchBranch")
+
+	// Reset any dirty state left by a previous failed attempt (e.g.,
+	// unresolved merge conflicts). Without this, git checkout fails
+	// with "you need to resolve your current index first."
+	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", "HEAD"), directory, debugEnabled, true)
+	if err := resetCmd.run(); err != nil {
+		s.logger.Warn("git reset --hard HEAD failed (non-fatal)",
+			fn, zap.Error(err), zap.String("stderr", resetCmd.getStderr()))
+	}
 
 	// Fetch the latest changes from origin
 	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
@@ -2699,15 +2715,23 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, e
 		return nil, fmt.Errorf("git fetch %s %s: %w", remote, branch, err)
 	}
 
+	// Remove untracked files that would block the merge (e.g.,
+	// .ai-bot/ exists locally but is tracked on the merge target).
+	cleanCmd := s.executor("git", "clean", "-fd")
+	cleanCmd.Dir = dir
+	if _, cleanErr := cleanCmd.CombinedOutput(); cleanErr != nil {
+		s.logger.Warn("git clean -fd failed (non-fatal)", zap.Error(cleanErr))
+	}
+
 	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
 	mergeCmd.Dir = dir
-	_, err := mergeCmd.CombinedOutput()
+	mergeOut, err := mergeCmd.CombinedOutput()
 	if err != nil {
 		conflictFiles := s.listConflictFiles(dir)
 		if len(conflictFiles) > 0 {
 			return conflictFiles, fmt.Errorf("%w: conflicted files: %v", ErrMergeConflict, conflictFiles)
 		}
-		return nil, fmt.Errorf("git merge %s failed: %w", mergeRef, err)
+		return nil, fmt.Errorf("git merge %s failed: %w, output: %s", mergeRef, err, string(mergeOut))
 	}
 
 	return []string{}, nil
