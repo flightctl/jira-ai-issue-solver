@@ -2430,6 +2430,7 @@ func (s *GitHubServiceImpl) GetPRForBranch(owner, repo, head string) (*models.PR
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
 				HeadSHA:    pr.GetHead().GetSHA(),
+				CreatedAt:  pr.GetCreatedAt().Time,
 			}, nil
 		}
 	}
@@ -2476,6 +2477,7 @@ func (s *GitHubServiceImpl) GetClosedPRForBranch(owner, repo, head string) (*mod
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
 				HeadSHA:    pr.GetHead().GetSHA(),
+				CreatedAt:  pr.GetCreatedAt().Time,
 			}, nil
 		}
 	}
@@ -2521,6 +2523,7 @@ func (s *GitHubServiceImpl) GetMergedPRForBranch(owner, repo, head string) (*mod
 				BaseBranch: pr.GetBase().GetRef(),
 				URL:        pr.GetHTMLURL(),
 				HeadSHA:    pr.GetHead().GetSHA(),
+				CreatedAt:  pr.GetCreatedAt().Time,
 			}, nil
 		}
 	}
@@ -2804,6 +2807,34 @@ func (s *GitHubServiceImpl) AddPRLabel(owner, repo string, number int, label str
 	return nil
 }
 
+// RemovePRLabel removes a label from a pull request. Returns nil
+// if the label is already absent (GitHub returns 404 in that case).
+func (s *GitHubServiceImpl) RemovePRLabel(owner, repo string, number int, label string) error {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	_, err = client.Issues.RemoveLabelForIssue(
+		ctx, owner, repo, number, label)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return fmt.Errorf("remove label %q from PR #%d: %w", label, number, err)
+	}
+	return nil
+}
+
 // HasPRLabel reports whether a pull request has the given label.
 func (s *GitHubServiceImpl) HasPRLabel(owner, repo string, number int, label string) (bool, error) {
 	installationID, err := s.getInstallationIDForRepo(owner, repo)
@@ -2831,4 +2862,43 @@ func (s *GitHubServiceImpl) HasPRLabel(owner, repo string, number int, label str
 		}
 	}
 	return false, nil
+}
+
+// LastLabelRemoval returns the timestamp of the most recent removal of
+// the given label from a pull request. Returns zero time if the label
+// was never removed.
+func (s *GitHubServiceImpl) LastLabelRemoval(owner, repo string, number int, label string) (time.Time, error) {
+	installationID, err := s.getInstallationIDForRepo(owner, repo)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get installation ID: %w", err)
+	}
+
+	client, err := s.getInstallationGitHubClient(installationID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get GitHub client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), githubAPITimeout)
+	defer cancel()
+
+	var latest time.Time
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		events, resp, err := client.Issues.ListIssueEvents(ctx, owner, repo, number, opts)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("list events for PR #%d: %w", number, err)
+		}
+		for _, ev := range events {
+			if ev.GetEvent() == "unlabeled" && ev.GetLabel().GetName() == label {
+				if t := ev.GetCreatedAt().Time; t.After(latest) {
+					latest = t
+				}
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return latest, nil
 }

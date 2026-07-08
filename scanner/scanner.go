@@ -153,7 +153,9 @@ type MergeabilityChecker interface {
 // checking.
 type PRLabeler interface {
 	AddPRLabel(owner, repo string, number int, label string) error
+	RemovePRLabel(owner, repo string, number int, label string) error
 	HasPRLabel(owner, repo string, number int, label string) (bool, error)
+	LastLabelRemoval(owner, repo string, number int, label string) (time.Time, error)
 }
 
 // CIChecker checks the CI status of a commit.

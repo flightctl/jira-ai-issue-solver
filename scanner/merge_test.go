@@ -323,14 +323,23 @@ func TestMergeScanner_LabelsIdlePRAndSkips(t *testing.T) {
 	}
 }
 
-// --- Idle detection: skips PR already labeled ---
+// --- Idle detection: skips PR already labeled and still idle ---
 
-func TestMergeScanner_SkipsPRWithIdleLabel(t *testing.T) {
+func TestMergeScanner_SkipsPRWithIdleLabelStillIdle(t *testing.T) {
 	d := newMergeDeps()
 
 	mergeable := false
 	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
 		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	// PR created 10 days ago, no human comments — still idle.
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -10),
+		}, nil
 	}
 
 	d.labeler.HasPRLabelFunc = func(_, _ string, _ int, _ string) (bool, error) {
@@ -343,10 +352,8 @@ func TestMergeScanner_SkipsPRWithIdleLabel(t *testing.T) {
 		return &jobmanager.Job{}, nil
 	}
 
-	// Should not even fetch comments.
-	commentsFetched := false
+	// No human comments — PR is still idle.
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
-		commentsFetched = true
 		return []models.PRComment{}, nil
 	}
 
@@ -356,8 +363,252 @@ func TestMergeScanner_SkipsPRWithIdleLabel(t *testing.T) {
 	if submitted {
 		t.Error("should not submit event for labeled idle PR")
 	}
-	if commentsFetched {
-		t.Error("should not fetch comments when idle label is present")
+}
+
+// --- Idle detection: reactivates PR when human comments after idle label ---
+
+func TestMergeScanner_ReactivatesIdlePROnHumanComment(t *testing.T) {
+	d := newMergeDeps()
+
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	d.labeler.HasPRLabelFunc = func(_, _ string, _ int, _ string) (bool, error) {
+		return true, nil
+	}
+
+	// Human commented 2 days ago (within idle threshold of 7).
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{
+				ID:        1,
+				Author:    models.Author{Username: "reviewer"},
+				Body:      "I still want this merged",
+				Timestamp: time.Now().AddDate(0, 0, -2),
+			},
+		}, nil
+	}
+
+	var removedLabel string
+	d.labeler.RemovePRLabelFunc = func(_, _ string, _ int, label string) error {
+		removedLabel = label
+		return nil
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneMergeScan(t, s)
+
+	if !submitted {
+		t.Error("should submit event after reactivating idle PR")
+	}
+	if removedLabel != "ai-bot/idle" {
+		t.Errorf("expected idle label to be removed, got %q", removedLabel)
+	}
+}
+
+// --- Idle detection: reactivates PR even when label removal fails ---
+
+func TestMergeScanner_ReactivatesIdlePREvenWhenLabelRemovalFails(t *testing.T) {
+	d := newMergeDeps()
+
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	d.labeler.HasPRLabelFunc = func(_, _ string, _ int, _ string) (bool, error) {
+		return true, nil
+	}
+
+	// Human commented 2 days ago (within idle threshold of 7).
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{
+				ID:        1,
+				Author:    models.Author{Username: "reviewer"},
+				Body:      "Please fix this",
+				Timestamp: time.Now().AddDate(0, 0, -2),
+			},
+		}, nil
+	}
+
+	d.labeler.RemovePRLabelFunc = func(_, _ string, _ int, _ string) error {
+		return errors.New("API error")
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneMergeScan(t, s)
+
+	if !submitted {
+		t.Error("should submit event even when label removal fails (fail-open)")
+	}
+}
+
+// --- New PR with no human comments is not labeled idle ---
+
+func TestMergeScanner_NewPRNotLabeledIdle(t *testing.T) {
+	d := newMergeDeps()
+
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	// PR created 2 days ago (within idle threshold of 7).
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -2),
+		}, nil
+	}
+
+	// Only bot comments — no human activity.
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{
+				ID:        1,
+				Author:    models.Author{Username: "ai-bot"},
+				Body:      "Working on it.",
+				Timestamp: time.Now(),
+			},
+		}, nil
+	}
+
+	labeled := false
+	d.labeler.AddPRLabelFunc = func(_, _ string, _ int, _ string) error {
+		labeled = true
+		return nil
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneMergeScan(t, s)
+
+	if labeled {
+		t.Error("should not label a new PR as idle")
+	}
+	if !submitted {
+		t.Error("should submit merge event for new unmergeable PR")
+	}
+}
+
+// --- Manual label removal prevents re-application ---
+
+func TestMergeScanner_ManualLabelRemovalRespected(t *testing.T) {
+	d := newMergeDeps()
+
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	// PR created 10 days ago, no recent human comments — would be
+	// idle, but someone removed the idle label 1 day ago.
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -10),
+		}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	d.labeler.LastLabelRemovalFunc = func(_, _ string, _ int, _ string) (time.Time, error) {
+		return time.Now().AddDate(0, 0, -1), nil
+	}
+
+	labeled := false
+	d.labeler.AddPRLabelFunc = func(_, _ string, _ int, _ string) error {
+		labeled = true
+		return nil
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneMergeScan(t, s)
+
+	if labeled {
+		t.Error("should not re-apply idle label after manual removal")
+	}
+	if !submitted {
+		t.Error("should submit merge event after manual label removal")
+	}
+}
+
+// --- Manual label removal expires after IdleDays ---
+
+func TestMergeScanner_ManualLabelRemovalExpires(t *testing.T) {
+	d := newMergeDeps()
+
+	mergeable := false
+	d.mergeCheck.GetPRMergeabilityFunc = func(_, _ string, _ int) (*models.PRMergeState, error) {
+		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
+	}
+
+	// PR created 30 days ago, no recent human comments.
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -30),
+		}, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+
+	// Label was removed 10 days ago — older than idle threshold of 7.
+	d.labeler.LastLabelRemovalFunc = func(_, _ string, _ int, _ string) (time.Time, error) {
+		return time.Now().AddDate(0, 0, -10), nil
+	}
+
+	labeled := false
+	d.labeler.AddPRLabelFunc = func(_, _ string, _ int, _ string) error {
+		labeled = true
+		return nil
+	}
+
+	submitted := false
+	d.submitter.SubmitFunc = func(_ jobmanager.Event) (*jobmanager.Job, error) {
+		submitted = true
+		return &jobmanager.Job{}, nil
+	}
+
+	s := d.scanner(t)
+	runOneMergeScan(t, s)
+
+	if !labeled {
+		t.Error("should re-apply idle label after removal override expires")
+	}
+	if submitted {
+		t.Error("should not submit event for idle PR with expired removal override")
 	}
 }
 
@@ -451,7 +702,14 @@ func TestMergeScanner_BotCommentsExcludedFromActivity(t *testing.T) {
 		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
 	}
 
-	// Only bot comments exist — no human activity.
+	// PR created 10 days ago with only bot comments — no human activity.
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -10),
+		}, nil
+	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{
@@ -500,7 +758,15 @@ func TestMergeScanner_KnownBotExcludedFromActivity(t *testing.T) {
 		return &models.PRMergeState{Mergeable: &mergeable, BaseBranch: "main"}, nil
 	}
 
-	// Only known bot and ignored user have recent comments.
+	// PR created 10 days ago. Only known bot and ignored user have
+	// recent comments — no human activity.
+	d.prs.GetPRForBranchFunc = func(_, _, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Branch: head,
+			URL:       "https://github.com/org/repo/pull/42",
+			CreatedAt: time.Now().AddDate(0, 0, -10),
+		}, nil
+	}
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{
 			{
@@ -655,8 +921,10 @@ func newMergeDeps() *mergeDeps {
 		prs: &scannertest.StubPRFetcher{
 			GetPRForBranchFunc: func(_, _, head string) (*models.PRDetails, error) {
 				return &models.PRDetails{
-					Number: 42, Branch: head,
-					URL: "https://github.com/org/repo/pull/42",
+					Number:    42,
+					Branch:    head,
+					URL:       "https://github.com/org/repo/pull/42",
+					CreatedAt: time.Now().AddDate(0, 0, -1),
 				}, nil
 			},
 			GetPRCommentsFunc: func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
