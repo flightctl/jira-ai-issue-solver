@@ -346,7 +346,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 	p.postOrUpdateCostComment(logger,
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
-		pr.Number, result.CostUSD, "New ticket")
+		pr.Number, result.CostUSD, "New ticket", 0)
 
 	if !draft {
 		p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
@@ -986,7 +986,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	// Post cost on the first PR only to avoid double-counting.
 	p.postOrUpdateCostComment(logger,
 		prs[0].owner, prs[0].repo,
-		prs[0].number, result.CostUSD, "New ticket")
+		prs[0].number, result.CostUSD, "New ticket", 0)
 
 	result.PRURL = prs[0].url
 	result.PRNumber = prs[0].number

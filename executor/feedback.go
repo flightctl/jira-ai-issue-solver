@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -133,6 +134,9 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, err
 	}
 
+	// --- Step 9a: Remove stale AI outputs from prior session ---
+	cleanAIOutputs(logger, wsPath)
+
 	// --- Step 10: Determine AI provider ---
 	provider := p.resolveProvider(settings)
 	logger.Info("AI provider selected", zap.String("provider", provider))
@@ -213,7 +217,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, fmt.Errorf("check changes: %w", err)
 	}
 	if !hasChanges {
-		return p.handleNoChanges(logger, settings, prDetails, newComments, ciFailures, wsPath, result, exitCode)
+		return p.handleNoChanges(logger, settings, prDetails, newComments, ciFailures, wsPath, result, exitCode, job.AttemptNum)
 	}
 
 	// --- Step 15: Commit via GitHub API ---
@@ -224,15 +228,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		commitMsg, wsPath, settings.Repos[0].BaseBranch, workItem.Assignee, importExcludes,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
-		if p.isFinalAttempt(job.AttemptNum) {
-			logger.Info("Final attempt produced no changes, posting unable-to-address replies")
-			p.replyUnableToAddress(logger, settings, prDetails, newComments)
-			return result, nil
-		}
-		p.postOrUpdateCostComment(logger,
-			settings.Repos[0].Owner, settings.Repos[0].Repo,
-			prDetails.Number, result.CostUSD, "Feedback")
-		return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
+		return p.handleErrNoChanges(logger, settings, prDetails, newComments, result, exitCode, job.AttemptNum)
 	}
 	if err != nil {
 		return result, fmt.Errorf("commit changes: %w", err)
@@ -246,14 +242,14 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 	// --- Step 17: Clear failure labels and reply to addressed comments ---
 	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 	aiResponses := readCommentResponses(wsPath)
-	p.replyToComments(logger, settings, prDetails, newComments, sha, aiResponses)
+	p.replyToComments(logger, settings, prDetails, newComments, sha, aiResponses) // best-effort: commit is the primary outcome
 
 	// --- Step 17a: Post CI fix attempt marker ---
 	p.postCIFixMarker(logger, owner, repo, prDetails.Number, ciFailures, sha)
 
 	p.postOrUpdateCostComment(logger,
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
-		prDetails.Number, result.CostUSD, "Feedback")
+		prDetails.Number, result.CostUSD, "Feedback", job.AttemptNum)
 
 	result.PRURL = prDetails.URL
 	result.PRNumber = prDetails.Number
@@ -379,6 +375,9 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		return result, err
 	}
 
+	// --- Step 8a: Remove stale AI outputs from prior session ---
+	cleanAIOutputs(logger, wsPath)
+
 	// --- Step 9: Provider, command, container ---
 	provider := p.resolveProvider(settings)
 	sp := buildScriptParams(provider, p.cfg.DefaultClaudeModel, p.cfg.DefaultGeminiModel, repoConfigs[0])
@@ -481,10 +480,10 @@ func (p *Pipeline) executeMultiRepoFeedback(
 			ri.pr.Number, ri.ciFailures, sha)
 	}
 
-	// Post cost on the first PR regardless of outcome.
+	costLabel := feedbackCostLabel(err, len(repoSHAs), p.isFinalAttempt(job.AttemptNum))
 	p.postOrUpdateCostComment(logger,
 		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
-		repoInfos[0].pr.Number, result.CostUSD, "Feedback")
+		repoInfos[0].pr.Number, result.CostUSD, costLabel, job.AttemptNum)
 
 	if err != nil {
 		return result, err
@@ -656,17 +655,31 @@ func (p *Pipeline) commitMultiRepoFeedback(
 		aiResponses := readCommentResponses(params.wsPath)
 		if aiResponses != nil {
 			logger.Info("AI produced no code changes but provided comment responses")
+			totalPosted := 0
 			for _, ri := range params.repoInfos {
-				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+				totalPosted += p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
 					ri.pr, ri.newCmts, "", aiResponses)
+			}
+			totalComments := 0
+			for _, ri := range params.repoInfos {
+				totalComments += len(ri.newCmts)
+			}
+			if totalPosted == 0 && totalComments > 0 {
+				return nil, fmt.Errorf("AI provided comment responses but failed to post any replies")
 			}
 			return nil, nil
 		}
 		if params.finalAttempt {
 			logger.Info("Final attempt produced no changes, posting unable-to-address replies")
+			totalPosted := 0
+			totalComments := 0
 			for _, ri := range params.repoInfos {
-				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+				totalPosted += p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
 					ri.pr, ri.newCmts, "unable")
+				totalComments += len(ri.newCmts)
+			}
+			if totalPosted == 0 && totalComments > 0 {
+				return nil, fmt.Errorf("final attempt: failed to post unable-to-address replies")
 			}
 			return nil, nil
 		}
@@ -703,9 +716,15 @@ func (p *Pipeline) commitMultiRepoFeedback(
 	if len(repoSHAs) == 0 {
 		if params.finalAttempt {
 			logger.Info("Final attempt produced no committable changes, posting unable-to-address replies")
+			totalPosted := 0
+			totalComments := 0
 			for _, ri := range params.repoInfos {
-				p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
+				totalPosted += p.replyToCommentsOnRepo(logger, ri.repo.Owner, ri.repo.Repo,
 					ri.pr, ri.newCmts, "unable")
+				totalComments += len(ri.newCmts)
+			}
+			if totalPosted == 0 && totalComments > 0 {
+				return nil, fmt.Errorf("final attempt: failed to post unable-to-address replies")
 			}
 			return nil, nil
 		}
@@ -755,7 +774,7 @@ func (p *Pipeline) ensureForkRemoteForRepo(
 // replyToCommentsOnRepo posts replies to comments on a specific
 // repo's PR. When sha is "unable", posts unable-to-address replies.
 // When sha is a commit SHA, posts addressed replies with optional AI
-// response summaries.
+// response summaries. Returns the number of replies successfully posted.
 func (p *Pipeline) replyToCommentsOnRepo(
 	logger *zap.Logger,
 	owner, repo string,
@@ -763,12 +782,13 @@ func (p *Pipeline) replyToCommentsOnRepo(
 	comments []models.PRComment,
 	sha string,
 	aiResponses ...map[int64]string,
-) {
+) int {
 	var responses map[int64]string
 	if len(aiResponses) > 0 {
 		responses = aiResponses[0]
 	}
 
+	posted := 0
 	for _, c := range comments {
 		var replyBody string
 		switch {
@@ -789,6 +809,8 @@ func (p *Pipeline) replyToCommentsOnRepo(
 				logger.Warn("Failed to reply to review comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
+			} else {
+				posted++
 			}
 		} else {
 			contextual := conversationReplyBody(c, replyBody)
@@ -797,9 +819,12 @@ func (p *Pipeline) replyToCommentsOnRepo(
 				logger.Warn("Failed to reply to conversation comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
+			} else {
+				posted++
 			}
 		}
 	}
+	return posted
 }
 
 // CategorizeComments separates PR comments into new (requiring action)
@@ -917,11 +942,12 @@ func (p *Pipeline) replyToComments(
 	comments []models.PRComment,
 	commitSHA string,
 	aiResponses map[int64]string,
-) {
+) int {
 	shortSHA := commitSHA
 	if len(shortSHA) > 7 {
 		shortSHA = shortSHA[:7]
 	}
+	posted := 0
 	for _, c := range comments {
 		var replyBody string
 		if summary, ok := aiResponses[c.ID]; ok {
@@ -942,6 +968,8 @@ func (p *Pipeline) replyToComments(
 				logger.Warn("Failed to reply to review comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
+			} else {
+				posted++
 			}
 		} else {
 			contextual := conversationReplyBody(c, replyBody)
@@ -951,9 +979,12 @@ func (p *Pipeline) replyToComments(
 				logger.Warn("Failed to reply to conversation comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
+			} else {
+				posted++
 			}
 		}
 	}
+	return posted
 }
 
 // isFinalAttempt returns true when the current attempt is the last
@@ -967,13 +998,15 @@ func (p *Pipeline) isFinalAttempt(attemptNum int) bool {
 // replyUnableToAddress posts a reply to each comment indicating that
 // the bot was unable to make changes after multiple attempts. The
 // reply includes an addressed marker so the comment is not picked up
-// again by future scanner cycles.
+// again by future scanner cycles. Returns the number of replies
+// successfully posted.
 func (p *Pipeline) replyUnableToAddress(
 	logger *zap.Logger,
 	settings *models.ProjectSettings,
 	prDetails *models.PRDetails,
 	comments []models.PRComment,
-) {
+) int {
+	posted := 0
 	for _, c := range comments {
 		replyBody := "I was unable to produce code changes to address this comment after multiple attempts."
 
@@ -983,6 +1016,8 @@ func (p *Pipeline) replyUnableToAddress(
 				logger.Warn("Failed to reply to review comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
+			} else {
+				posted++
 			}
 		} else {
 			contextual := conversationReplyBody(c, replyBody)
@@ -992,9 +1027,12 @@ func (p *Pipeline) replyUnableToAddress(
 				logger.Warn("Failed to reply to conversation comment",
 					zap.Int64("comment_id", c.ID),
 					zap.Error(err))
+			} else {
+				posted++
 			}
 		}
 	}
+	return posted
 }
 
 // conversationReplyBody builds a reply to a conversation comment with
@@ -1036,6 +1074,65 @@ func (p *Pipeline) analyzeMultiRepoCIFailures(
 	return all
 }
 
+func feedbackCostLabel(commitErr error, commitCount int, finalAttempt bool) string {
+	switch {
+	case commitErr != nil && (strings.Contains(commitErr.Error(), "no changes") ||
+		strings.Contains(commitErr.Error(), "no committable changes")):
+		return "Feedback (no changes)"
+	case commitErr != nil:
+		return "Feedback (error)"
+	case commitCount == 0 && finalAttempt:
+		return "Feedback (unable)"
+	case commitCount == 0:
+		return "Feedback (no changes)"
+	default:
+		return "Feedback"
+	}
+}
+
+func (p *Pipeline) handleErrNoChanges(
+	logger *zap.Logger,
+	settings *models.ProjectSettings,
+	prDetails *models.PRDetails,
+	newComments []models.PRComment,
+	result jobmanager.JobResult,
+	exitCode int,
+	attemptNum int,
+) (jobmanager.JobResult, error) {
+	owner := settings.Repos[0].Owner
+	repo := settings.Repos[0].Repo
+
+	if p.isFinalAttempt(attemptNum) {
+		logger.Info("Final attempt produced no changes, posting unable-to-address replies")
+		posted := p.replyUnableToAddress(logger, settings, prDetails, newComments)
+		p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback (unable)", attemptNum)
+		if posted == 0 && len(newComments) > 0 {
+			return result, fmt.Errorf("final attempt: failed to post unable-to-address replies")
+		}
+		return result, nil
+	}
+	p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback (no changes)", attemptNum)
+	return result, fmt.Errorf("AI produced no committable changes (exit code: %d)", exitCode)
+}
+
+// cleanAIOutputs removes AI-generated output files from the workspace
+// to prevent stale data from a prior session being read as current.
+// SessionContextPath is intentionally preserved — it carries design
+// context from the original session that helps the AI address feedback.
+func cleanAIOutputs(logger *zap.Logger, wsPath string) {
+	for _, rel := range []string{
+		taskfile.CommentResponsesPath,
+		taskfile.PRDescriptionPath,
+		sessionOutputPath,
+		cliOutputPath,
+	} {
+		if err := os.Remove(filepath.Join(wsPath, rel)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Debug("Failed to clean AI output file",
+				zap.String("path", rel), zap.Error(err))
+		}
+	}
+}
+
 func (p *Pipeline) handleNoChanges(
 	logger *zap.Logger,
 	settings *models.ProjectSettings,
@@ -1045,6 +1142,7 @@ func (p *Pipeline) handleNoChanges(
 	wsPath string,
 	result jobmanager.JobResult,
 	exitCode int,
+	attemptNum int,
 ) (jobmanager.JobResult, error) {
 	owner := settings.Repos[0].Owner
 	repo := settings.Repos[0].Repo
@@ -1056,11 +1154,23 @@ func (p *Pipeline) handleNoChanges(
 	aiResponses := readCommentResponses(wsPath)
 	if aiResponses != nil {
 		logger.Info("AI produced no code changes but provided comment responses")
-		p.replyToComments(logger, settings, prDetails, newComments, "", aiResponses)
-		p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback")
+		posted := p.replyToComments(logger, settings, prDetails, newComments, "", aiResponses)
+		p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback (no changes)", attemptNum)
+		if posted == 0 && len(newComments) > 0 {
+			return result, fmt.Errorf("AI provided comment responses but failed to post any replies")
+		}
 		return result, nil
 	}
-	p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback")
+	if p.isFinalAttempt(attemptNum) {
+		logger.Info("Final attempt produced no changes, posting unable-to-address replies")
+		posted := p.replyUnableToAddress(logger, settings, prDetails, newComments)
+		p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback (unable)", attemptNum)
+		if posted == 0 && len(newComments) > 0 {
+			return result, fmt.Errorf("final attempt: failed to post unable-to-address replies")
+		}
+		return result, nil
+	}
+	p.postOrUpdateCostComment(logger, owner, repo, prDetails.Number, result.CostUSD, "Feedback (no changes)", attemptNum)
 	return result, fmt.Errorf("AI produced no changes (exit code: %d)", exitCode)
 }
 
