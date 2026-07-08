@@ -188,12 +188,15 @@ type GitService interface {
 	// comment reactions API for conversation comments.
 	AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error
 
-	// MergeBase merges origin/{branch} into the current branch in the
-	// workspace. On a clean merge, returns nil and an empty slice. On
-	// conflict, returns [services.ErrMergeConflict] and the list of
-	// conflicted file paths (conflict markers are left in the working
-	// tree for resolution).
-	MergeBase(dir, branch string) ([]string, error)
+	// MergeBase merges a base branch into the current branch in the
+	// workspace. When fetchURL is non-empty, the base branch is
+	// fetched from that URL (for fork-mode merges where origin
+	// points to the fork but the merge target is upstream).
+	// When fetchURL is empty, origin is used. On a clean merge,
+	// returns nil and an empty slice. On conflict, returns
+	// [services.ErrMergeConflict] and the list of conflicted file
+	// paths (conflict markers are left in the working tree).
+	MergeBase(dir, branch, fetchURL string) ([]string, error)
 
 	// CloneImport clones an auxiliary repository into destDir. If ref
 	// is non-empty, that branch/tag/commit is checked out after
