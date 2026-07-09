@@ -620,7 +620,11 @@ func TestSwitchBranch_ConflictedIndex(t *testing.T) {
 	tempDir := t.TempDir()
 
 	keyPath := generateTestRSAKey(t)
-	defer func() { _ = os.Remove(keyPath) }()
+	t.Cleanup(func() {
+		if err := os.Remove(keyPath); err != nil {
+			t.Logf("failed to remove temp key file: %v", err)
+		}
+	})
 
 	gitRun := func(args ...string) {
 		t.Helper()
@@ -707,6 +711,221 @@ func TestSwitchBranch_ConflictedIndex(t *testing.T) {
 	}
 	if string(content) != "feature-change" {
 		t.Errorf("expected file content %q, got %q", "feature-change", string(content))
+	}
+}
+
+func TestCreateBranch_ConflictedIndex(t *testing.T) {
+	tempDir := t.TempDir()
+
+	keyPath := generateTestRSAKey(t)
+	t.Cleanup(func() {
+		if err := os.Remove(keyPath); err != nil {
+			t.Logf("failed to remove temp key file: %v", err)
+		}
+	})
+
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tempDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", args[0], err, out)
+		}
+	}
+
+	gitRun("init", "-b", "main")
+	gitRun("config", "user.name", "Test")
+	gitRun("config", "user.email", "test@example.com")
+	// Self-referencing remote so CreateBranch's "git fetch origin" succeeds.
+	gitRun("remote", "add", "origin", tempDir)
+
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "initial")
+
+	gitRun("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("feature-change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "feature commit")
+
+	gitRun("checkout", "main")
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("main-change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "main commit")
+
+	// Start a merge that conflicts — leaves a dirty index.
+	mergeCmd := exec.Command("git", "merge", "feature")
+	mergeCmd.Dir = tempDir
+	if err := mergeCmd.Run(); err == nil {
+		t.Fatal("expected merge to fail with conflicts")
+	}
+
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+	config.GitHub.BotUsername = "test-bot"
+
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	err := githubService.CreateBranch(tempDir, "new-branch", "main")
+	if err != nil {
+		t.Fatalf("CreateBranch should recover from conflicted index, got: %v", err)
+	}
+
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd.Dir = tempDir
+	branchOut, err := branchCmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get current branch: %v", err)
+	}
+	if got := strings.TrimSpace(string(branchOut)); got != "new-branch" {
+		t.Errorf("expected branch new-branch, got %s", got)
+	}
+}
+
+func TestParseUntrackedBlockers(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   []string
+	}{
+		{
+			name: "typical untracked files error",
+			output: `error: The following untracked working tree files would be overwritten by merge:
+	.ai-bot/config.yaml
+	.ai-bot/instructions.md
+Please move or remove them before you merge.
+Aborting`,
+			want: []string{".ai-bot/config.yaml", ".ai-bot/instructions.md"},
+		},
+		{
+			name:   "no untracked files error",
+			output: "CONFLICT (content): Merge conflict in file.go\nAutomatic merge failed",
+			want:   nil,
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseUntrackedBlockers(tt.output)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseUntrackedBlockers() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parseUntrackedBlockers()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestMergeBase_UntrackedFileBlocker(t *testing.T) {
+	tempDir := t.TempDir()
+
+	keyPath := generateTestRSAKey(t)
+	t.Cleanup(func() {
+		if err := os.Remove(keyPath); err != nil {
+			t.Logf("failed to remove temp key file: %v", err)
+		}
+	})
+
+	gitRun := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", args[0], err, out)
+		}
+	}
+
+	// Create a repo with an initial commit (no .ai-bot yet).
+	upstream := filepath.Join(tempDir, "upstream")
+	if err := os.MkdirAll(upstream, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(upstream, "init", "-b", "main")
+	gitRun(upstream, "config", "user.name", "Test")
+	gitRun(upstream, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(upstream, "code.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(upstream, "add", ".")
+	gitRun(upstream, "commit", "-m", "initial")
+
+	// Clone and create a feature branch.
+	workspace := filepath.Join(tempDir, "workspace")
+	gitRun(tempDir, "clone", upstream, workspace)
+	gitRun(workspace, "config", "user.name", "Test")
+	gitRun(workspace, "config", "user.email", "test@example.com")
+	gitRun(workspace, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(workspace, "feature.go"), []byte("package feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(workspace, "add", ".")
+	gitRun(workspace, "commit", "-m", "feature work")
+
+	// Upstream main adds .ai-bot/ after the feature branch diverged.
+	if err := os.MkdirAll(filepath.Join(upstream, ".ai-bot"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(upstream, ".ai-bot/config.yaml"), []byte("upstream"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(upstream, "add", ".")
+	gitRun(upstream, "commit", "-m", "add .ai-bot")
+
+	// Simulate the bot's repo config loader creating .ai-bot/ as untracked.
+	if err := os.MkdirAll(filepath.Join(workspace, ".ai-bot"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".ai-bot/config.yaml"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// MergeBase should: try merge, detect untracked blockers, clean
+	// only those files, retry merge successfully.
+	config := &models.Config{}
+	config.GitHub.AppID = 123456
+	config.GitHub.PrivateKeyPath = keyPath
+	config.GitHub.BotUsername = "test-bot"
+
+	githubService := NewGitHubService(config, zap.NewNop())
+
+	_, err := githubService.MergeBase(workspace, "main", "")
+	if err != nil {
+		t.Fatalf("MergeBase should handle untracked blockers, got: %v", err)
+	}
+
+	// Verify the merge landed — .ai-bot/config.yaml should have upstream content.
+	content, err := os.ReadFile(filepath.Join(workspace, ".ai-bot/config.yaml")) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("failed to read .ai-bot/config.yaml: %v", err)
+	}
+	if string(content) != "upstream" {
+		t.Errorf(".ai-bot/config.yaml = %q, want %q", string(content), "upstream")
+	}
+
+	// Verify unrelated untracked files were NOT removed.
+	if err := os.WriteFile(filepath.Join(workspace, "scratch.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// scratch.txt should survive — git clean only targeted the blockers.
+	if _, err := os.Stat(filepath.Join(workspace, "scratch.txt")); err != nil {
+		t.Errorf("unrelated untracked file was deleted: %v", err)
 	}
 }
 

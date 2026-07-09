@@ -2715,17 +2715,19 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, e
 		return nil, fmt.Errorf("git fetch %s %s: %w", remote, branch, err)
 	}
 
-	// Remove untracked files that would block the merge (e.g.,
-	// .ai-bot/ exists locally but is tracked on the merge target).
-	cleanCmd := s.executor("git", "clean", "-fd")
-	cleanCmd.Dir = dir
-	if _, cleanErr := cleanCmd.CombinedOutput(); cleanErr != nil {
-		s.logger.Warn("git clean -fd failed (non-fatal)", zap.Error(cleanErr))
+	mergeOut, err := s.runMerge(dir, mergeRef)
+	if err != nil && len(parseUntrackedBlockers(string(mergeOut))) > 0 {
+		blockers := parseUntrackedBlockers(string(mergeOut))
+		s.logger.Info("Removing untracked files blocking merge",
+			zap.Strings("files", blockers))
+		args := append([]string{"clean", "-f", "--"}, blockers...)
+		cleanCmd := s.executor("git", args...)
+		cleanCmd.Dir = dir
+		if _, cleanErr := cleanCmd.CombinedOutput(); cleanErr != nil {
+			return nil, fmt.Errorf("git clean blocking paths: %w", cleanErr)
+		}
+		mergeOut, err = s.runMerge(dir, mergeRef)
 	}
-
-	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
-	mergeCmd.Dir = dir
-	mergeOut, err := mergeCmd.CombinedOutput()
 	if err != nil {
 		conflictFiles := s.listConflictFiles(dir)
 		if len(conflictFiles) > 0 {
@@ -2735,6 +2737,36 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, e
 	}
 
 	return []string{}, nil
+}
+
+func (s *GitHubServiceImpl) runMerge(dir, mergeRef string) ([]byte, error) {
+	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
+	mergeCmd.Dir = dir
+	out, err := mergeCmd.CombinedOutput()
+	return out, err
+}
+
+// parseUntrackedBlockers extracts file paths from git's
+// "untracked working tree files would be overwritten by merge" error.
+func parseUntrackedBlockers(output string) []string {
+	const marker = "The following untracked working tree files would be overwritten by merge:"
+	idx := strings.Index(output, marker)
+	if idx < 0 {
+		return nil
+	}
+	block := output[idx+len(marker):]
+	end := strings.Index(block, "Please move or remove them")
+	if end > 0 {
+		block = block[:end]
+	}
+	var paths []string
+	for _, line := range strings.Split(block, "\n") {
+		p := strings.TrimSpace(line)
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // listConflictFiles returns file paths with unresolved merge conflicts
