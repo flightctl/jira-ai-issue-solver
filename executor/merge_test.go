@@ -102,7 +102,10 @@ func TestExecuteMerge_ConflictInvokesAI(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, skip bool) (string, error) {
+		if !skip {
+			t.Error("expected skipFileGuardrail=true for merge commit")
+		}
 		return "def456", nil
 	}
 
@@ -180,7 +183,10 @@ func TestExecuteMerge_MultiRepo_CleanMerge(t *testing.T) {
 	}
 
 	committed := 0
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, skip bool) (string, error) {
+		if !skip {
+			t.Error("expected skipFileGuardrail=true for merge commit")
+		}
 		committed++
 		return "abc123", nil
 	}
@@ -280,7 +286,10 @@ func TestExecuteMerge_ForkMode_PassesUpstreamURL(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, skip bool) (string, error) {
+		if !skip {
+			t.Error("expected skipFileGuardrail=true for merge commit")
+		}
 		return "abc123", nil
 	}
 
@@ -348,7 +357,10 @@ func TestExecuteMerge_MultiRepo_ForkMode_PassesUpstreamURL(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, skip bool) (string, error) {
+		if !skip {
+			t.Error("expected skipFileGuardrail=true for merge commit")
+		}
 		return "abc123", nil
 	}
 
