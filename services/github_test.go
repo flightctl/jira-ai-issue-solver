@@ -808,12 +808,12 @@ Aborting`,
 		{
 			name:   "no untracked files error",
 			output: "CONFLICT (content): Merge conflict in file.go\nAutomatic merge failed",
-			want:   nil,
+			want:   []string{},
 		},
 		{
 			name:   "empty output",
 			output: "",
-			want:   nil,
+			want:   []string{},
 		},
 	}
 
@@ -905,6 +905,11 @@ func TestMergeBase_UntrackedFileBlocker(t *testing.T) {
 
 	githubService := NewGitHubService(config, zap.NewNop())
 
+	// Create an unrelated untracked file before MergeBase; it should survive targeted cleanup.
+	if err := os.WriteFile(filepath.Join(workspace, "scratch.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	_, err := githubService.MergeBase(workspace, "main", "")
 	if err != nil {
 		t.Fatalf("MergeBase should handle untracked blockers, got: %v", err)
@@ -919,10 +924,6 @@ func TestMergeBase_UntrackedFileBlocker(t *testing.T) {
 		t.Errorf(".ai-bot/config.yaml = %q, want %q", string(content), "upstream")
 	}
 
-	// Verify unrelated untracked files were NOT removed.
-	if err := os.WriteFile(filepath.Join(workspace, "scratch.txt"), []byte("keep me"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	// scratch.txt should survive — git clean only targeted the blockers.
 	if _, err := os.Stat(filepath.Join(workspace, "scratch.txt")); err != nil {
 		t.Errorf("unrelated untracked file was deleted: %v", err)

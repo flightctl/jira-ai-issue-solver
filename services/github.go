@@ -2752,14 +2752,14 @@ func parseUntrackedBlockers(output string) []string {
 	const marker = "The following untracked working tree files would be overwritten by merge:"
 	idx := strings.Index(output, marker)
 	if idx < 0 {
-		return nil
+		return []string{}
 	}
 	block := output[idx+len(marker):]
 	end := strings.Index(block, "Please move or remove them")
 	if end > 0 {
 		block = block[:end]
 	}
-	var paths []string
+	paths := []string{}
 	for _, line := range strings.Split(block, "\n") {
 		p := strings.TrimSpace(line)
 		if p != "" {
