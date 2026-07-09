@@ -41,7 +41,7 @@ type StubGitService struct {
 	RemoteBranchExistsFunc      func(owner, repo, branch string) (bool, error)
 	DeleteRemoteBranchFunc      func(owner, repo, branch string) error
 	HasChangesFunc              func(dir, baseBranch string) (bool, error)
-	CommitChangesFunc           func(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error)
+	CommitChangesFunc           func(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string, skipFileGuardrail bool) (string, error)
 	StripRemoteAuthFunc         func(dir string) error
 	RestoreRemoteAuthFunc       func(dir, owner, repo string) error
 	FetchRemoteFunc             func(dir string) error
@@ -103,9 +103,10 @@ func (s *StubGitService) HasChanges(dir, baseBranch string) (bool, error) {
 	return false, nil
 }
 
-func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *StubGitService) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string, skipFileGuardrail ...bool) (string, error) {
+	skip := len(skipFileGuardrail) > 0 && skipFileGuardrail[0]
 	if s.CommitChangesFunc != nil {
-		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthor, importExcludes)
+		return s.CommitChangesFunc(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthor, importExcludes, skip)
 	}
 	return "", nil
 }

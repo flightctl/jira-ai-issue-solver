@@ -359,7 +359,7 @@ func TestExecuteNewTicket_ContainerStartFails(t *testing.T) {
 
 func TestExecuteNewTicket_CommitFails(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "", errors.New("API rate limit")
 	}
 
@@ -580,7 +580,7 @@ func TestExecuteNewTicket_CoAuthorAttribution(t *testing.T) {
 	}
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string, _ bool) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -606,7 +606,7 @@ func TestExecuteNewTicket_NoAssignee_NilCoAuthor(t *testing.T) {
 	d := newTestDeps(t)
 
 	var receivedCoAuthor *models.Author
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, coAuthor *models.Author, _ []string, _ bool) (string, error) {
 		receivedCoAuthor = coAuthor
 		return "abc123", nil
 	}
@@ -1220,7 +1220,7 @@ func TestExecuteNewTicket_VertexAI_NotUsedForGemini(t *testing.T) {
 
 func TestExecuteNewTicket_ErrNoChanges_ReturnsError(t *testing.T) {
 	d := newTestDeps(t)
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -2555,7 +2555,7 @@ func TestNewTicketPipeline_ForkMode(t *testing.T) {
 
 	// Capture arguments to verify fork owner and upstream owner.
 	var commitUpstreamOwner, commitOwner, commitRepo string
-	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		commitUpstreamOwner = upstreamOwner
 		commitOwner = owner
 		commitRepo = repo
@@ -2820,7 +2820,7 @@ func TestFeedbackPipeline_ForkMode(t *testing.T) {
 
 	// Track CommitChanges owner.
 	var commitUpstreamOwner, commitOwner, commitRepo string
-	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		commitUpstreamOwner = upstreamOwner
 		commitOwner = owner
 		commitRepo = repo
@@ -2886,7 +2886,7 @@ func TestFeedbackPipeline_ErrNoChanges_NonFinalAttempt_ReturnsError(t *testing.T
 			{ID: 10, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
 		}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -2933,7 +2933,7 @@ func TestFeedbackPipeline_ErrNoChanges_FinalAttempt_PostsUnableToAddress(t *test
 	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
 		return []models.PRComment{reviewComment, conversationComment}, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "", services.ErrNoChanges
 	}
 
@@ -3065,7 +3065,7 @@ func newMultiRepoTestDeps(t *testing.T) *testDeps {
 			HasChangesFunc: func(dir, baseBranch string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 				return "abc123", nil
 			},
 			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {
@@ -3346,7 +3346,7 @@ func TestMultiRepoNewTicket_CommitPerRepoWithChanges(t *testing.T) {
 	}
 
 	var commitRepos []string
-	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, branch, msg, dir, baseBranch string, author *models.Author, excludes []string) (string, error) {
+	d.git.CommitChangesFunc = func(upstreamOwner, owner, repo, branch, msg, dir, baseBranch string, author *models.Author, excludes []string, _ bool) (string, error) {
 		commitRepos = append(commitRepos, repo)
 		return "abc123", nil
 	}
@@ -3694,7 +3694,7 @@ func newTestDeps(t *testing.T) *testDeps {
 			HasChangesFunc: func(dir, baseBranch string) (bool, error) {
 				return true, nil
 			},
-			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+			CommitChangesFunc: func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 				return "abc123", nil
 			},
 			CreatePRFunc: func(params models.PRParams) (*models.PR, error) {

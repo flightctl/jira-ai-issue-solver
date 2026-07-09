@@ -504,7 +504,7 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName, baseBranch strin
 //
 // If coAuthor is non-nil, a Co-authored-by trailer is appended to the
 // commit message using the author's Name and Email.
-func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string) (string, error) {
+func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string, coAuthor *models.Author, importExcludes []string, skipFileGuardrail ...bool) (string, error) {
 	// Extract co-author name/email (empty strings when nil).
 	var coAuthorName, coAuthorEmail string
 	if coAuthor != nil {
@@ -534,7 +534,8 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 	}
 
 	excludes := mergeExcludes(importExcludes)
-	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthorName, coAuthorEmail, excludes)
+	noFileLimit := len(skipFileGuardrail) > 0 && skipFileGuardrail[0]
+	return s.createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branch, message, dir, baseBranch, coAuthorName, coAuthorEmail, excludes, noFileLimit)
 }
 
 // createVerifiedCommitFromLocalHEAD creates a verified commit via API from local HEAD commit.
@@ -544,7 +545,7 @@ func (s *GitHubServiceImpl) CommitChanges(upstreamOwner, owner, repo, branch, me
 // "flightctl"). In non-fork workflows it equals owner. In fork
 // workflows it identifies the repo where the parent commit originated
 // so the tree can be resolved there when the fork API cannot find it.
-func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory, baseBranch string, coAuthorName, coAuthorEmail string, excludes []string) (string, error) {
+func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, owner, repo, branchName, message, directory, baseBranch string, coAuthorName, coAuthorEmail string, excludes []string, noFileLimit bool) (string, error) {
 	token, err := s.getAuthTokenForRepo(owner, repo)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth token: %w", err)
@@ -629,7 +630,7 @@ func (s *GitHubServiceImpl) createVerifiedCommitFromLocalHEAD(upstreamOwner, own
 
 	// Create blobs for files that changed from the first parent
 	// For merge commits, this includes files that differ from the first parent
-	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token, excludes)
+	treeEntries, err := s.createBlobsForFilesChangedFromParent(owner, repo, directory, firstParent, token, excludes, noFileLimit)
 	if err != nil {
 		return "", fmt.Errorf("failed to create blobs: %w", err)
 	}
@@ -835,7 +836,7 @@ func (s *GitHubServiceImpl) getTreeSHAFromCommit(owner, repo, commitSHA, token s
 
 // createBlobsForFilesChangedFromParent creates tree entries for all changes from a specific parent commit
 // Handles additions, modifications, deletions, and renames properly using git diff-tree
-func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string, excludes []string) ([]models.GitHubTreeEntry, error) {
+func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, directory, parentSHA, token string, excludes []string, noFileLimit bool) ([]models.GitHubTreeEntry, error) {
 	// Use git diff-tree with -r (recursive), --name-status (show status), -M (detect renames)
 	// This shows the exact operation for each file: A (add), M (modify), D (delete), R (rename)
 	cmd := newGitCommand(s.executor("git", "diff-tree", "-r", "--name-status", "-M", parentSHA, "HEAD"), directory, true, true)
@@ -852,17 +853,22 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 	lines := strings.Split(strings.TrimSpace(cmd.getStdout()), "\n")
 
 	// Check file count limit to prevent oversized commits.
-	// Use the configurable guardrail when set; fall back to the
-	// hard-coded safety cap otherwise.
-	limit := maxMergeCommitFiles
-	if s.config.Guardrails.MaxCommitFiles > 0 && s.config.Guardrails.MaxCommitFiles < limit {
-		limit = s.config.Guardrails.MaxCommitFiles
-	}
-	if len(lines) > limit {
-		if limit == maxMergeCommitFiles {
-			return nil, fmt.Errorf("commit has %d changed files, exceeds hard safety cap of %d", len(lines), limit)
+	// Merge jobs skip this guardrail — merging upstream into a
+	// feature branch legitimately touches hundreds of files.
+	if noFileLimit {
+		s.logger.Info("File count guardrail skipped for merge commit",
+			zap.Int("file_count", len(lines)))
+	} else {
+		limit := maxMergeCommitFiles
+		if s.config.Guardrails.MaxCommitFiles > 0 && s.config.Guardrails.MaxCommitFiles < limit {
+			limit = s.config.Guardrails.MaxCommitFiles
 		}
-		return nil, fmt.Errorf("commit has %d changed files, exceeds guardrails.max_commit_files limit of %d — the AI likely modified more files than intended; increase the limit in config if this is expected", len(lines), limit)
+		if len(lines) > limit {
+			if limit == maxMergeCommitFiles {
+				return nil, fmt.Errorf("commit has %d changed files, exceeds hard safety cap of %d", len(lines), limit)
+			}
+			return nil, fmt.Errorf("commit has %d changed files, exceeds guardrails.max_commit_files limit of %d — the AI likely modified more files than intended; increase the limit in config if this is expected", len(lines), limit)
+		}
 	}
 
 	for _, line := range lines {
