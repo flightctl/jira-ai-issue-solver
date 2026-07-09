@@ -437,6 +437,13 @@ func (s *GitHubServiceImpl) CreateBranch(directory, branchName, baseBranch strin
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "CreateBranch")
 
+	// Reset any dirty state left by a previous failed attempt.
+	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", "HEAD"), directory, debugEnabled, true)
+	if err := resetCmd.run(); err != nil {
+		s.logger.Warn("git reset --hard HEAD failed (non-fatal)",
+			fn, zap.Error(err), zap.String("stderr", resetCmd.getStderr()))
+	}
+
 	// Fetch the latest changes from origin
 	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
 
@@ -1470,6 +1477,15 @@ func (s *GitHubServiceImpl) CreatePR(params models.PRParams) (*models.PR, error)
 func (s *GitHubServiceImpl) SwitchBranch(directory, branchName string) error {
 	debugEnabled := s.logger.Core().Enabled(zapcore.DebugLevel)
 	fn := zap.String("function", "SwitchBranch")
+
+	// Reset any dirty state left by a previous failed attempt (e.g.,
+	// unresolved merge conflicts). Without this, git checkout fails
+	// with "you need to resolve your current index first."
+	resetCmd := newGitCommand(s.executor("git", "reset", "--hard", "HEAD"), directory, debugEnabled, true)
+	if err := resetCmd.run(); err != nil {
+		s.logger.Warn("git reset --hard HEAD failed (non-fatal)",
+			fn, zap.Error(err), zap.String("stderr", resetCmd.getStderr()))
+	}
 
 	// Fetch the latest changes from origin
 	cmd := newGitCommand(s.executor("git", "fetch", "origin"), directory, debugEnabled, true)
@@ -2699,18 +2715,57 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, e
 		return nil, fmt.Errorf("git fetch %s %s: %w", remote, branch, err)
 	}
 
-	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
-	mergeCmd.Dir = dir
-	_, err := mergeCmd.CombinedOutput()
+	mergeOut, err := s.runMerge(dir, mergeRef)
+	if blockers := parseUntrackedBlockers(string(mergeOut)); err != nil && len(blockers) > 0 {
+		s.logger.Info("Removing untracked files blocking merge",
+			zap.Strings("files", blockers))
+		args := append([]string{"clean", "-f", "--"}, blockers...)
+		cleanCmd := s.executor("git", args...)
+		cleanCmd.Dir = dir
+		if cleanOut, cleanErr := cleanCmd.CombinedOutput(); cleanErr != nil {
+			return nil, fmt.Errorf("git clean blocking paths: %w, output: %s", cleanErr, string(cleanOut))
+		}
+		mergeOut, err = s.runMerge(dir, mergeRef)
+	}
 	if err != nil {
 		conflictFiles := s.listConflictFiles(dir)
 		if len(conflictFiles) > 0 {
 			return conflictFiles, fmt.Errorf("%w: conflicted files: %v", ErrMergeConflict, conflictFiles)
 		}
-		return nil, fmt.Errorf("git merge %s failed: %w", mergeRef, err)
+		return nil, fmt.Errorf("git merge %s failed: %w, output: %s", mergeRef, err, string(mergeOut))
 	}
 
 	return []string{}, nil
+}
+
+func (s *GitHubServiceImpl) runMerge(dir, mergeRef string) ([]byte, error) {
+	mergeCmd := s.executor("git", "merge", "--no-edit", mergeRef)
+	mergeCmd.Dir = dir
+	out, err := mergeCmd.CombinedOutput()
+	return out, err
+}
+
+// parseUntrackedBlockers extracts file paths from git's
+// "untracked working tree files would be overwritten by merge" error.
+func parseUntrackedBlockers(output string) []string {
+	const marker = "The following untracked working tree files would be overwritten by merge:"
+	idx := strings.Index(output, marker)
+	if idx < 0 {
+		return []string{}
+	}
+	block := output[idx+len(marker):]
+	end := strings.Index(block, "Please move or remove them")
+	if end > 0 {
+		block = block[:end]
+	}
+	paths := []string{}
+	for _, line := range strings.Split(block, "\n") {
+		p := strings.TrimSpace(line)
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // listConflictFiles returns file paths with unresolved merge conflicts
