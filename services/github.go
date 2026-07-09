@@ -2716,15 +2716,14 @@ func (s *GitHubServiceImpl) MergeBase(dir, branch, fetchURL string) ([]string, e
 	}
 
 	mergeOut, err := s.runMerge(dir, mergeRef)
-	if err != nil && len(parseUntrackedBlockers(string(mergeOut))) > 0 {
-		blockers := parseUntrackedBlockers(string(mergeOut))
+	if blockers := parseUntrackedBlockers(string(mergeOut)); err != nil && len(blockers) > 0 {
 		s.logger.Info("Removing untracked files blocking merge",
 			zap.Strings("files", blockers))
 		args := append([]string{"clean", "-f", "--"}, blockers...)
 		cleanCmd := s.executor("git", args...)
 		cleanCmd.Dir = dir
-		if _, cleanErr := cleanCmd.CombinedOutput(); cleanErr != nil {
-			return nil, fmt.Errorf("git clean blocking paths: %w", cleanErr)
+		if cleanOut, cleanErr := cleanCmd.CombinedOutput(); cleanErr != nil {
+			return nil, fmt.Errorf("git clean blocking paths: %w, output: %s", cleanErr, string(cleanOut))
 		}
 		mergeOut, err = s.runMerge(dir, mergeRef)
 	}
