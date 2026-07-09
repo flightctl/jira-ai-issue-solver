@@ -28,7 +28,10 @@ func TestExecuteMerge_CleanMerge(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, skip bool) (string, error) {
+		if !skip {
+			t.Error("expected skipFileGuardrail=true for merge commit")
+		}
 		committed = true
 		return "abc123", nil
 	}
@@ -64,7 +67,7 @@ func TestExecuteMerge_CleanMerge_NoChanges(t *testing.T) {
 	}
 
 	committed := false
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		committed = true
 		return "abc123", nil
 	}
@@ -99,7 +102,7 @@ func TestExecuteMerge_ConflictInvokesAI(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "def456", nil
 	}
 
@@ -177,7 +180,7 @@ func TestExecuteMerge_MultiRepo_CleanMerge(t *testing.T) {
 	}
 
 	committed := 0
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		committed++
 		return "abc123", nil
 	}
@@ -277,7 +280,7 @@ func TestExecuteMerge_ForkMode_PassesUpstreamURL(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "abc123", nil
 	}
 
@@ -345,7 +348,7 @@ func TestExecuteMerge_MultiRepo_ForkMode_PassesUpstreamURL(t *testing.T) {
 	d.git.HasChangesFunc = func(_, _ string) (bool, error) {
 		return true, nil
 	}
-	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string) (string, error) {
+	d.git.CommitChangesFunc = func(_, _, _, _, _, _, _ string, _ *models.Author, _ []string, _ bool) (string, error) {
 		return "abc123", nil
 	}
 

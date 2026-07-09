@@ -130,7 +130,7 @@ type GitService interface {
 	// config) to exclude from commits beyond the built-in .ai-bot
 	// and .ai-session exclusions.
 	CommitChanges(upstreamOwner, owner, repo, branch, message, dir, baseBranch string,
-		coAuthor *models.Author, importExcludes []string) (string, error)
+		coAuthor *models.Author, importExcludes []string, skipFileGuardrail ...bool) (string, error)
 
 	// StripRemoteAuth removes authentication credentials from the
 	// workspace's origin remote URL, preventing push operations.

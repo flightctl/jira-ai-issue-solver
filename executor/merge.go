@@ -16,6 +16,8 @@ import (
 	"jira-ai-issue-solver/taskfile"
 )
 
+const skipFileGuardrail = true
+
 func (p *Pipeline) executeMerge(ctx context.Context, job *jobmanager.Job) (result jobmanager.JobResult, retErr error) {
 	logger := p.logger.With(
 		zap.String("ticket", job.TicketKey),
@@ -219,7 +221,7 @@ func (p *Pipeline) executeSingleRepoMerge(
 	commitMsg := fmt.Sprintf("%s: resolve merge conflicts with %s", job.TicketKey, repo.BaseBranch)
 	_, err = p.git.CommitChanges(
 		repo.Owner, settings.CommitOwner(), repo.Repo, branchName,
-		commitMsg, wsPath, repo.BaseBranch, workItem.Assignee, importExcludes,
+		commitMsg, wsPath, repo.BaseBranch, workItem.Assignee, importExcludes, skipFileGuardrail,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
 		return result, fmt.Errorf("AI produced no committable changes resolving merge conflicts")
@@ -271,7 +273,7 @@ func (p *Pipeline) commitCleanMerge(
 	commitMsg := fmt.Sprintf("%s: merge %s into %s", job.TicketKey, repo.BaseBranch, branchName)
 	_, err = p.git.CommitChanges(
 		repo.Owner, settings.CommitOwner(), repo.Repo, branchName,
-		commitMsg, wsPath, repo.BaseBranch, workItem.Assignee, nil,
+		commitMsg, wsPath, repo.BaseBranch, workItem.Assignee, nil, skipFileGuardrail,
 	)
 	if errors.Is(err, services.ErrNoChanges) {
 		logger.Info("No committable changes after clean merge")
@@ -593,7 +595,7 @@ func (p *Pipeline) commitMultiRepoMergeResolution(
 		commitMsg := fmt.Sprintf("%s: resolve merge conflicts with %s", job.TicketKey, ri.repo.BaseBranch)
 		_, err = p.git.CommitChanges(
 			ri.repo.Owner, settings.CommitOwnerFor(ri.repo), ri.repo.Repo, branchName,
-			commitMsg, repoDir, ri.repo.BaseBranch, workItem.Assignee, importExcludes,
+			commitMsg, repoDir, ri.repo.BaseBranch, workItem.Assignee, importExcludes, skipFileGuardrail,
 		)
 		if errors.Is(err, services.ErrNoChanges) {
 			continue
@@ -658,7 +660,7 @@ func (p *Pipeline) commitMultiRepoCleanMerge(
 		commitMsg := fmt.Sprintf("%s: merge %s into %s", job.TicketKey, ri.repo.BaseBranch, branchName)
 		_, err = p.git.CommitChanges(
 			ri.repo.Owner, settings.CommitOwnerFor(ri.repo), ri.repo.Repo, branchName,
-			commitMsg, repoDir, ri.repo.BaseBranch, workItem.Assignee, nil,
+			commitMsg, repoDir, ri.repo.BaseBranch, workItem.Assignee, nil, skipFileGuardrail,
 		)
 		if errors.Is(err, services.ErrNoChanges) {
 			continue

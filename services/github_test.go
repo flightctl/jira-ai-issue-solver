@@ -1705,6 +1705,7 @@ func TestCreateBlobsForFilesChangedFromParent_MaxCommitFilesGuardrail(t *testing
 	tests := []struct {
 		name           string
 		maxCommitFiles int
+		noFileLimit    bool
 		expectError    bool
 		errorContains  string
 	}{
@@ -1729,6 +1730,12 @@ func TestCreateBlobsForFilesChangedFromParent_MaxCommitFilesGuardrail(t *testing
 			maxCommitFiles: 2000,
 			expectError:    false,
 		},
+		{
+			name:           "noFileLimit bypasses guardrail",
+			maxCommitFiles: 5,
+			noFileLimit:    true,
+			expectError:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1745,7 +1752,7 @@ func TestCreateBlobsForFilesChangedFromParent_MaxCommitFilesGuardrail(t *testing
 			// limit. When the limit is exceeded, it returns an error
 			// before any API calls.
 			_, err := service.createBlobsForFilesChangedFromParent(
-				"owner", "repo", tempDir, baseSHA, "fake-token", nil)
+				"owner", "repo", tempDir, baseSHA, "fake-token", nil, tt.noFileLimit)
 
 			if tt.expectError {
 				if err == nil {
