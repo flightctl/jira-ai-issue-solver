@@ -85,14 +85,13 @@ func findCostComment(comments []models.IssueComment) *models.IssueComment {
 }
 
 // countFeedbackRounds returns the number of distinct feedback rounds
-// in the existing entries. A round starts with a "Feedback (N)" entry;
-// retries and error entries are excluded from the count.
+// in the existing entries. A round starts with a non-retry "Feedback"
+// entry (first attempt of each round, regardless of outcome).
 func countFeedbackRounds(entries []costEntry) int {
 	count := 0
 	for _, e := range entries {
 		if strings.HasPrefix(e.Label, "Feedback") &&
-			!strings.Contains(e.Label, "retry") &&
-			!strings.Contains(e.Label, "error") {
+			!strings.Contains(e.Label, "retry") {
 			count++
 		}
 	}
