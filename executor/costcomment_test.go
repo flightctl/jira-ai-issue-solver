@@ -215,13 +215,13 @@ func TestCountFeedbackRounds(t *testing.T) {
 			want:    0,
 		},
 		{
-			name: "error entries do not count as rounds",
+			name: "error entries count as rounds",
 			entries: []costEntry{
 				{Label: "Feedback (1)", Cost: 1},
-				{Label: "Feedback (error)", Cost: 1},
-				{Label: "Feedback (2)", Cost: 1},
+				{Label: "Feedback (2) (error)", Cost: 1},
+				{Label: "Feedback (3)", Cost: 1},
 			},
-			want: 2,
+			want: 3,
 		},
 	}
 
