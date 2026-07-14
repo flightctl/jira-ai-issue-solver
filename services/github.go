@@ -62,6 +62,11 @@ const (
 	// Prevents DoS and OOM when processing commits with thousands of files
 	maxMergeCommitFiles = 1000
 
+	// maxInlineContentBytes is the per-file size threshold for inline
+	// content in tree entries. Files larger than this fall back to
+	// blob creation via the API to keep tree payloads bounded.
+	maxInlineContentBytes = 1 << 20 // 1 MB
+
 	// mergeabilityMaxRetries is the number of additional GET requests when
 	// GitHub returns mergeable=null. The first request triggers the async
 	// computation; retries wait for the result.
@@ -1068,7 +1073,7 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 		mode = "100755"
 	}
 
-	if utf8.Valid(raw) {
+	if utf8.Valid(raw) && len(raw) <= maxInlineContentBytes {
 		content := string(raw)
 		return models.GitHubTreeEntry{
 			Path:    filename,
@@ -1078,15 +1083,29 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 		}, nil
 	}
 
-	encoded := base64.StdEncoding.EncodeToString(raw)
-	blobSHA, err := s.createBlobWithEncoding(owner, repo, encoded, "base64", token)
+	// Binary file or file too large for inline content — create blob
+	// via the API. Large text files use UTF-8 encoding; binary files
+	// use base64.
+	encoding := "utf-8"
+	content := string(raw)
+	if !utf8.Valid(raw) {
+		encoding = "base64"
+		content = base64.StdEncoding.EncodeToString(raw)
+	}
+	blobSHA, err := s.createBlobWithEncoding(owner, repo, content, encoding, token)
 	if err != nil {
-		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob for binary file %s: %w", filename, err)
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob for %s: %w", filename, err)
 	}
 
-	s.logger.Debug("Created blob for binary file",
+	s.logger.Debug("Created blob via API",
 		zap.String("file", filename),
-		zap.String("sha", blobSHA))
+		zap.String("sha", blobSHA),
+		zap.String("reason", func() string {
+			if !utf8.Valid(raw) {
+				return "binary"
+			}
+			return "large file"
+		}()))
 
 	return models.GitHubTreeEntry{
 		Path: filename,
