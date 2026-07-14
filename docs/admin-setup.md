@@ -138,7 +138,8 @@ GitHub App Configuration:
 
 2. Check permissions are correctly set:
    - Go to app settings → "Permissions & events"
-   - Verify Contents and Pull requests have Read & write access
+   - Verify Contents, Pull requests, and Workflows have Read & write access
+   - Verify Checks and Actions have Read-only access
 
 3. Verify the private key hasn't been revoked:
    - Go to app settings → scroll to "Private keys"
