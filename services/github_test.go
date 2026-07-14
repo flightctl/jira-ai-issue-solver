@@ -1747,10 +1747,9 @@ func TestCreateBlobsForFilesChangedFromParent_MaxCommitFilesGuardrail(t *testing
 
 			service := NewGitHubService(config, zap.NewNop())
 
-			// createBlobsForFilesChangedFromParent will call the GitHub
-			// API for blob creation only if the file count is within the
-			// limit. When the limit is exceeded, it returns an error
-			// before any API calls.
+			// Text files use inline content (no API call). When the file
+			// count exceeds the guardrail limit, the function returns an
+			// error before processing any entries.
 			_, err := service.createBlobsForFilesChangedFromParent(
 				"owner", "repo", tempDir, baseSHA, "fake-token", nil, tt.noFileLimit)
 
@@ -1763,8 +1762,7 @@ func TestCreateBlobsForFilesChangedFromParent_MaxCommitFilesGuardrail(t *testing
 				}
 			} else {
 				// When not exceeding the limit, the method proceeds to
-				// create blobs via the API — which will fail because we
-				// have no real GitHub token. That's fine; we only care
+				// build tree entries with inline content. We only care
 				// that the limit check passed.
 				if err != nil && strings.Contains(err.Error(), "guardrails.max_commit_files") {
 					t.Errorf("should not fail on file count limit, got: %v", err)

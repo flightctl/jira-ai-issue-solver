@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // GitHubUser represents a GitHub user.
 type GitHubUser struct {
@@ -51,12 +54,37 @@ type GitHubBlobResponse struct {
 	URL string `json:"url"`
 }
 
-// GitHubTreeEntry represents a single entry in a tree
+// GitHubTreeEntry represents a single entry in a tree.
+// For new/modified files, set Content with the file's text (GitHub
+// creates the blob server-side). For deletions, set SHA to nil.
+// For binary files that can't be represented as UTF-8, pre-create
+// a blob and set SHA instead. Content and SHA are mutually exclusive
+// per the GitHub API contract.
 type GitHubTreeEntry struct {
-	Path string  `json:"path"`
-	Mode string  `json:"mode,omitempty"` // "100644" for file, "100755" for executable, "040000" for subdirectory, "160000" for submodule, "120000" for symlink
-	Type string  `json:"type,omitempty"` // "blob", "tree", "commit"
-	SHA  *string `json:"sha"`            // SHA of the blob or tree, or nil to delete the file
+	Path    string  // File path in the tree
+	Mode    string  // "100644" for file, "100755" for executable
+	Type    string  // "blob", "tree", "commit"
+	SHA     *string // SHA of the blob, or nil to delete
+	Content *string // Inline file content; GitHub creates the blob automatically
+}
+
+// MarshalJSON serializes a tree entry, omitting SHA when Content is
+// set. The GitHub API rejects requests that include both fields.
+func (e GitHubTreeEntry) MarshalJSON() ([]byte, error) {
+	if e.Content != nil {
+		return json.Marshal(struct {
+			Path    string  `json:"path"`
+			Mode    string  `json:"mode,omitempty"`
+			Type    string  `json:"type,omitempty"`
+			Content *string `json:"content"`
+		}{e.Path, e.Mode, e.Type, e.Content})
+	}
+	return json.Marshal(struct {
+		Path string  `json:"path"`
+		Mode string  `json:"mode,omitempty"`
+		Type string  `json:"type,omitempty"`
+		SHA  *string `json:"sha"`
+	}{e.Path, e.Mode, e.Type, e.SHA})
 }
 
 // GitHubTreeRequest represents a request to create a tree

@@ -9,17 +9,6 @@ func TestIsExcludedPath(t *testing.T) {
 		path string
 		want bool
 	}{
-		// Built-in .ai-bot prefix exclusion (no trailing slash = prefix match)
-		{".ai-bot", true},
-		{".ai-bot/", true},
-		{".ai-bot/task.md", true},
-		{".ai-bot/session-output.json", true},
-		{".ai-bot/run.sh", true},
-		{".ai-bot/nested/file.txt", true},
-		{".ai-bot.preserve/config.yaml", true},
-		{".ai-bot-extra/file", true},
-		{".ai-bots/file.txt", true},
-
 		// Built-in .ai-session prefix exclusion
 		{".ai-session", true},
 		{".ai-session/", true},
@@ -32,11 +21,17 @@ func TestIsExcludedPath(t *testing.T) {
 		{".artifacts/", true},
 		{".artifacts/bugfix/diagnosis.md", true},
 
+		// .ai-bot is repo config, NOT excluded
+		{".ai-bot", false},
+		{".ai-bot/", false},
+		{".ai-bot/config.yaml", false},
+		{".ai-bot/instructions.md", false},
+
 		// Not excluded
 		{"src/main.go", false},
 		{"README.md", false},
 		{".github/workflows/ci.yaml", false},
-		{"ai-bot/file.txt", false}, // missing leading dot
+		{"ai-session/file.txt", false}, // missing leading dot
 		{"", false},
 	}
 
@@ -53,19 +48,14 @@ func TestIsExcludedPath(t *testing.T) {
 func TestIsExcludedPath_NoImportExcludes(t *testing.T) {
 	excludes := mergeExcludes(nil)
 
-	// .ai-bot prefix is always excluded (builtin)
-	if !isExcludedPath(".ai-bot/task.md", excludes) {
-		t.Error("expected .ai-bot/task.md to be excluded even with no import excludes")
-	}
-
-	// .ai-bot.preserve is caught by prefix match
-	if !isExcludedPath(".ai-bot.preserve/config.yaml", excludes) {
-		t.Error("expected .ai-bot.preserve/ to be excluded by prefix match")
-	}
-
 	// .ai-session is always excluded (builtin)
 	if !isExcludedPath(".ai-session/task.md", excludes) {
 		t.Error("expected .ai-session/task.md to be excluded even with no import excludes")
+	}
+
+	// .ai-bot is NOT excluded — it's repo config, not bot artifacts
+	if isExcludedPath(".ai-bot/config.yaml", excludes) {
+		t.Error("expected .ai-bot/config.yaml to NOT be excluded")
 	}
 
 	// .artifacts is NOT excluded when not declared by imports

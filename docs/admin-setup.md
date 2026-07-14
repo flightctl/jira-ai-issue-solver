@@ -38,12 +38,14 @@ your organization and installed on your repository.
    Set the following permissions:
 
    <!-- markdownlint-disable MD013 -->
-   | Permission        | Access Level   | Why Needed                                 |
-   |-------------------|----------------|--------------------------------------------|
-   | **Contents**      | Read and write | Clone repos, create branches, push commits              |
-   | **Pull requests** | Read and write | Create PRs, read reviews, post comments                 |
-   | **Workflows**     | Read and write | Sync forks when upstream changes `.github/workflows/`   |
-   | **Metadata**      | Read-only      | Required (automatically selected)                       |
+   | Permission        | Access Level   | Why Needed                                              |
+   |-------------------|----------------|---------------------------------------------------------|
+   | **Contents**      | Read and write | Clone repos, create branches, push commits               |
+   | **Pull requests** | Read and write | Create PRs, read reviews, post comments                  |
+   | **Workflows**     | Read and write | Commit changes to `.github/workflows/` in merge/PR flows |
+   | **Checks**        | Read-only      | Read CI check run results for failure diagnosis          |
+   | **Actions**       | Read-only      | Read workflow job logs for CI fix attempts                |
+   | **Metadata**      | Read-only      | Required (automatically selected)                        |
    <!-- markdownlint-enable MD013 -->
 
 6. **Where can this GitHub App be installed?**
@@ -136,7 +138,8 @@ GitHub App Configuration:
 
 2. Check permissions are correctly set:
    - Go to app settings → "Permissions & events"
-   - Verify Contents and Pull requests have Read & write access
+   - Verify Contents, Pull requests, and Workflows have Read & write access
+   - Verify Checks and Actions have Read-only access
 
 3. Verify the private key hasn't been revoked:
    - Go to app settings → scroll to "Private keys"

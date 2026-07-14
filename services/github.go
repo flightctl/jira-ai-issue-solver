@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/google/go-github/v75/github"
@@ -59,6 +61,11 @@ const (
 	// maxMergeCommitFiles is the safety limit for files in a single merge commit
 	// Prevents DoS and OOM when processing commits with thousands of files
 	maxMergeCommitFiles = 1000
+
+	// maxInlineContentBytes is the per-file size threshold for inline
+	// content in tree entries. Files larger than this fall back to
+	// blob creation via the API to keep tree payloads bounded.
+	maxInlineContentBytes = 1 << 20 // 1 MB
 
 	// mergeabilityMaxRetries is the number of additional GET requests when
 	// GitHub returns mergeable=null. The first request triggers the async
@@ -896,10 +903,11 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "A" || status == "M":
 			// Added or Modified file - create blob and add to tree
 			filename := parts[1]
-			// Skip new files at the repo root — these are almost always
-			// AI scratch files (test scripts, notes) rather than real
-			// source changes. Modified root files are allowed.
-			if status == "A" && !strings.Contains(filename, "/") {
+			// Skip new root-level files for AI-authored commits — these
+			// are almost always scratch files. Merge commits bypass this
+			// filter since root-level additions are legitimate upstream
+			// changes.
+			if !noFileLimit && status == "A" && !strings.Contains(filename, "/") {
 				s.logger.Info("Skipping new root-level file",
 					zap.String("file", filename))
 				continue
@@ -996,11 +1004,11 @@ var errSkipEntry = errors.New("skip entry")
 
 // builtinExcludes lists path prefixes that are always excluded from
 // commits. Entries without a trailing slash are prefix matches — e.g.,
-// ".ai-bot" excludes .ai-bot/, .ai-bot.preserve/, and any other path
-// starting with ".ai-bot". Entries with a trailing slash match only
-// that exact directory. Import-declared excludes are merged at call
-// time.
-var builtinExcludes = []string{".ai-bot", ".ai-session"}
+// ".ai-session" excludes .ai-session/, .ai-session.preserve/, and
+// any other path starting with ".ai-session". Entries with a trailing
+// slash match only that exact directory. Import-declared excludes are
+// merged at call time.
+var builtinExcludes = []string{".ai-session"}
 
 // mergeExcludes combines builtin excludes with import-declared excludes.
 // Builtin entries are kept as-is (no trailing slash = broad prefix match).
@@ -1030,10 +1038,12 @@ func isExcludedPath(filename string, excludes []string) bool {
 	return false
 }
 
-// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob.
-// Returns errSkipEntry if the path is a directory.
+// createTreeEntryForFile creates a tree entry for a single file.
+// Text files use inline content (GitHub creates the blob server-side),
+// eliminating per-file API calls. Binary files fall back to the
+// blob creation API with base64 encoding. Returns errSkipEntry if
+// the path is excluded or is a directory.
 func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string, excludes []string) (models.GitHubTreeEntry, error) {
-	// Skip excluded paths — bot artifacts and import-declared output dirs.
 	if isExcludedPath(filename, excludes) {
 		s.logger.Debug("Skipping excluded path",
 			zap.String("path", filename))
@@ -1042,7 +1052,6 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 
 	filePath := filepath.Join(directory, filename)
 
-	// Check if path is a directory.
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
@@ -1053,31 +1062,50 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 		return models.GitHubTreeEntry{}, errSkipEntry
 	}
 
-	// Read file content
 	// #nosec G304 - filename comes from git diff-tree output in controlled repo directory
-	content, err := os.ReadFile(filePath)
+	raw, err := os.ReadFile(filePath)
 	if err != nil {
 		return models.GitHubTreeEntry{}, fmt.Errorf("failed to read file %s: %w", filename, err)
 	}
 
-	// Create blob
-	blobSHA, err := s.createBlob(owner, repo, string(content), token)
-	if err != nil {
-		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob: %w", err)
-	}
-
-	mode := "100644" // Regular file
+	mode := "100644"
 	if fileInfo.Mode()&0111 != 0 {
-		mode = "100755" // Executable
+		mode = "100755"
 	}
 
-	s.logger.Debug("Created blob for file",
+	if utf8.Valid(raw) && len(raw) <= maxInlineContentBytes {
+		content := string(raw)
+		return models.GitHubTreeEntry{
+			Path:    filename,
+			Mode:    mode,
+			Type:    "blob",
+			Content: &content,
+		}, nil
+	}
+
+	// Binary file or file too large for inline content — create blob
+	// via the API. Large text files use UTF-8 encoding; binary files
+	// use base64.
+	encoding := "utf-8"
+	content := string(raw)
+	if !utf8.Valid(raw) {
+		encoding = "base64"
+		content = base64.StdEncoding.EncodeToString(raw)
+	}
+	blobSHA, err := s.createBlobWithEncoding(owner, repo, content, encoding, token)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob for %s: %w", filename, err)
+	}
+
+	s.logger.Debug("Created blob via API",
 		zap.String("file", filename),
 		zap.String("sha", blobSHA),
-		zap.String("mode", mode))
-
-	// Add a small delay to avoid rate limiting
-	time.Sleep(100 * time.Millisecond)
+		zap.String("reason", func() string {
+			if !utf8.Valid(raw) {
+				return "binary"
+			}
+			return "large file"
+		}()))
 
 	return models.GitHubTreeEntry{
 		Path: filename,
@@ -1087,13 +1115,15 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 	}, nil
 }
 
-// createBlob creates a blob on GitHub with retry logic for rate limiting
-func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (string, error) {
+// createBlobWithEncoding creates a blob on GitHub via the Git Data
+// API. Used for binary files that can't be inlined as UTF-8 content
+// in tree entries. Includes retry logic for rate limiting.
+func (s *GitHubServiceImpl) createBlobWithEncoding(owner, repo, content, encoding, token string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/blobs", owner, repo)
 
 	blobReq := models.GitHubBlobRequest{
 		Content:  content,
-		Encoding: "utf-8",
+		Encoding: encoding,
 	}
 
 	jsonPayload, err := json.Marshal(blobReq)
@@ -1136,7 +1166,7 @@ func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (stri
 		body, readErr := io.ReadAll(resp.Body)
 		closeErr := resp.Body.Close()
 		if closeErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createBlob"))
+			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createBlobWithEncoding"))
 		}
 		if readErr != nil {
 			return "", fmt.Errorf("failed to read response body: %w", readErr)
@@ -1188,8 +1218,51 @@ func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (stri
 	return "", fmt.Errorf("failed to create blob after %d attempts", maxRetries)
 }
 
-// createTree creates a tree on GitHub
+// maxTreeEntriesPerRequest is the maximum number of tree entries per
+// API call. GitHub has undocumented limits on tree creation payload
+// size. We chunk requests to stay under them, using each chunk's
+// result as the base_tree for the next.
+const maxTreeEntriesPerRequest = 900
+
+// createTree creates a tree on GitHub via the Git Data API. When the
+// number of entries exceeds maxTreeEntriesPerRequest, the request is
+// chunked: each batch uses the previous batch's tree SHA as its
+// base_tree, building incrementally.
 func (s *GitHubServiceImpl) createTree(owner, repo, baseTree string, entries []models.GitHubTreeEntry, token string) (string, error) {
+	if len(entries) <= maxTreeEntriesPerRequest {
+		return s.createTreeRequest(owner, repo, baseTree, entries, token)
+	}
+
+	s.logger.Info("Chunking tree creation",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int("total_entries", len(entries)),
+		zap.Int("chunk_size", maxTreeEntriesPerRequest))
+
+	currentBase := baseTree
+	for i := 0; i < len(entries); i += maxTreeEntriesPerRequest {
+		end := i + maxTreeEntriesPerRequest
+		if end > len(entries) {
+			end = len(entries)
+		}
+		chunk := entries[i:end]
+
+		sha, err := s.createTreeRequest(owner, repo, currentBase, chunk, token)
+		if err != nil {
+			return "", fmt.Errorf("tree chunk %d-%d of %d: %w", i, end, len(entries), err)
+		}
+		currentBase = sha
+
+		s.logger.Debug("Tree chunk created",
+			zap.Int("from", i),
+			zap.Int("to", end),
+			zap.String("treeSHA", sha))
+	}
+
+	return currentBase, nil
+}
+
+func (s *GitHubServiceImpl) createTreeRequest(owner, repo, baseTree string, entries []models.GitHubTreeEntry, token string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees", owner, repo)
 
 	treeReq := models.GitHubTreeRequest{
@@ -1202,36 +1275,66 @@ func (s *GitHubServiceImpl) createTree(owner, repo, baseTree string, entries []m
 		return "", fmt.Errorf("failed to marshal tree request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
+	maxRetries := 3
+	baseDelay := 2 * time.Second
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to create tree: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "createTree"))
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// #nosec G115 - attempt is bounded by maxRetries (3), so shift is safe
+			delay := baseDelay * time.Duration(1<<uint(attempt-1))
+			s.logger.Warn("Rate limited, retrying tree creation",
+				zap.Int("attempt", attempt),
+				zap.Duration("delay", delay))
+			time.Sleep(delay)
 		}
-	}()
 
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			if attempt < maxRetries {
+				s.logger.Warn("Transient error creating tree, retrying",
+					zap.Error(err), zap.Int("attempt", attempt))
+				continue
+			}
+			return "", fmt.Errorf("failed to create tree: %w", err)
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createTree"))
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("failed to read response body: %w", readErr)
+		}
+
+		if resp.StatusCode == http.StatusCreated {
+			var treeResp models.GitHubTreeResponse
+			if err := json.Unmarshal(body, &treeResp); err != nil {
+				return "", fmt.Errorf("failed to decode tree response: %w", err)
+			}
+			return treeResp.SHA, nil
+		}
+
+		isRateLimit := resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "rate limit"))
+
+		if isRateLimit && attempt < maxRetries {
+			continue
+		}
+
 		return "", fmt.Errorf("failed to create tree: %s, status: %d", string(body), resp.StatusCode)
 	}
 
-	var treeResp models.GitHubTreeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&treeResp); err != nil {
-		return "", fmt.Errorf("failed to decode tree response: %w", err)
-	}
-
-	return treeResp.SHA, nil
+	return "", fmt.Errorf("failed to create tree after %d attempts", maxRetries)
 }
 
 // updateReference updates a Git reference to point to a new commit

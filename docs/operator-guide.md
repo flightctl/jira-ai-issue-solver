@@ -84,8 +84,8 @@ create branches, push commits, and open pull requests.
 Follow the step-by-step instructions in **[admin-setup.md](admin-setup.md)**.
 That guide covers:
 
-- Creating the app with the correct permissions (Contents: Read/Write, Pull
-  Requests: Read/Write)
+- Creating the app with the correct permissions (Contents, Pull Requests,
+  Workflows: Read/Write; Checks, Actions: Read-only)
 - Generating and saving the private key
 - Installing the app on your upstream repository
 
@@ -786,6 +786,25 @@ rather than making the key world-readable:
 chown :$(id -g) ~/keys/github-app.private-key.pem
 chmod 640 ~/keys/github-app.private-key.pem
 ```
+
+### "Resource not accessible by integration" (403) on tree/commit creation
+
+This usually means the GitHub App is missing a required permission.
+Common causes:
+
+- **Workflow files in the commit**: If the commit includes changes to
+  `.github/workflows/`, the App needs **Workflows: Read and write**.
+  Without it, GitHub returns 403 even though Contents permission is
+  granted.
+- **Missing Checks/Actions**: If CI failure analysis fails, ensure the
+  App has **Checks: Read-only** and **Actions: Read-only**.
+
+Check the App's permissions at your org's Developer Settings page and
+compare against the table in [admin-setup.md](admin-setup.md).
+
+After updating the App permissions, each installation (upstream and
+every fork) must accept the update — look for a yellow banner on the
+installation's Configure page.
 
 ### "failed to get installation ID"
 
