@@ -1299,6 +1299,11 @@ func (s *GitHubServiceImpl) createTreeRequest(owner, repo, baseTree string, entr
 
 		resp, err := s.client.Do(req)
 		if err != nil {
+			if attempt < maxRetries {
+				s.logger.Warn("Transient error creating tree, retrying",
+					zap.Error(err), zap.Int("attempt", attempt))
+				continue
+			}
 			return "", fmt.Errorf("failed to create tree: %w", err)
 		}
 
