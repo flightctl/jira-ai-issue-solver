@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/google/go-github/v75/github"
@@ -1030,10 +1032,12 @@ func isExcludedPath(filename string, excludes []string) bool {
 	return false
 }
 
-// createTreeEntryForFile creates a tree entry for a single file by reading it and creating a blob.
-// Returns errSkipEntry if the path is a directory.
+// createTreeEntryForFile creates a tree entry for a single file.
+// Text files use inline content (GitHub creates the blob server-side),
+// eliminating per-file API calls. Binary files fall back to the
+// blob creation API with base64 encoding. Returns errSkipEntry if
+// the path is excluded or is a directory.
 func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filename, token string, excludes []string) (models.GitHubTreeEntry, error) {
-	// Skip excluded paths — bot artifacts and import-declared output dirs.
 	if isExcludedPath(filename, excludes) {
 		s.logger.Debug("Skipping excluded path",
 			zap.String("path", filename))
@@ -1042,7 +1046,6 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 
 	filePath := filepath.Join(directory, filename)
 
-	// Check if path is a directory.
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		return models.GitHubTreeEntry{}, fmt.Errorf("failed to stat file %s: %w", filename, err)
@@ -1053,31 +1056,36 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 		return models.GitHubTreeEntry{}, errSkipEntry
 	}
 
-	// Read file content
 	// #nosec G304 - filename comes from git diff-tree output in controlled repo directory
-	content, err := os.ReadFile(filePath)
+	raw, err := os.ReadFile(filePath)
 	if err != nil {
 		return models.GitHubTreeEntry{}, fmt.Errorf("failed to read file %s: %w", filename, err)
 	}
 
-	// Create blob
-	blobSHA, err := s.createBlob(owner, repo, string(content), token)
-	if err != nil {
-		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob: %w", err)
-	}
-
-	mode := "100644" // Regular file
+	mode := "100644"
 	if fileInfo.Mode()&0111 != 0 {
-		mode = "100755" // Executable
+		mode = "100755"
 	}
 
-	s.logger.Debug("Created blob for file",
-		zap.String("file", filename),
-		zap.String("sha", blobSHA),
-		zap.String("mode", mode))
+	if utf8.Valid(raw) {
+		content := string(raw)
+		return models.GitHubTreeEntry{
+			Path:    filename,
+			Mode:    mode,
+			Type:    "blob",
+			Content: &content,
+		}, nil
+	}
 
-	// Add a small delay to avoid rate limiting
-	time.Sleep(100 * time.Millisecond)
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	blobSHA, err := s.createBlobWithEncoding(owner, repo, encoded, "base64", token)
+	if err != nil {
+		return models.GitHubTreeEntry{}, fmt.Errorf("failed to create blob for binary file %s: %w", filename, err)
+	}
+
+	s.logger.Debug("Created blob for binary file",
+		zap.String("file", filename),
+		zap.String("sha", blobSHA))
 
 	return models.GitHubTreeEntry{
 		Path: filename,
@@ -1087,13 +1095,15 @@ func (s *GitHubServiceImpl) createTreeEntryForFile(owner, repo, directory, filen
 	}, nil
 }
 
-// createBlob creates a blob on GitHub with retry logic for rate limiting
-func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (string, error) {
+// createBlobWithEncoding creates a blob on GitHub via the Git Data
+// API. Used for binary files that can't be inlined as UTF-8 content
+// in tree entries. Includes retry logic for rate limiting.
+func (s *GitHubServiceImpl) createBlobWithEncoding(owner, repo, content, encoding, token string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/blobs", owner, repo)
 
 	blobReq := models.GitHubBlobRequest{
 		Content:  content,
-		Encoding: "utf-8",
+		Encoding: encoding,
 	}
 
 	jsonPayload, err := json.Marshal(blobReq)
@@ -1136,7 +1146,7 @@ func (s *GitHubServiceImpl) createBlob(owner, repo, content, token string) (stri
 		body, readErr := io.ReadAll(resp.Body)
 		closeErr := resp.Body.Close()
 		if closeErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createBlob"))
+			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createBlobWithEncoding"))
 		}
 		if readErr != nil {
 			return "", fmt.Errorf("failed to read response body: %w", readErr)
