@@ -1275,36 +1275,61 @@ func (s *GitHubServiceImpl) createTreeRequest(owner, repo, baseTree string, entr
 		return "", fmt.Errorf("failed to marshal tree request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
+	maxRetries := 3
+	baseDelay := 2 * time.Second
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to create tree: %w", err)
-	}
-	defer func() {
-		if localErr := resp.Body.Close(); localErr != nil {
-			s.logger.Error("Failed to close response body", zap.Error(localErr), zap.String("operation", "createTree"))
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// #nosec G115 - attempt is bounded by maxRetries (3), so shift is safe
+			delay := baseDelay * time.Duration(1<<uint(attempt-1))
+			s.logger.Warn("Rate limited, retrying tree creation",
+				zap.Int("attempt", attempt),
+				zap.Duration("delay", delay))
+			time.Sleep(delay)
 		}
-	}()
 
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to create tree: %w", err)
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			s.logger.Error("Failed to close response body", zap.Error(closeErr), zap.String("operation", "createTree"))
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("failed to read response body: %w", readErr)
+		}
+
+		if resp.StatusCode == http.StatusCreated {
+			var treeResp models.GitHubTreeResponse
+			if err := json.Unmarshal(body, &treeResp); err != nil {
+				return "", fmt.Errorf("failed to decode tree response: %w", err)
+			}
+			return treeResp.SHA, nil
+		}
+
+		isRateLimit := resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusForbidden && strings.Contains(string(body), "rate limit"))
+
+		if isRateLimit && attempt < maxRetries {
+			continue
+		}
+
 		return "", fmt.Errorf("failed to create tree: %s, status: %d", string(body), resp.StatusCode)
 	}
 
-	var treeResp models.GitHubTreeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&treeResp); err != nil {
-		return "", fmt.Errorf("failed to decode tree response: %w", err)
-	}
-
-	return treeResp.SHA, nil
+	return "", fmt.Errorf("failed to create tree after %d attempts", maxRetries)
 }
 
 // updateReference updates a Git reference to point to a new commit
