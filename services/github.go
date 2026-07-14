@@ -898,10 +898,11 @@ func (s *GitHubServiceImpl) createBlobsForFilesChangedFromParent(owner, repo, di
 		case status == "A" || status == "M":
 			// Added or Modified file - create blob and add to tree
 			filename := parts[1]
-			// Skip new files at the repo root — these are almost always
-			// AI scratch files (test scripts, notes) rather than real
-			// source changes. Modified root files are allowed.
-			if status == "A" && !strings.Contains(filename, "/") {
+			// Skip new root-level files for AI-authored commits — these
+			// are almost always scratch files. Merge commits bypass this
+			// filter since root-level additions are legitimate upstream
+			// changes.
+			if !noFileLimit && status == "A" && !strings.Contains(filename, "/") {
 				s.logger.Info("Skipping new root-level file",
 					zap.String("file", filename))
 				continue
@@ -998,11 +999,11 @@ var errSkipEntry = errors.New("skip entry")
 
 // builtinExcludes lists path prefixes that are always excluded from
 // commits. Entries without a trailing slash are prefix matches — e.g.,
-// ".ai-bot" excludes .ai-bot/, .ai-bot.preserve/, and any other path
-// starting with ".ai-bot". Entries with a trailing slash match only
-// that exact directory. Import-declared excludes are merged at call
-// time.
-var builtinExcludes = []string{".ai-bot", ".ai-session"}
+// ".ai-session" excludes .ai-session/, .ai-session.preserve/, and
+// any other path starting with ".ai-session". Entries with a trailing
+// slash match only that exact directory. Import-declared excludes are
+// merged at call time.
+var builtinExcludes = []string{".ai-session"}
 
 // mergeExcludes combines builtin excludes with import-declared excludes.
 // Builtin entries are kept as-is (no trailing slash = broad prefix match).
