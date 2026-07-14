@@ -1218,8 +1218,51 @@ func (s *GitHubServiceImpl) createBlobWithEncoding(owner, repo, content, encodin
 	return "", fmt.Errorf("failed to create blob after %d attempts", maxRetries)
 }
 
-// createTree creates a tree on GitHub
+// maxTreeEntriesPerRequest is the maximum number of tree entries per
+// API call. GitHub has undocumented limits on tree creation payload
+// size. We chunk requests to stay under them, using each chunk's
+// result as the base_tree for the next.
+const maxTreeEntriesPerRequest = 900
+
+// createTree creates a tree on GitHub via the Git Data API. When the
+// number of entries exceeds maxTreeEntriesPerRequest, the request is
+// chunked: each batch uses the previous batch's tree SHA as its
+// base_tree, building incrementally.
 func (s *GitHubServiceImpl) createTree(owner, repo, baseTree string, entries []models.GitHubTreeEntry, token string) (string, error) {
+	if len(entries) <= maxTreeEntriesPerRequest {
+		return s.createTreeRequest(owner, repo, baseTree, entries, token)
+	}
+
+	s.logger.Info("Chunking tree creation",
+		zap.String("owner", owner),
+		zap.String("repo", repo),
+		zap.Int("total_entries", len(entries)),
+		zap.Int("chunk_size", maxTreeEntriesPerRequest))
+
+	currentBase := baseTree
+	for i := 0; i < len(entries); i += maxTreeEntriesPerRequest {
+		end := i + maxTreeEntriesPerRequest
+		if end > len(entries) {
+			end = len(entries)
+		}
+		chunk := entries[i:end]
+
+		sha, err := s.createTreeRequest(owner, repo, currentBase, chunk, token)
+		if err != nil {
+			return "", fmt.Errorf("tree chunk %d-%d of %d: %w", i, end, len(entries), err)
+		}
+		currentBase = sha
+
+		s.logger.Debug("Tree chunk created",
+			zap.Int("from", i),
+			zap.Int("to", end),
+			zap.String("treeSHA", sha))
+	}
+
+	return currentBase, nil
+}
+
+func (s *GitHubServiceImpl) createTreeRequest(owner, repo, baseTree string, entries []models.GitHubTreeEntry, token string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees", owner, repo)
 
 	treeReq := models.GitHubTreeRequest{
