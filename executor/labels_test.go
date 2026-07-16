@@ -160,14 +160,6 @@ func TestSetPipelineLabel(t *testing.T) {
 		}
 	})
 
-	t.Run("errors are swallowed", func(t *testing.T) {
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, _ string) error { return fmt.Errorf("add failed") }
-		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
-
-		p := d.pipeline(t)
-		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "jira-autofix-review")
-	})
 }
 
 func TestClearFailureLabels(t *testing.T) {
@@ -638,24 +630,35 @@ func TestSetPipelineLabel_ErrorsAreSwallowed(t *testing.T) {
 	)
 
 	t.Run("AddLabel error does not propagate", func(t *testing.T) {
+		var addCalled bool
 		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, _ string) error { return fmt.Errorf("add failed") }
+		d.tracker.AddLabelFunc = func(_, _ string) error { addCalled = true; return fmt.Errorf("add failed") }
 		d.tracker.RemoveLabelFunc = func(_, _ string) error { return nil }
 
 		p := d.pipeline(t)
 		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "blocked")
+
+		if !addCalled {
+			t.Error("expected AddLabel to be called")
+		}
 	})
 
 	t.Run("RemoveLabel error does not propagate", func(t *testing.T) {
+		var removeCalled bool
 		d := newTestDeps(t)
 		d.tracker.AddLabelFunc = func(_, _ string) error { return nil }
-		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
+		d.tracker.RemoveLabelFunc = func(_, _ string) error { removeCalled = true; return fmt.Errorf("remove failed") }
 
 		p := d.pipeline(t)
 		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "blocked")
+
+		if !removeCalled {
+			t.Error("expected RemoveLabel to be called")
+		}
 	})
 
 	t.Run("ClearFailureLabels swallows errors", func(t *testing.T) {
+		var removeCalled bool
 		fl := models.FailureLabels{
 			CIFailing:       "ci-fail",
 			Rejected:        "rejected",
@@ -663,9 +666,13 @@ func TestSetPipelineLabel_ErrorsAreSwallowed(t *testing.T) {
 			ForkUserMissing: "fork-missing",
 		}
 		d := newTestDeps(t)
-		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
+		d.tracker.RemoveLabelFunc = func(_, _ string) error { removeCalled = true; return fmt.Errorf("remove failed") }
 
 		p := d.pipeline(t)
 		executor.ClearFailureLabels(p, zap.NewNop(), "TEST-1", fl)
+
+		if !removeCalled {
+			t.Error("expected RemoveLabel to be called")
+		}
 	})
 }
