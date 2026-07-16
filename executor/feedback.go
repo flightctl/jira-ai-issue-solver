@@ -924,7 +924,8 @@ func (p *Pipeline) handleFeedbackFailure(
 	settings *models.ProjectSettings,
 	jobErr error,
 ) {
-	p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.Blocked)
+	allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
+	p.setPipelineLabel(logger, ticketKey, allLabels, settings.FailureLabels.Blocked)
 
 	if settings.DisableErrorComments {
 		return

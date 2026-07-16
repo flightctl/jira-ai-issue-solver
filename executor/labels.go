@@ -9,20 +9,22 @@ import (
 	"jira-ai-issue-solver/models"
 )
 
-// setFailureLabel applies the given failure label to a ticket and
-// removes the other configured failure labels (mutual exclusivity).
-// If targetLabel is empty, only clears the others. All operations are
-// best-effort: errors are logged but never propagated.
-func (p *Pipeline) setFailureLabel(
+// setPipelineLabel applies the given label to a ticket and removes all
+// other configured pipeline labels (both failure and lifecycle groups).
+// This enforces mutual exclusivity across both groups — a ticket should
+// have exactly one pipeline label at any time. If targetLabel is empty,
+// only clears the others. All operations are best-effort: errors are
+// logged but never propagated.
+func (p *Pipeline) setPipelineLabel(
 	logger *zap.Logger,
 	ticketKey string,
-	fl models.FailureLabels,
+	allLabels []string,
 	targetLabel string,
 ) {
-	for _, label := range fl.All() {
+	for _, label := range allLabels {
 		if label != "" && label != targetLabel {
 			if err := p.tracker.RemoveLabel(ticketKey, label); err != nil {
-				logger.Debug("Failed to remove failure label",
+				logger.Debug("Failed to remove pipeline label",
 					zap.String("label", label), zap.Error(err))
 			}
 		}
@@ -30,34 +32,7 @@ func (p *Pipeline) setFailureLabel(
 
 	if targetLabel != "" {
 		if err := p.tracker.AddLabel(ticketKey, targetLabel); err != nil {
-			logger.Warn("Failed to add failure label",
-				zap.String("label", targetLabel), zap.Error(err))
-		}
-	}
-}
-
-// setLifecycleLabel applies the given lifecycle label to a ticket and
-// removes the other configured lifecycle labels (mutual exclusivity).
-// If targetLabel is empty, only clears the others. All operations are
-// best-effort: errors are logged but never propagated.
-func (p *Pipeline) setLifecycleLabel(
-	logger *zap.Logger,
-	ticketKey string,
-	ll models.LifecycleLabels,
-	targetLabel string,
-) {
-	for _, label := range ll.All() {
-		if label != "" && label != targetLabel {
-			if err := p.tracker.RemoveLabel(ticketKey, label); err != nil {
-				logger.Debug("Failed to remove lifecycle label",
-					zap.String("label", label), zap.Error(err))
-			}
-		}
-	}
-
-	if targetLabel != "" {
-		if err := p.tracker.AddLabel(ticketKey, targetLabel); err != nil {
-			logger.Warn("Failed to add lifecycle label",
+			logger.Warn("Failed to add pipeline label",
 				zap.String("label", targetLabel), zap.Error(err))
 		}
 	}
@@ -83,7 +58,8 @@ func (p *Pipeline) validateForkMode(
 	}
 
 	if settings.FailureLabels.ForkUserMissing != "" {
-		p.setFailureLabel(logger, ticketKey, settings.FailureLabels, settings.FailureLabels.ForkUserMissing)
+		allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
+		p.setPipelineLabel(logger, ticketKey, allLabels, settings.FailureLabels.ForkUserMissing)
 	}
 
 	if !settings.DisableErrorComments {

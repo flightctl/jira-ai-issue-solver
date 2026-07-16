@@ -11,30 +11,39 @@ import (
 	"jira-ai-issue-solver/models"
 )
 
-func TestSetFailureLabel(t *testing.T) {
+func TestSetPipelineLabel(t *testing.T) {
 	fl := models.FailureLabels{
 		CIFailing:       "ci-fail",
 		Rejected:        "rejected",
 		Blocked:         "blocked",
 		ForkUserMissing: "fork-missing",
 	}
+	ll := models.LifecycleLabels{
+		Queued: "jira-autofix",
+		Review: "jira-autofix-review",
+		Merged: "jira-autofix-merged",
+	}
+	allLabels := models.AllPipelineLabels(fl, ll)
 
-	t.Run("adds target and removes others", func(t *testing.T) {
+	t.Run("adds target and removes all others from both groups", func(t *testing.T) {
 		var added, removed []string
 		d := newTestDeps(t)
 		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
 		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
 
 		p := d.pipeline(t)
-		executor.SetFailureLabel(p, zap.NewNop(), "TEST-1", fl, "blocked")
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "blocked")
 
 		if len(added) != 1 || added[0] != "blocked" {
 			t.Errorf("added = %v, want [blocked]", added)
 		}
-		if len(removed) != 3 {
-			t.Fatalf("removed = %v, want 3 entries", removed)
+		if len(removed) != 6 {
+			t.Fatalf("removed = %v, want 6 entries (3 other failure + 3 lifecycle)", removed)
 		}
-		wantRemoved := map[string]bool{"ci-fail": true, "rejected": true, "fork-missing": true}
+		wantRemoved := map[string]bool{
+			"ci-fail": true, "rejected": true, "fork-missing": true,
+			"jira-autofix": true, "jira-autofix-review": true, "jira-autofix-merged": true,
+		}
 		for _, l := range removed {
 			if !wantRemoved[l] {
 				t.Errorf("unexpected removal of %q", l)
@@ -42,32 +51,88 @@ func TestSetFailureLabel(t *testing.T) {
 		}
 	})
 
-	t.Run("empty target only removes others", func(t *testing.T) {
+	t.Run("lifecycle target removes all failure labels", func(t *testing.T) {
 		var added, removed []string
 		d := newTestDeps(t)
 		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
 		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
 
 		p := d.pipeline(t)
-		executor.SetFailureLabel(p, zap.NewNop(), "TEST-1", fl, "")
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "jira-autofix-review")
+
+		if len(added) != 1 || added[0] != "jira-autofix-review" {
+			t.Errorf("added = %v, want [jira-autofix-review]", added)
+		}
+		removedSet := make(map[string]bool, len(removed))
+		for _, l := range removed {
+			removedSet[l] = true
+		}
+		for _, fl := range []string{"ci-fail", "rejected", "blocked", "fork-missing"} {
+			if !removedSet[fl] {
+				t.Errorf("expected failure label %q to be removed", fl)
+			}
+		}
+		if !removedSet["jira-autofix"] {
+			t.Error("expected queued label to be removed")
+		}
+		if !removedSet["jira-autofix-merged"] {
+			t.Error("expected merged label to be removed")
+		}
+	})
+
+	t.Run("merged removes review and queued and all failure", func(t *testing.T) {
+		var removed []string
+		d := newTestDeps(t)
+		d.tracker.AddLabelFunc = func(_, _ string) error { return nil }
+		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "jira-autofix-merged")
+
+		removedSet := make(map[string]bool, len(removed))
+		for _, l := range removed {
+			removedSet[l] = true
+		}
+		if !removedSet["jira-autofix"] {
+			t.Error("expected queued label to be removed")
+		}
+		if !removedSet["jira-autofix-review"] {
+			t.Error("expected review label to be removed")
+		}
+		if !removedSet["blocked"] {
+			t.Error("expected blocked label to be removed")
+		}
+	})
+
+	t.Run("empty target only removes all", func(t *testing.T) {
+		var added, removed []string
+		d := newTestDeps(t)
+		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
+		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "")
 
 		if len(added) != 0 {
 			t.Errorf("added = %v, want empty", added)
 		}
-		if len(removed) != 4 {
-			t.Errorf("removed = %v, want 4 entries", removed)
+		if len(removed) != 7 {
+			t.Errorf("removed = %v, want 7 entries", removed)
 		}
 	})
 
 	t.Run("skips empty labels in config", func(t *testing.T) {
-		partial := models.FailureLabels{Blocked: "blocked"}
+		partial := models.AllPipelineLabels(
+			models.FailureLabels{Blocked: "blocked"},
+			models.LifecycleLabels{},
+		)
 		var added, removed []string
 		d := newTestDeps(t)
 		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
 		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
 
 		p := d.pipeline(t)
-		executor.SetFailureLabel(p, zap.NewNop(), "TEST-1", partial, "blocked")
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", partial, "blocked")
 
 		if len(added) != 1 || added[0] != "blocked" {
 			t.Errorf("added = %v, want [blocked]", added)
@@ -78,14 +143,14 @@ func TestSetFailureLabel(t *testing.T) {
 	})
 
 	t.Run("noop when all labels empty", func(t *testing.T) {
-		empty := models.FailureLabels{}
+		empty := models.AllPipelineLabels(models.FailureLabels{}, models.LifecycleLabels{})
 		var added, removed []string
 		d := newTestDeps(t)
 		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
 		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
 
 		p := d.pipeline(t)
-		executor.SetFailureLabel(p, zap.NewNop(), "TEST-1", empty, "")
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", empty, "")
 
 		if len(added) != 0 {
 			t.Errorf("added = %v, want empty", added)
@@ -93,6 +158,15 @@ func TestSetFailureLabel(t *testing.T) {
 		if len(removed) != 0 {
 			t.Errorf("removed = %v, want empty", removed)
 		}
+	})
+
+	t.Run("errors are swallowed", func(t *testing.T) {
+		d := newTestDeps(t)
+		d.tracker.AddLabelFunc = func(_, _ string) error { return fmt.Errorf("add failed") }
+		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
+
+		p := d.pipeline(t)
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "jira-autofix-review")
 	})
 }
 
@@ -134,124 +208,6 @@ func TestClearFailureLabels(t *testing.T) {
 		if len(removed) != 1 || removed[0] != "blocked" {
 			t.Errorf("removed = %v, want [blocked]", removed)
 		}
-	})
-}
-
-func TestSetLifecycleLabel(t *testing.T) {
-	ll := models.LifecycleLabels{
-		Queued: "jira-autofix",
-		Review: "jira-autofix-review",
-		Merged: "jira-autofix-merged",
-	}
-
-	t.Run("adds target and removes others", func(t *testing.T) {
-		var added, removed []string
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
-		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
-
-		p := d.pipeline(t)
-		executor.SetLifecycleLabel(p, zap.NewNop(), "TEST-1", ll, "jira-autofix-review")
-
-		if len(added) != 1 || added[0] != "jira-autofix-review" {
-			t.Errorf("added = %v, want [jira-autofix-review]", added)
-		}
-		if len(removed) != 2 {
-			t.Fatalf("removed = %v, want 2 entries", removed)
-		}
-		wantRemoved := map[string]bool{"jira-autofix": true, "jira-autofix-merged": true}
-		for _, l := range removed {
-			if !wantRemoved[l] {
-				t.Errorf("unexpected removal of %q", l)
-			}
-		}
-	})
-
-	t.Run("review removes queued", func(t *testing.T) {
-		var added, removed []string
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
-		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
-
-		p := d.pipeline(t)
-		executor.SetLifecycleLabel(p, zap.NewNop(), "TEST-1", ll, ll.Review)
-
-		if len(added) != 1 || added[0] != "jira-autofix-review" {
-			t.Errorf("added = %v, want [jira-autofix-review]", added)
-		}
-		removedSet := make(map[string]bool, len(removed))
-		for _, l := range removed {
-			removedSet[l] = true
-		}
-		if !removedSet["jira-autofix"] {
-			t.Error("expected queued label to be removed")
-		}
-	})
-
-	t.Run("merged removes review and queued", func(t *testing.T) {
-		var removed []string
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, _ string) error { return nil }
-		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
-
-		p := d.pipeline(t)
-		executor.SetLifecycleLabel(p, zap.NewNop(), "TEST-1", ll, ll.Merged)
-
-		removedSet := make(map[string]bool, len(removed))
-		for _, l := range removed {
-			removedSet[l] = true
-		}
-		if !removedSet["jira-autofix"] {
-			t.Error("expected queued label to be removed")
-		}
-		if !removedSet["jira-autofix-review"] {
-			t.Error("expected review label to be removed")
-		}
-	})
-
-	t.Run("skips empty labels in config", func(t *testing.T) {
-		partial := models.LifecycleLabels{Review: "review"}
-		var added, removed []string
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
-		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
-
-		p := d.pipeline(t)
-		executor.SetLifecycleLabel(p, zap.NewNop(), "TEST-1", partial, "review")
-
-		if len(added) != 1 || added[0] != "review" {
-			t.Errorf("added = %v, want [review]", added)
-		}
-		if len(removed) != 0 {
-			t.Errorf("removed = %v, want empty", removed)
-		}
-	})
-
-	t.Run("noop when all labels empty", func(t *testing.T) {
-		empty := models.LifecycleLabels{}
-		var added, removed []string
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
-		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
-
-		p := d.pipeline(t)
-		executor.SetLifecycleLabel(p, zap.NewNop(), "TEST-1", empty, "")
-
-		if len(added) != 0 {
-			t.Errorf("added = %v, want empty", added)
-		}
-		if len(removed) != 0 {
-			t.Errorf("removed = %v, want empty", removed)
-		}
-	})
-
-	t.Run("errors are swallowed", func(t *testing.T) {
-		d := newTestDeps(t)
-		d.tracker.AddLabelFunc = func(_, _ string) error { return fmt.Errorf("add failed") }
-		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
-
-		p := d.pipeline(t)
-		executor.SetLifecycleLabel(p, zap.NewNop(), "TEST-1", ll, "jira-autofix-review")
 	})
 }
 
@@ -416,6 +372,42 @@ func TestValidateForkMode(t *testing.T) {
 		}
 		if len(removed) != 0 {
 			t.Errorf("removed = %v, want empty (other labels should not be cleared)", removed)
+		}
+	})
+
+	t.Run("clears lifecycle labels when setting fork_user_missing", func(t *testing.T) {
+		var added, removed []string
+		d := newTestDeps(t)
+		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
+		d.tracker.RemoveLabelFunc = func(_, label string) error { removed = append(removed, label); return nil }
+		d.tracker.AddCommentFunc = func(_, _ string) error { return nil }
+
+		fl := models.FailureLabels{ForkUserMissing: "fork-missing"}
+		ll := models.LifecycleLabels{
+			Queued: "jira-autofix",
+			Review: "jira-autofix-review",
+		}
+		p := d.pipeline(t)
+
+		err := executor.ValidateForkMode(p, zap.NewNop(), "TEST-1",
+			&models.WorkItem{Key: "TEST-1"},
+			&models.ProjectSettings{ForkMode: true, GitHubUsername: "", FailureLabels: fl, LifecycleLabels: ll},
+		)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if len(added) != 1 || added[0] != "fork-missing" {
+			t.Errorf("added = %v, want [fork-missing]", added)
+		}
+		removedSet := make(map[string]bool, len(removed))
+		for _, l := range removed {
+			removedSet[l] = true
+		}
+		if !removedSet["jira-autofix"] {
+			t.Error("expected queued lifecycle label to be removed")
+		}
+		if !removedSet["jira-autofix-review"] {
+			t.Error("expected review lifecycle label to be removed")
 		}
 	})
 
@@ -630,13 +622,20 @@ func TestClearPRValidationLabels(t *testing.T) {
 	})
 }
 
-func TestSetFailureLabel_ErrorsAreSwallowed(t *testing.T) {
-	fl := models.FailureLabels{
-		CIFailing:       "ci-fail",
-		Rejected:        "rejected",
-		Blocked:         "blocked",
-		ForkUserMissing: "fork-missing",
-	}
+func TestSetPipelineLabel_ErrorsAreSwallowed(t *testing.T) {
+	allLabels := models.AllPipelineLabels(
+		models.FailureLabels{
+			CIFailing:       "ci-fail",
+			Rejected:        "rejected",
+			Blocked:         "blocked",
+			ForkUserMissing: "fork-missing",
+		},
+		models.LifecycleLabels{
+			Queued: "jira-autofix",
+			Review: "jira-autofix-review",
+			Merged: "jira-autofix-merged",
+		},
+	)
 
 	t.Run("AddLabel error does not propagate", func(t *testing.T) {
 		d := newTestDeps(t)
@@ -644,8 +643,7 @@ func TestSetFailureLabel_ErrorsAreSwallowed(t *testing.T) {
 		d.tracker.RemoveLabelFunc = func(_, _ string) error { return nil }
 
 		p := d.pipeline(t)
-		// Should not panic or propagate the error.
-		executor.SetFailureLabel(p, zap.NewNop(), "TEST-1", fl, "blocked")
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "blocked")
 	})
 
 	t.Run("RemoveLabel error does not propagate", func(t *testing.T) {
@@ -654,10 +652,16 @@ func TestSetFailureLabel_ErrorsAreSwallowed(t *testing.T) {
 		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
 
 		p := d.pipeline(t)
-		executor.SetFailureLabel(p, zap.NewNop(), "TEST-1", fl, "blocked")
+		executor.SetPipelineLabel(p, zap.NewNop(), "TEST-1", allLabels, "blocked")
 	})
 
 	t.Run("ClearFailureLabels swallows errors", func(t *testing.T) {
+		fl := models.FailureLabels{
+			CIFailing:       "ci-fail",
+			Rejected:        "rejected",
+			Blocked:         "blocked",
+			ForkUserMissing: "fork-missing",
+		}
 		d := newTestDeps(t)
 		d.tracker.RemoveLabelFunc = func(_, _ string) error { return fmt.Errorf("remove failed") }
 

@@ -444,6 +444,13 @@ func (vl PRValidationLabels) All() []string {
 	return []string{vl.ValidationFailed, vl.NonzeroExit}
 }
 
+// AllPipelineLabels returns all configured failure and lifecycle labels
+// in a single slice. Used by setPipelineLabel / applyPipelineLabel to
+// enforce mutual exclusivity across both groups.
+func AllPipelineLabels(fl FailureLabels, ll LifecycleLabels) []string {
+	return append(fl.All(), ll.All()...)
+}
+
 // ImportConfig declares an auxiliary repository to clone into the workspace.
 type ImportConfig struct {
 	// Repo is the clone URL (e.g., "https://github.com/org/repo").

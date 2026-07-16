@@ -1059,6 +1059,57 @@ func TestFeedbackScanner_FailureLabels_CIFailing(t *testing.T) {
 	}
 }
 
+func TestFeedbackScanner_FailureLabels_CIFailing_ClearsLifecycleLabels(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{Name: "build"}}, true, nil
+		},
+	}
+	d.cfg.MaxCIFixAttempts = 0
+
+	var added, removed []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { added = append(added, label); return nil },
+		RemoveLabelFunc: func(_, label string) error { removed = append(removed, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail", Blocked: "blocked"}
+		},
+	}
+	d.lifecycleLabelResolver = &scannertest.StubLifecycleLabelResolver{
+		ResolveLifecycleLabelsFunc: func(_ models.WorkItem) models.LifecycleLabels {
+			return models.LifecycleLabels{Queued: "jira-autofix", Review: "jira-autofix-review"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "ci-fail" {
+		t.Errorf("added = %v, want [ci-fail]", added)
+	}
+	removedSet := make(map[string]bool, len(removed))
+	for _, l := range removed {
+		removedSet[l] = true
+	}
+	if !removedSet["blocked"] {
+		t.Error("expected sibling failure label 'blocked' to be removed")
+	}
+	if !removedSet["jira-autofix"] {
+		t.Error("expected lifecycle label 'jira-autofix' to be removed (cross-group)")
+	}
+	if !removedSet["jira-autofix-review"] {
+		t.Error("expected lifecycle label 'jira-autofix-review' to be removed (cross-group)")
+	}
+}
+
 func TestFeedbackScanner_FailureLabels_CIPassing(t *testing.T) {
 	d := newFeedbackDeps()
 	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
@@ -1340,6 +1391,61 @@ func TestFeedbackScanner_LifecycleLabels_Merged(t *testing.T) {
 	}
 	if !removedSet["jira-autofix-review"] {
 		t.Error("expected review label to be removed")
+	}
+}
+
+func TestFeedbackScanner_LifecycleLabels_Merged_ClearsFailureLabels(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, nil
+	}
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetMergedPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, URL: "https://github.com/org/repo/pull/1"}, nil
+	}
+
+	var added, removed []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { added = append(added, label); return nil },
+		RemoveLabelFunc: func(_, label string) error { removed = append(removed, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail", Blocked: "blocked"}
+		},
+	}
+	d.lifecycleLabelResolver = &scannertest.StubLifecycleLabelResolver{
+		ResolveLifecycleLabelsFunc: func(_ models.WorkItem) models.LifecycleLabels {
+			return models.LifecycleLabels{
+				Queued: "jira-autofix",
+				Review: "jira-autofix-review",
+				Merged: "jira-autofix-merged",
+			}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "jira-autofix-merged" {
+		t.Errorf("added = %v, want [jira-autofix-merged]", added)
+	}
+	removedSet := make(map[string]bool, len(removed))
+	for _, l := range removed {
+		removedSet[l] = true
+	}
+	if !removedSet["ci-fail"] {
+		t.Error("expected failure label 'ci-fail' to be removed (cross-group)")
+	}
+	if !removedSet["blocked"] {
+		t.Error("expected failure label 'blocked' to be removed (cross-group)")
+	}
+	if !removedSet["jira-autofix"] {
+		t.Error("expected lifecycle label 'jira-autofix' to be removed")
+	}
+	if !removedSet["jira-autofix-review"] {
+		t.Error("expected lifecycle label 'jira-autofix-review' to be removed")
 	}
 }
 
