@@ -250,11 +250,19 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
 		prDetails.Number, result.CostUSD, "Feedback", job.AttemptNum)
 
+	// --- Step 17b: Apply or clear PR validation labels ---
+	vlTarget := validationLabel(session, exitCode, settings.PRValidationLabels)
+	if vlTarget != "" {
+		p.setPRValidationLabel(logger, owner, repo, prDetails.Number,
+			settings.PRValidationLabels, vlTarget)
+	} else {
+		p.clearPRValidationLabels(logger, owner, repo, prDetails.Number,
+			settings.PRValidationLabels)
+	}
+
 	result.PRURL = prDetails.URL
 	result.PRNumber = prDetails.Number
-	// Repo-config draft setting is not consulted here (hardcoded false)
-	// because the PR already exists — its draft status is not ours to change.
-	result.ValidationPassed = !shouldCreateDraft(session, exitCode, false)
+	result.ValidationPassed = validationPassed(session, exitCode)
 
 	logger.Info("Feedback processed",
 		zap.String("url", prDetails.URL),
@@ -485,9 +493,24 @@ func (p *Pipeline) executeMultiRepoFeedback(
 
 	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 
+	// Apply or clear PR validation labels only on repos that received a commit.
+	vlTarget := validationLabel(session, exitCode, settings.PRValidationLabels)
+	for _, ri := range repoInfos {
+		if repoSHAs[ri.repo.Name] == "" {
+			continue
+		}
+		if vlTarget != "" {
+			p.setPRValidationLabel(logger, ri.repo.Owner, ri.repo.Repo,
+				ri.pr.Number, settings.PRValidationLabels, vlTarget)
+		} else {
+			p.clearPRValidationLabels(logger, ri.repo.Owner, ri.repo.Repo,
+				ri.pr.Number, settings.PRValidationLabels)
+		}
+	}
+
 	result.PRURL = repoInfos[0].pr.URL
 	result.PRNumber = repoInfos[0].pr.Number
-	result.ValidationPassed = !shouldCreateDraft(session, exitCode, false)
+	result.ValidationPassed = validationPassed(session, exitCode)
 
 	logger.Info("Multi-repo feedback processed",
 		zap.Int("repos_with_prs", len(repoInfos)),

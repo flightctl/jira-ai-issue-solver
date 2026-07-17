@@ -98,6 +98,11 @@ type ProjectSettings struct {
 	// Empty strings disable the corresponding label.
 	LifecycleLabels LifecycleLabels
 
+	// PRValidationLabels holds configurable GitHub PR labels applied
+	// when the AI session reports validation failure or exits with a
+	// non-zero code. At most one is set on a PR at any time.
+	PRValidationLabels PRValidationLabels
+
 	// MergedStatus is the tracker status name to transition to when
 	// all PRs are merged. Empty means no transition on merge.
 	MergedStatus string

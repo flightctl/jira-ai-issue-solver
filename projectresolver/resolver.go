@@ -81,6 +81,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		Container:            ws.Container,
 		FailureLabels:        pc.FailureLabels,
 		LifecycleLabels:      pc.LifecycleLabels,
+		PRValidationLabels:   pc.PRValidationLabels,
 		MergedStatus:         transitions.Merged,
 		ForkMode:             pc.ForkMode,
 		GitHubUsername:       ghUsername,

@@ -1844,3 +1844,130 @@ workspaces:
 		}
 	})
 }
+
+func TestLoadConfig_PRValidationLabels(t *testing.T) {
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
+	baseConfig := `
+ai_provider: claude
+claude:
+  api_key: sk-test
+jira:
+  base_url: https://test.atlassian.net
+  username: test-user
+  api_token: test-token
+  projects:
+    - project_keys:
+        - "PROJ1"
+      status_transitions:
+        bug:
+          todo: "To Do"
+          in_progress: "In Progress"
+          in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: "https://github.com/test/repo"
+              profile: default
+      components:
+        "comp":
+          workspace: default
+      profiles:
+        default: {}
+github:
+  app_id: 123456
+  private_key_path: "` + tmpKeyPath + `"
+  bot_username: "test-bot"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
+`
+
+	t.Run("empty when not configured", func(t *testing.T) {
+		tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Remove(tmpfile.Name()) }()
+		if _, err := tmpfile.WriteString(baseConfig); err != nil {
+			t.Fatal(err)
+		}
+		_ = tmpfile.Close()
+
+		config, err := LoadConfig(tmpfile.Name())
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+		vl := config.Jira.Projects[0].PRValidationLabels
+		if vl.ValidationFailed != "" {
+			t.Errorf("ValidationFailed = %q, want empty", vl.ValidationFailed)
+		}
+		if vl.NonzeroExit != "" {
+			t.Errorf("NonzeroExit = %q, want empty", vl.NonzeroExit)
+		}
+	})
+
+	t.Run("custom values", func(t *testing.T) {
+		customConfig := `
+ai_provider: claude
+claude:
+  api_key: sk-test
+jira:
+  base_url: https://test.atlassian.net
+  username: test-user
+  api_token: test-token
+  projects:
+    - project_keys:
+        - "PROJ1"
+      status_transitions:
+        bug:
+          todo: "To Do"
+          in_progress: "In Progress"
+          in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: "https://github.com/test/repo"
+              profile: default
+      components:
+        "comp":
+          workspace: default
+      profiles:
+        default: {}
+      pr_validation_labels:
+        validation_failed: "custom-vf"
+        nonzero_exit: "custom-nze"
+github:
+  app_id: 123456
+  private_key_path: "` + tmpKeyPath + `"
+  bot_username: "test-bot"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
+`
+		tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Remove(tmpfile.Name()) }()
+		if _, err := tmpfile.WriteString(customConfig); err != nil {
+			t.Fatal(err)
+		}
+		_ = tmpfile.Close()
+
+		config, err := LoadConfig(tmpfile.Name())
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+		vl := config.Jira.Projects[0].PRValidationLabels
+		if vl.ValidationFailed != "custom-vf" {
+			t.Errorf("ValidationFailed = %q, want custom-vf", vl.ValidationFailed)
+		}
+		if vl.NonzeroExit != "custom-nze" {
+			t.Errorf("NonzeroExit = %q, want custom-nze", vl.NonzeroExit)
+		}
+	})
+}

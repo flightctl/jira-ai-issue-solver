@@ -59,6 +59,8 @@ type StubGitService struct {
 	ListCheckRunAnnotationsFunc func(owner, repo string, checkRunID int64) ([]models.CheckAnnotation, error)
 	GetFailedJobLogsFunc        func(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
 	AddCommentReactionFunc      func(owner, repo string, comment models.PRComment, reaction string) error
+	AddPRLabelFunc              func(owner, repo string, number int, label string) error
+	RemovePRLabelFunc           func(owner, repo string, number int, label string) error
 }
 
 func (s *StubGitService) SyncFork(forkOwner, repo, branch string) error {
@@ -226,6 +228,20 @@ func (s *StubGitService) GetFailedJobLogs(owner, repo, headSHA string, maxBytesP
 func (s *StubGitService) AddCommentReaction(owner, repo string, comment models.PRComment, reaction string) error {
 	if s.AddCommentReactionFunc != nil {
 		return s.AddCommentReactionFunc(owner, repo, comment, reaction)
+	}
+	return nil
+}
+
+func (s *StubGitService) AddPRLabel(owner, repo string, number int, label string) error {
+	if s.AddPRLabelFunc != nil {
+		return s.AddPRLabelFunc(owner, repo, number, label)
+	}
+	return nil
+}
+
+func (s *StubGitService) RemovePRLabel(owner, repo string, number int, label string) error {
+	if s.RemovePRLabelFunc != nil {
+		return s.RemovePRLabelFunc(owner, repo, number, label)
 	}
 	return nil
 }

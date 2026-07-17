@@ -68,3 +68,23 @@ func SetLifecycleLabel(p *Pipeline, logger *zap.Logger, ticketKey string, ll mod
 func ValidateForkMode(p *Pipeline, logger *zap.Logger, ticketKey string, workItem *models.WorkItem, settings *models.ProjectSettings) error {
 	return p.validateForkMode(logger, ticketKey, workItem, settings)
 }
+
+// ValidationLabel exposes validationLabel for testing.
+func ValidationLabel(session SessionOutput, exitCode int, vl models.PRValidationLabels) string {
+	return validationLabel(session, exitCode, vl)
+}
+
+// ValidationPassed exposes validationPassed for testing.
+func ValidationPassed(session SessionOutput, exitCode int) bool {
+	return validationPassed(session, exitCode)
+}
+
+// SetPRValidationLabel exposes setPRValidationLabel for testing.
+func SetPRValidationLabel(p *Pipeline, logger *zap.Logger, owner, repo string, prNumber int, vl models.PRValidationLabels, targetLabel string) {
+	p.setPRValidationLabel(logger, owner, repo, prNumber, vl, targetLabel)
+}
+
+// ClearPRValidationLabels exposes clearPRValidationLabels for testing.
+func ClearPRValidationLabels(p *Pipeline, logger *zap.Logger, owner, repo string, prNumber int, vl models.PRValidationLabels) {
+	p.clearPRValidationLabels(logger, owner, repo, prNumber, vl)
+}

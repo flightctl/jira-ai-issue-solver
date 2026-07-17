@@ -120,3 +120,56 @@ func (p *Pipeline) clearFailureLabels(
 		}
 	}
 }
+
+// setPRValidationLabel applies the given validation label to a GitHub
+// PR and removes the other configured validation labels (mutual
+// exclusivity). If targetLabel is empty, only clears the others. All
+// operations are best-effort: errors are logged but never propagated.
+func (p *Pipeline) setPRValidationLabel(
+	logger *zap.Logger,
+	owner, repo string,
+	prNumber int,
+	vl models.PRValidationLabels,
+	targetLabel string,
+) {
+	for _, label := range vl.All() {
+		if label != "" && label != targetLabel {
+			if err := p.git.RemovePRLabel(owner, repo, prNumber, label); err != nil {
+				logger.Debug("Failed to remove PR validation label",
+					zap.String("owner", owner), zap.String("repo", repo),
+					zap.Int("pr", prNumber), zap.String("label", label),
+					zap.Error(err))
+			}
+		}
+	}
+
+	if targetLabel != "" {
+		if err := p.git.AddPRLabel(owner, repo, prNumber, targetLabel); err != nil {
+			logger.Warn("Failed to add PR validation label",
+				zap.String("owner", owner), zap.String("repo", repo),
+				zap.Int("pr", prNumber), zap.String("label", targetLabel),
+				zap.Error(err))
+		}
+	}
+}
+
+// clearPRValidationLabels removes all configured validation labels
+// from a GitHub PR. Called when validation passes after a prior
+// failure. All operations are best-effort.
+func (p *Pipeline) clearPRValidationLabels(
+	logger *zap.Logger,
+	owner, repo string,
+	prNumber int,
+	vl models.PRValidationLabels,
+) {
+	for _, label := range vl.All() {
+		if label != "" {
+			if err := p.git.RemovePRLabel(owner, repo, prNumber, label); err != nil {
+				logger.Debug("Failed to remove PR validation label",
+					zap.String("owner", owner), zap.String("repo", repo),
+					zap.Int("pr", prNumber), zap.String("label", label),
+					zap.Error(err))
+			}
+		}
+	}
+}

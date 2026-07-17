@@ -409,9 +409,9 @@ func TestExecuteNewTicket_PRCreationFails(t *testing.T) {
 	}
 }
 
-// --- Draft PR paths ---
+// --- Validation label paths ---
 
-func TestExecuteNewTicket_DraftPR_NonZeroExitCode(t *testing.T) {
+func TestExecuteNewTicket_NonZeroExitCode_AppliesLabel(t *testing.T) {
 	d := newTestDeps(t)
 	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
 		return "", 1, nil // non-zero exit, no exec error
@@ -423,7 +423,12 @@ func TestExecuteNewTicket_DraftPR_NonZeroExitCode(t *testing.T) {
 		return &models.PR{Number: 1, URL: "https://github.com/org/repo/pull/1"}, nil
 	}
 
-	// Verify ticket is NOT transitioned to in-review for draft PRs.
+	var addedLabels []string
+	d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error {
+		addedLabels = append(addedLabels, label)
+		return nil
+	}
+
 	var transitions []string
 	d.tracker.TransitionStatusFunc = func(key, status string) error {
 		transitions = append(transitions, status)
@@ -436,27 +441,33 @@ func TestExecuteNewTicket_DraftPR_NonZeroExitCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !prDraft {
-		t.Error("expected draft PR")
+	if prDraft {
+		t.Error("expected non-draft PR")
 	}
-	if !result.Draft {
-		t.Error("expected result.Draft = true")
+	if result.Draft {
+		t.Error("expected result.Draft = false")
 	}
 	if result.ValidationPassed {
-		t.Error("expected ValidationPassed = false for draft")
+		t.Error("expected ValidationPassed = false for nonzero exit")
 	}
-	// Should only have "In Progress" transition, not "In Review".
+	if len(addedLabels) != 1 || addedLabels[0] != "ai-nonzero-exit" {
+		t.Errorf("addedLabels = %v, want [ai-nonzero-exit]", addedLabels)
+	}
+	// Should still transition to In Review.
+	found := false
 	for _, s := range transitions {
 		if s == "In Review" {
-			t.Error("draft PR should not transition to In Review")
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("transitions = %v, want In Review", transitions)
 	}
 }
 
-func TestExecuteNewTicket_DraftPR_ValidationFailed(t *testing.T) {
+func TestExecuteNewTicket_ValidationFailed_AppliesLabel(t *testing.T) {
 	d := newTestDeps(t)
 
-	// Write session-output.json with validation_passed=false.
 	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
 		writeSessionOutput(t, d.wsDir, executor.SessionOutput{
 			ExitCode:         0,
@@ -471,24 +482,32 @@ func TestExecuteNewTicket_DraftPR_ValidationFailed(t *testing.T) {
 		return &models.PR{Number: 1, URL: "https://github.com/org/repo/pull/1"}, nil
 	}
 
+	var addedLabels []string
+	d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error {
+		addedLabels = append(addedLabels, label)
+		return nil
+	}
+
 	p := d.pipeline(t)
 	result, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !prDraft {
-		t.Error("expected draft PR for validation failure")
+	if prDraft {
+		t.Error("expected non-draft PR")
 	}
-	if !result.Draft {
-		t.Error("expected result.Draft = true")
+	if result.ValidationPassed {
+		t.Error("expected ValidationPassed = false")
+	}
+	if len(addedLabels) != 1 || addedLabels[0] != "ai-validation-failed" {
+		t.Errorf("addedLabels = %v, want [ai-validation-failed]", addedLabels)
 	}
 }
 
-func TestExecuteNewTicket_DraftPR_RepoConfigForcesDraft(t *testing.T) {
+func TestExecuteNewTicket_RepoConfigForcesDraft(t *testing.T) {
 	d := newTestDeps(t)
 
-	// Write .ai-bot/config.yaml with pr.draft: true.
 	cfgDir := filepath.Join(d.wsDir, ".ai-bot")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -504,14 +523,33 @@ func TestExecuteNewTicket_DraftPR_RepoConfigForcesDraft(t *testing.T) {
 		return &models.PR{Number: 1, URL: "https://github.com/org/repo/pull/1"}, nil
 	}
 
+	var transitions []string
+	d.tracker.TransitionStatusFunc = func(key, status string) error {
+		transitions = append(transitions, status)
+		return nil
+	}
+
 	p := d.pipeline(t)
-	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+	result, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !prDraft {
 		t.Error("expected draft PR from repo config")
+	}
+	if !result.Draft {
+		t.Error("expected result.Draft = true")
+	}
+	// Should still transition to In Review even for repo-config drafts.
+	found := false
+	for _, s := range transitions {
+		if s == "In Review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("transitions = %v, want In Review", transitions)
 	}
 }
 
@@ -3036,6 +3074,137 @@ func TestFeedbackPipeline_NonForkMode_SkipsFetchRemote(t *testing.T) {
 	}
 }
 
+// --- Feedback validation label paths ---
+
+func TestFeedbackPipeline_NonZeroExit_AppliesLabel(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Title: "Fix a bug",
+			Branch: "ai-bot/PROJ-1", URL: "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+	d.containers.ExecFunc = func(ctx context.Context, ctr *container.Container, cmd []string) (string, int, error) {
+		return "", 1, nil
+	}
+
+	var addedLabels []string
+	d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error {
+		addedLabels = append(addedLabels, label)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ValidationPassed {
+		t.Error("expected ValidationPassed = false")
+	}
+	if len(addedLabels) != 1 || addedLabels[0] != "ai-nonzero-exit" {
+		t.Errorf("addedLabels = %v, want [ai-nonzero-exit]", addedLabels)
+	}
+}
+
+func TestFeedbackPipeline_ValidationPassed_ClearsLabels(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Title: "Fix a bug",
+			Branch: "ai-bot/PROJ-1", URL: "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+
+	var removedLabels []string
+	d.git.RemovePRLabelFunc = func(_, _ string, _ int, label string) error {
+		removedLabels = append(removedLabels, label)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	result, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.ValidationPassed {
+		t.Error("expected ValidationPassed = true")
+	}
+	// Should attempt to remove both validation labels (clearing prior-round labels).
+	want := map[string]bool{"ai-validation-failed": true, "ai-nonzero-exit": true}
+	for _, l := range removedLabels {
+		if want[l] {
+			delete(want, l)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("missing label removals: %v", want)
+	}
+}
+
+func TestFeedbackPipeline_NoChanges_LabelsUntouched(t *testing.T) {
+	d := newTestDeps(t)
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{
+			Number: 42, Title: "Fix a bug",
+			Branch: "ai-bot/PROJ-1", URL: "https://github.com/org/repo/pull/42",
+		}, nil
+	}
+	d.git.GetPRCommentsFunc = func(owner, repo string, number int, since time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{
+			{ID: 1, Author: models.Author{Username: "reviewer"}, Body: "Fix this"},
+		}, nil
+	}
+	d.git.HasChangesFunc = func(dir, baseBranch string) (bool, error) {
+		return false, nil
+	}
+
+	labelTouched := false
+	d.git.AddPRLabelFunc = func(_, _ string, _ int, _ string) error {
+		labelTouched = true
+		return nil
+	}
+	d.git.RemovePRLabelFunc = func(_, _ string, _ int, _ string) error {
+		labelTouched = true
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
+		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
+		AttemptNum: 1,
+	})
+
+	// Non-final attempt with no changes returns an error — that's expected.
+	if err == nil {
+		t.Fatal("expected error for no-changes on non-final attempt, got nil")
+	}
+	if labelTouched {
+		t.Error("validation labels should not be touched when no changes are pushed")
+	}
+}
+
 // --- Multi-repo new ticket pipeline ---
 
 func newMultiRepoTestDeps(t *testing.T) *testDeps {
@@ -3101,6 +3270,10 @@ func newMultiRepoTestDeps(t *testing.T) *testDeps {
 					InProgressStatus: "In Progress",
 					InReviewStatus:   "In Review",
 					TodoStatus:       "To Do",
+					PRValidationLabels: models.PRValidationLabels{
+						ValidationFailed: "ai-validation-failed",
+						NonzeroExit:      "ai-nonzero-exit",
+					},
 				}, nil
 			},
 		},
@@ -3363,23 +3536,31 @@ func TestMultiRepoNewTicket_CommitPerRepoWithChanges(t *testing.T) {
 	}
 }
 
-func TestMultiRepoNewTicket_DraftWhenValidationFails(t *testing.T) {
+func TestMultiRepoNewTicket_ValidationFailed_AppliesLabels(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 
 	writeSessionOutput(t, d.wsDir, executor.SessionOutput{
 		ValidationPassed: boolPtr(false),
 	})
 
-	var prDrafts []bool
+	var prCount int
 	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
-		prDrafts = append(prDrafts, params.Draft)
+		prCount++
+		if params.Draft {
+			t.Errorf("PR[%d].Draft = true, want false", prCount-1)
+		}
 		return &models.PR{
-			Number: len(prDrafts),
-			URL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", params.Owner, params.Repo, len(prDrafts)),
+			Number: prCount,
+			URL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", params.Owner, params.Repo, prCount),
 		}, nil
 	}
 
-	// Don't expect in-review transition for draft PRs.
+	var addedLabels []string
+	d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error {
+		addedLabels = append(addedLabels, label)
+		return nil
+	}
+
 	var transitions []string
 	d.tracker.TransitionStatusFunc = func(key, status string) error {
 		transitions = append(transitions, status)
@@ -3392,18 +3573,30 @@ func TestMultiRepoNewTicket_DraftWhenValidationFails(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for i, draft := range prDrafts {
-		if !draft {
-			t.Errorf("PR[%d].Draft = false, want true", i)
-		}
-	}
-	if !result.Draft {
-		t.Error("result.Draft should be true")
+	if result.ValidationPassed {
+		t.Error("result.ValidationPassed should be false")
 	}
 
-	// Only in-progress transition, no in-review for drafts.
-	if len(transitions) != 1 || transitions[0] != "In Progress" {
-		t.Errorf("transitions = %v, want [In Progress] only", transitions)
+	// Each of the 3 PRs should get the ai-validation-failed label.
+	wantLabels := 3
+	if len(addedLabels) != wantLabels {
+		t.Fatalf("addedLabels = %v, want %d entries", addedLabels, wantLabels)
+	}
+	for i, l := range addedLabels {
+		if l != "ai-validation-failed" {
+			t.Errorf("addedLabels[%d] = %q, want ai-validation-failed", i, l)
+		}
+	}
+
+	// Should still transition to In Review.
+	found := false
+	for _, s := range transitions {
+		if s == "In Review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("transitions = %v, want In Review", transitions)
 	}
 }
 
@@ -3722,6 +3915,10 @@ func newTestDeps(t *testing.T) *testDeps {
 					InProgressStatus: "In Progress",
 					InReviewStatus:   "In Review",
 					TodoStatus:       "To Do",
+					PRValidationLabels: models.PRValidationLabels{
+						ValidationFailed: "ai-validation-failed",
+						NonzeroExit:      "ai-nonzero-exit",
+					},
 				}, nil
 			},
 		},
