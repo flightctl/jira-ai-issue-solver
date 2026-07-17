@@ -355,6 +355,13 @@ type ProjectConfig struct {
 	// ticket progression through the autofix pipeline. Empty strings
 	// disable the corresponding label.
 	LifecycleLabels LifecycleLabels `yaml:"lifecycle_labels" mapstructure:"lifecycle_labels"`
+
+	// PRValidationLabels configures GitHub PR labels applied when the
+	// AI session reports validation failure or exits with a non-zero
+	// code. Labels are mutually exclusive: at most one is set on a PR.
+	// Empty strings disable the corresponding label. Suggested values:
+	// "ai-validation-failed" and "ai-nonzero-exit".
+	PRValidationLabels PRValidationLabels `yaml:"pr_validation_labels" mapstructure:"pr_validation_labels"`
 }
 
 // FailureLabels holds optional Jira label names applied to tickets in
@@ -407,6 +414,27 @@ type LifecycleLabels struct {
 // strings (disabled labels) are included; callers should skip them.
 func (ll LifecycleLabels) All() []string {
 	return []string{ll.Queued, ll.Review, ll.Merged}
+}
+
+// PRValidationLabels holds configurable GitHub PR labels applied when
+// the AI session's validation or exit code indicates a problem. Labels
+// are mutually exclusive: at most one is set on a given PR. Empty
+// strings disable the corresponding label.
+type PRValidationLabels struct {
+	// ValidationFailed is applied when the AI session explicitly
+	// reports validation_passed: false.
+	ValidationFailed string `yaml:"validation_failed" mapstructure:"validation_failed"`
+
+	// NonzeroExit is applied when the AI container exits with a
+	// non-zero code (and validation was not explicitly reported
+	// as failed).
+	NonzeroExit string `yaml:"nonzero_exit" mapstructure:"nonzero_exit"`
+}
+
+// All returns the configured label strings in a fixed order. Empty
+// strings (disabled labels) are included; callers should skip them.
+func (vl PRValidationLabels) All() []string {
+	return []string{vl.ValidationFailed, vl.NonzeroExit}
 }
 
 // ImportConfig declares an auxiliary repository to clone into the workspace.

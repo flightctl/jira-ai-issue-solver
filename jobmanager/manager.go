@@ -75,16 +75,17 @@ type JobResult struct {
 	// PRNumber is the number of the created pull request.
 	PRNumber int
 
-	// Draft indicates whether the PR was created as a draft
-	// (e.g., due to validation failures).
+	// Draft indicates whether the PR was created as a GitHub draft.
+	// Only true when the repo config has pr.draft: true; validation
+	// failures no longer produce drafts.
 	Draft bool
 
 	// CostUSD is the AI session cost reported by the provider.
 	CostUSD float64
 
-	// ValidationPassed indicates whether the AI's own validation
-	// succeeded. False when the AI reported failures or exited
-	// with a non-zero code.
+	// ValidationPassed indicates whether the AI session completed
+	// successfully: validation was not explicitly failed and the
+	// container exited with code zero.
 	ValidationPassed bool
 }
 

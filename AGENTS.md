@@ -103,10 +103,18 @@ Label management is best-effort — failures are logged but never block core ope
 
 Optional per-project Jira labels (`lifecycle_labels` in project config) that track ticket progression through the autofix pipeline. Labels are mutually exclusive: setting one removes the others. Empty string disables the label:
 - **`queued`**: Set externally (e.g., by a triage bot) to indicate the ticket is waiting. This bot never sets it, but removes it when applying `review`.
-- **`review`**: Applied by the executor when a PR is created and the ticket transitions to "in review" (non-draft PRs only).
+- **`review`**: Applied by the executor when a PR is created and the ticket transitions to "in review".
 - **`merged`**: Applied by the feedback scanner when all repos' PRs are merged. For multi-repo workspaces, requires every repo's PR to be merged.
 
 When the `merged` label is applied, the scanner also transitions the ticket to the configured `merged` status (e.g., "MODIFIED") if set in `status_transitions`. The `merged` status field is optional; omitting it disables the transition.
+
+### PR Validation Labels
+
+Configurable GitHub PR labels (`pr_validation_labels` in project config) applied when the AI session reports a problem. Labels are mutually exclusive: at most one is set on a PR at any time. Empty strings disable the corresponding label. Suggested values: `ai-validation-failed` and `ai-nonzero-exit`.
+- **`validation_failed`**: Applied when the AI session explicitly reports `validation_passed: false`.
+- **`nonzero_exit`**: Applied when the AI container exits with a non-zero code (and validation was not explicitly reported as failed).
+
+Labels are applied when code is pushed (both new-ticket and feedback paths) and cleared when a subsequent push passes validation. When the AI produces no code changes, labels are left unchanged. Label management is best-effort — failures are logged but never block core operations.
 
 ### Security Features
 

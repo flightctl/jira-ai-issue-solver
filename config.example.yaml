@@ -56,6 +56,14 @@ jira:
         review: "jira-autofix-review"            # Applied when PR is created
         merged: "jira-autofix-merged"            # Applied when all PRs are merged
 
+      # GitHub PR labels applied when the AI session reports a problem.
+      # At most one is set on a PR at any time. Applied when code is
+      # pushed; cleared when a subsequent push passes. Labels unchanged
+      # when no code is pushed. Omit or leave empty to disable.
+      pr_validation_labels:
+        validation_failed: "ai-validation-failed"  # AI explicitly reported validation failure
+        nonzero_exit: "ai-nonzero-exit"            # AI container exited with non-zero code
+
       # Status transitions can be configured per ticket type
       # All ticket types must be explicitly configured
       # IMPORTANT: Status names are case-sensitive and must match Jira exactly

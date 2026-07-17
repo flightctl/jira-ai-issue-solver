@@ -445,6 +445,182 @@ func TestValidateForkMode(t *testing.T) {
 	})
 }
 
+func TestValidationLabel(t *testing.T) {
+	vl := models.PRValidationLabels{
+		ValidationFailed: "ai-validation-failed",
+		NonzeroExit:      "ai-nonzero-exit",
+	}
+
+	tests := []struct {
+		name             string
+		validationPassed *bool
+		exitCode         int
+		want             string
+	}{
+		{"all OK", nil, 0, ""},
+		{"validation explicitly passed", boolPtr(true), 0, ""},
+		{"validation failed", boolPtr(false), 0, "ai-validation-failed"},
+		{"nonzero exit", nil, 1, "ai-nonzero-exit"},
+		{"validation passed but nonzero exit", boolPtr(true), 1, "ai-nonzero-exit"},
+		{"validation failed takes precedence over nonzero exit", boolPtr(false), 1, "ai-validation-failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := executor.SessionOutput{ValidationPassed: tt.validationPassed}
+			got := executor.ValidationLabel(session, tt.exitCode, vl)
+			if got != tt.want {
+				t.Errorf("validationLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidationPassed(t *testing.T) {
+	tests := []struct {
+		name             string
+		validationPassed *bool
+		exitCode         int
+		want             bool
+	}{
+		{"all OK", nil, 0, true},
+		{"validation explicitly passed", boolPtr(true), 0, true},
+		{"validation failed", boolPtr(false), 0, false},
+		{"nonzero exit", nil, 1, false},
+		{"validation passed but nonzero exit", boolPtr(true), 1, false},
+		{"validation failed and nonzero exit", boolPtr(false), 1, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := executor.SessionOutput{ValidationPassed: tt.validationPassed}
+			got := executor.ValidationPassed(session, tt.exitCode)
+			if got != tt.want {
+				t.Errorf("validationPassed() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSetPRValidationLabel(t *testing.T) {
+	vl := models.PRValidationLabels{
+		ValidationFailed: "ai-validation-failed",
+		NonzeroExit:      "ai-nonzero-exit",
+	}
+
+	t.Run("adds target and removes others", func(t *testing.T) {
+		var added, removed []string
+		d := newTestDeps(t)
+		d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error { added = append(added, label); return nil }
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.SetPRValidationLabel(p, zap.NewNop(), "org", "repo", 42, vl, "ai-validation-failed")
+
+		if len(added) != 1 || added[0] != "ai-validation-failed" {
+			t.Errorf("added = %v, want [ai-validation-failed]", added)
+		}
+		if len(removed) != 1 || removed[0] != "ai-nonzero-exit" {
+			t.Errorf("removed = %v, want [ai-nonzero-exit]", removed)
+		}
+	})
+
+	t.Run("empty target only removes others", func(t *testing.T) {
+		var added, removed []string
+		d := newTestDeps(t)
+		d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error { added = append(added, label); return nil }
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.SetPRValidationLabel(p, zap.NewNop(), "org", "repo", 42, vl, "")
+
+		if len(added) != 0 {
+			t.Errorf("added = %v, want empty", added)
+		}
+		if len(removed) != 2 {
+			t.Errorf("removed = %v, want 2 entries", removed)
+		}
+	})
+
+	t.Run("skips empty labels in config", func(t *testing.T) {
+		partial := models.PRValidationLabels{ValidationFailed: "ai-validation-failed"}
+		var added, removed []string
+		d := newTestDeps(t)
+		d.git.AddPRLabelFunc = func(_, _ string, _ int, label string) error { added = append(added, label); return nil }
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.SetPRValidationLabel(p, zap.NewNop(), "org", "repo", 42, partial, "ai-validation-failed")
+
+		if len(added) != 1 || added[0] != "ai-validation-failed" {
+			t.Errorf("added = %v, want [ai-validation-failed]", added)
+		}
+		if len(removed) != 0 {
+			t.Errorf("removed = %v, want empty (no other labels configured)", removed)
+		}
+	})
+
+	t.Run("errors are swallowed", func(t *testing.T) {
+		d := newTestDeps(t)
+		d.git.AddPRLabelFunc = func(_, _ string, _ int, _ string) error { return fmt.Errorf("add failed") }
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, _ string) error { return fmt.Errorf("remove failed") }
+
+		p := d.pipeline(t)
+		executor.SetPRValidationLabel(p, zap.NewNop(), "org", "repo", 42, vl, "ai-validation-failed")
+	})
+}
+
+func TestClearPRValidationLabels(t *testing.T) {
+	t.Run("removes all configured labels", func(t *testing.T) {
+		vl := models.PRValidationLabels{
+			ValidationFailed: "ai-validation-failed",
+			NonzeroExit:      "ai-nonzero-exit",
+		}
+		var removed []string
+		d := newTestDeps(t)
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.ClearPRValidationLabels(p, zap.NewNop(), "org", "repo", 42, vl)
+
+		if len(removed) != 2 {
+			t.Fatalf("removed = %v, want 2 entries", removed)
+		}
+		want := map[string]bool{"ai-validation-failed": true, "ai-nonzero-exit": true}
+		for _, l := range removed {
+			if !want[l] {
+				t.Errorf("unexpected removal of %q", l)
+			}
+		}
+	})
+
+	t.Run("skips empty labels", func(t *testing.T) {
+		vl := models.PRValidationLabels{ValidationFailed: "ai-validation-failed"}
+		var removed []string
+		d := newTestDeps(t)
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, label string) error { removed = append(removed, label); return nil }
+
+		p := d.pipeline(t)
+		executor.ClearPRValidationLabels(p, zap.NewNop(), "org", "repo", 42, vl)
+
+		if len(removed) != 1 || removed[0] != "ai-validation-failed" {
+			t.Errorf("removed = %v, want [ai-validation-failed]", removed)
+		}
+	})
+
+	t.Run("errors are swallowed", func(t *testing.T) {
+		vl := models.PRValidationLabels{
+			ValidationFailed: "ai-validation-failed",
+			NonzeroExit:      "ai-nonzero-exit",
+		}
+		d := newTestDeps(t)
+		d.git.RemovePRLabelFunc = func(_, _ string, _ int, _ string) error { return fmt.Errorf("remove failed") }
+
+		p := d.pipeline(t)
+		executor.ClearPRValidationLabels(p, zap.NewNop(), "org", "repo", 42, vl)
+	})
+}
+
 func TestSetFailureLabel_ErrorsAreSwallowed(t *testing.T) {
 	fl := models.FailureLabels{
 		CIFailing:       "ci-fail",

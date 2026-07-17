@@ -38,7 +38,7 @@
 //  11. Check for changes; fail if none
 //  12. Commit changes via GitHub API
 //  13. Sync workspace with remote
-//  14. Create pull request (draft if validation failed)
+//  14. Create pull request and apply validation labels if needed
 //  15. Update ticket with PR URL and transition status
 //  16. Stop container (workspace retained for future jobs)
 //
@@ -214,6 +214,14 @@ type GitService interface {
 	// GetFailedJobLogs returns truncated log output from failed
 	// workflow job steps, keyed by job name.
 	GetFailedJobLogs(owner, repo, headSHA string, maxBytesPerStep int) (map[string][]models.FailedStep, error)
+
+	// AddPRLabel adds a label to a GitHub pull request. Creates the
+	// label if it does not already exist on the repository.
+	AddPRLabel(owner, repo string, number int, label string) error
+
+	// RemovePRLabel removes a label from a GitHub pull request.
+	// Returns nil if the label is not present (idempotent).
+	RemovePRLabel(owner, repo string, number int, label string) error
 }
 
 // ProjectResolver maps work items to their project-specific settings.

@@ -305,13 +305,6 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 	}
 
 	// --- Step 16: Create PR ---
-	draft := shouldCreateDraft(session, exitCode, repoCfg.PR.Draft)
-	if draft {
-		logger.Info("Creating draft PR",
-			zap.Int("exit_code", exitCode),
-			zap.Any("validation_passed", session.ValidationPassed),
-			zap.Bool("repo_config_draft", repoCfg.PR.Draft))
-	}
 	aiPR := readPRDescription(wsPath)
 	prTitle, prBody := buildPRContent(workItem, job.TicketKey, repoCfg.PR.TitlePrefix, aiPR)
 
@@ -322,7 +315,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		Body:      prBody,
 		Head:      settings.PRHead(branchName),
 		Base:      settings.Repos[0].BaseBranch,
-		Draft:     draft,
+		Draft:     repoCfg.PR.Draft,
 		Labels:    repoCfg.PR.Labels,
 		Assignees: assigneesFromSettings(settings),
 	})
@@ -332,13 +325,20 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 
 	result.PRURL = pr.URL
 	result.PRNumber = pr.Number
-	result.Draft = draft
-	result.ValidationPassed = !draft
+	result.Draft = repoCfg.PR.Draft
+	result.ValidationPassed = validationPassed(session, exitCode)
 
 	logger.Info("PR created",
 		zap.String("url", pr.URL),
 		zap.Int("number", pr.Number),
-		zap.Bool("draft", draft))
+		zap.Bool("draft", repoCfg.PR.Draft))
+
+	// --- Step 16a: Apply validation labels ---
+	vlTarget := validationLabel(session, exitCode, settings.PRValidationLabels)
+	if vlTarget != "" {
+		p.setPRValidationLabel(logger, settings.Repos[0].Owner, settings.Repos[0].Repo,
+			pr.Number, settings.PRValidationLabels, vlTarget)
+	}
 
 	// --- Step 17: Update ticket ---
 	p.setPRURL(logger, job.TicketKey, settings, pr.URL)
@@ -348,11 +348,9 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
 		pr.Number, result.CostUSD, "New ticket", 0)
 
-	if !draft {
-		p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
-		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
-			logger.Warn("Failed to transition to in-review", zap.Error(err))
-		}
+	p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
+	if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
+		logger.Warn("Failed to transition to in-review", zap.Error(err))
 	}
 
 	return result, nil
@@ -950,18 +948,18 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	// --- Step 13–16: Per-repo fan-out (changes → commit → PR) ---
 	importExcludes := collectExcludes(mergedImports)
 	aiPR := readPRDescription(wsPath)
-	sessionDraft := shouldCreateDraft(session, exitCode, false)
+	vlTarget := validationLabel(session, exitCode, settings.PRValidationLabels)
 
 	prs, err := p.fanOutCommitAndPR(logger, fanOutParams{
-		settings:     settings,
-		workItem:     workItem,
-		wsPath:       wsPath,
-		branchName:   branchName,
-		ticketKey:    job.TicketKey,
-		repoConfigs:  repoConfigs,
-		excludes:     importExcludes,
-		aiPR:         aiPR,
-		sessionDraft: sessionDraft,
+		settings:    settings,
+		workItem:    workItem,
+		wsPath:      wsPath,
+		branchName:  branchName,
+		ticketKey:   job.TicketKey,
+		repoConfigs: repoConfigs,
+		excludes:    importExcludes,
+		aiPR:        aiPR,
+		vlTarget:    vlTarget,
 	})
 	if err != nil {
 		return result, err
@@ -982,14 +980,11 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 
 	result.PRURL = prs[0].url
 	result.PRNumber = prs[0].number
-	result.Draft = sessionDraft
-	result.ValidationPassed = !sessionDraft
+	result.ValidationPassed = validationPassed(session, exitCode)
 
-	if !sessionDraft {
-		p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
-		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
-			logger.Warn("Failed to transition to in-review", zap.Error(err))
-		}
+	p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
+	if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
+		logger.Warn("Failed to transition to in-review", zap.Error(err))
 	}
 
 	return result, nil
@@ -1050,15 +1045,15 @@ func (p *Pipeline) writeNewTicketFiles(
 }
 
 type fanOutParams struct {
-	settings     *models.ProjectSettings
-	workItem     *models.WorkItem
-	wsPath       string
-	branchName   string
-	ticketKey    string
-	repoConfigs  []*repoconfig.Config
-	excludes     []string
-	aiPR         *PRDescription
-	sessionDraft bool
+	settings    *models.ProjectSettings
+	workItem    *models.WorkItem
+	wsPath      string
+	branchName  string
+	ticketKey   string
+	repoConfigs []*repoconfig.Config
+	excludes    []string
+	aiPR        *PRDescription
+	vlTarget    string
 }
 
 type repoPR struct {
@@ -1066,7 +1061,6 @@ type repoPR struct {
 	repo   string
 	url    string
 	number int
-	draft  bool
 }
 
 // fanOutCommitAndPR iterates each repo, commits changes via the GitHub
@@ -1107,7 +1101,6 @@ func (p *Pipeline) fanOutCommitAndPR(
 			return nil, fmt.Errorf("sync with remote for %s: %w", repo.Name, err)
 		}
 
-		repoDraft := params.sessionDraft || params.repoConfigs[i].PR.Draft
 		prTitle, prBody := buildPRContent(
 			params.workItem, params.ticketKey, params.repoConfigs[i].PR.TitlePrefix, params.aiPR)
 
@@ -1118,7 +1111,7 @@ func (p *Pipeline) fanOutCommitAndPR(
 			Body:      prBody,
 			Head:      params.settings.PRHead(params.branchName),
 			Base:      repo.BaseBranch,
-			Draft:     repoDraft,
+			Draft:     params.repoConfigs[i].PR.Draft,
 			Labels:    params.repoConfigs[i].PR.Labels,
 			Assignees: assigneesFromSettings(params.settings),
 		})
@@ -1126,12 +1119,17 @@ func (p *Pipeline) fanOutCommitAndPR(
 			return nil, fmt.Errorf("create PR for %s: %w", repo.Name, err)
 		}
 
-		prs = append(prs, repoPR{owner: repo.Owner, repo: repo.Repo, url: pr.URL, number: pr.Number, draft: repoDraft})
+		if params.vlTarget != "" {
+			p.setPRValidationLabel(logger, repo.Owner, repo.Repo,
+				pr.Number, params.settings.PRValidationLabels, params.vlTarget)
+		}
+
+		prs = append(prs, repoPR{owner: repo.Owner, repo: repo.Repo, url: pr.URL, number: pr.Number})
 		logger.Info("PR created",
 			zap.String("repo", repo.Name),
 			zap.String("url", pr.URL),
 			zap.Int("number", pr.Number),
-			zap.Bool("draft", repoDraft))
+			zap.Bool("draft", params.repoConfigs[i].PR.Draft))
 	}
 
 	return prs, nil
@@ -1287,19 +1285,28 @@ func mergeMultiRepoImports(
 	return result
 }
 
-// shouldCreateDraft determines whether the PR should be created as a
-// draft based on session output, exit code, and repo config.
-func shouldCreateDraft(session SessionOutput, exitCode int, repoDraft bool) bool {
-	if repoDraft {
-		return true
-	}
+// validationLabel returns the PR validation label to apply based on
+// the AI session's output. Returns empty string when validation passed
+// and exit code is zero. ValidationFailed takes precedence over
+// NonzeroExit because it is the more specific signal.
+func validationLabel(session SessionOutput, exitCode int, vl models.PRValidationLabels) string {
 	if session.ValidationPassed != nil && !*session.ValidationPassed {
-		return true
+		return vl.ValidationFailed
 	}
 	if exitCode != 0 {
-		return true
+		return vl.NonzeroExit
 	}
-	return false
+	return ""
+}
+
+// validationPassed reports whether the AI session completed
+// successfully: validation was not explicitly failed and the container
+// exited with code zero.
+func validationPassed(session SessionOutput, exitCode int) bool {
+	if session.ValidationPassed != nil && !*session.ValidationPassed {
+		return false
+	}
+	return exitCode == 0
 }
 
 // buildPRContent generates the PR title and body from the work item.

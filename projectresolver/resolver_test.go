@@ -1027,6 +1027,57 @@ func TestResolveProject_FailureLabels(t *testing.T) {
 	})
 }
 
+func TestResolveProject_PRValidationLabels(t *testing.T) {
+	t.Run("passes through configured labels", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Jira.Projects[0].PRValidationLabels = models.PRValidationLabels{
+			ValidationFailed: "custom-vf",
+			NonzeroExit:      "custom-nze",
+		}
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.PRValidationLabels.ValidationFailed != "custom-vf" {
+			t.Errorf("ValidationFailed = %q, want %q", ps.PRValidationLabels.ValidationFailed, "custom-vf")
+		}
+		if ps.PRValidationLabels.NonzeroExit != "custom-nze" {
+			t.Errorf("NonzeroExit = %q, want %q", ps.PRValidationLabels.NonzeroExit, "custom-nze")
+		}
+	})
+
+	t.Run("defaults to empty when not configured", func(t *testing.T) {
+		cfg := minimalConfig()
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(models.WorkItem{
+			Key:        "PROJ-1",
+			Type:       "Bug",
+			Components: []string{"backend"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.PRValidationLabels != (models.PRValidationLabels{}) {
+			t.Errorf("expected zero PRValidationLabels, got %+v", ps.PRValidationLabels)
+		}
+	})
+}
+
 func TestResolveFailureLabels(t *testing.T) {
 	t.Run("returns labels for known project", func(t *testing.T) {
 		cfg := minimalConfig()
