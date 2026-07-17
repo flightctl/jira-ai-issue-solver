@@ -69,6 +69,11 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		ghUsername = r.config.Jira.AssigneeToGitHubUsername[workItem.Assignee.Email]
 	}
 
+	maxTicketCost := r.config.Guardrails.MaxTicketCostUSD
+	if pc.MaxTicketCostUSD != nil {
+		maxTicketCost = *pc.MaxTicketCostUSD
+	}
+
 	return &models.ProjectSettings{
 		Repos:                repos,
 		RootRepoURL:          ws.RootRepo,
@@ -85,6 +90,7 @@ func (r *ConfigResolver) ResolveProject(workItem models.WorkItem) (*models.Proje
 		MergedStatus:         transitions.Merged,
 		ForkMode:             pc.ForkMode,
 		GitHubUsername:       ghUsername,
+		MaxTicketCostUSD:     maxTicketCost,
 	}, nil
 }
 

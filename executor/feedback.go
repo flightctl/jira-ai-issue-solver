@@ -46,6 +46,15 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		return result, err
 	}
 
+	// --- Step 2b: Check per-ticket cost cap ---
+	if p.ticketCostCapExceeded(logger, job.TicketKey, settings.MaxTicketCostUSD) {
+		logger.Info("Per-ticket cost cap exceeded, skipping feedback",
+			zap.String("ticket", job.TicketKey),
+			zap.Float64("cap_usd", settings.MaxTicketCostUSD))
+		p.setFailureLabel(logger, job.TicketKey, settings.FailureLabels, settings.FailureLabels.Blocked)
+		return result, errTicketCostCapExceeded
+	}
+
 	defer func() {
 		// On failure post error comment (but do NOT revert status --
 		// the ticket stays "in review").
@@ -194,6 +203,7 @@ func (p *Pipeline) executeFeedback(ctx context.Context, job *jobmanager.Job) (re
 		zap.Any("validation_passed", session.ValidationPassed),
 		zap.String("summary", session.Summary))
 	result.CostUSD = session.CostUSD
+	p.recordTicketCost(logger, wsPath, settings.MaxTicketCostUSD, result.CostUSD)
 
 	// --- Step 13a: Restore remote auth ---
 	// In fork mode, origin is set to the fork so that SyncWithRemote
@@ -436,6 +446,7 @@ func (p *Pipeline) executeMultiRepoFeedback(
 		zap.Any("validation_passed", session.ValidationPassed),
 		zap.String("summary", session.Summary))
 	result.CostUSD = session.CostUSD
+	p.recordTicketCost(logger, wsPath, settings.MaxTicketCostUSD, result.CostUSD)
 
 	// --- Step 11a: Restore remote auth per repo ---
 	for _, repo := range settings.Repos {
@@ -483,6 +494,7 @@ func (p *Pipeline) executeMultiRepoFeedback(
 	p.postOrUpdateCostComment(logger,
 		repoInfos[0].repo.Owner, repoInfos[0].repo.Repo,
 		repoInfos[0].pr.Number, result.CostUSD, costLabel, job.AttemptNum)
+	p.postCostCrossReference(logger, costCrossRefFromRepoInfos(repoInfos))
 
 	if err != nil {
 		return result, err

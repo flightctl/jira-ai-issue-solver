@@ -167,3 +167,84 @@ func (p *Pipeline) postOrUpdateCostComment(
 			zap.Int("pr_number", prNumber), zap.Error(err))
 	}
 }
+
+// costCrossRef describes the primary and secondary PRs for a
+// cross-reference comment.
+type costCrossRef struct {
+	primaryOwner  string
+	primaryRepo   string
+	primaryNumber int
+	primaryURL    string
+	secondaryPRs  []repoPR
+}
+
+// costCrossRefFromRepoPRs builds a costCrossRef from a slice of
+// repoPR where the first element is the primary (cost-tracking) PR.
+// Returns nil when there are fewer than 2 PRs.
+func costCrossRefFromRepoPRs(prs []repoPR) *costCrossRef {
+	if len(prs) < 2 {
+		return nil
+	}
+	return &costCrossRef{
+		primaryOwner:  prs[0].owner,
+		primaryRepo:   prs[0].repo,
+		primaryNumber: prs[0].number,
+		primaryURL:    prs[0].url,
+		secondaryPRs:  prs[1:],
+	}
+}
+
+// costCrossRefFromRepoInfos builds a costCrossRef from a slice of
+// repoPRInfo (feedback path) where the first element is the primary
+// (cost-tracking) PR. Returns nil when there are fewer than 2 PRs.
+func costCrossRefFromRepoInfos(infos []repoPRInfo) *costCrossRef {
+	if len(infos) < 2 {
+		return nil
+	}
+	secondary := make([]repoPR, len(infos)-1)
+	for i, ri := range infos[1:] {
+		secondary[i] = repoPR{
+			owner:  ri.repo.Owner,
+			repo:   ri.repo.Repo,
+			url:    ri.pr.URL,
+			number: ri.pr.Number,
+		}
+	}
+	return &costCrossRef{
+		primaryOwner:  infos[0].repo.Owner,
+		primaryRepo:   infos[0].repo.Repo,
+		primaryNumber: infos[0].pr.Number,
+		primaryURL:    infos[0].pr.URL,
+		secondaryPRs:  secondary,
+	}
+}
+
+// postCostCrossReference posts a comment on secondary PRs (PRs 2..N
+// in a multi-repo workspace) linking to the cost comment on the
+// primary PR. Uses the same marker so findCostComment detects it and
+// prevents duplicates on subsequent sessions.
+func (p *Pipeline) postCostCrossReference(logger *zap.Logger, ref *costCrossRef) {
+	if ref == nil {
+		return
+	}
+
+	body := fmt.Sprintf("%s\nAI session costs are tracked on [%s/%s#%d](%s).",
+		costCommentMarker, ref.primaryOwner, ref.primaryRepo,
+		ref.primaryNumber, ref.primaryURL)
+
+	for _, pr := range ref.secondaryPRs {
+		comments, err := p.git.ListIssueComments(pr.owner, pr.repo, pr.number)
+		if err != nil {
+			logger.Warn("Failed to list comments for cost cross-reference",
+				zap.String("repo", pr.repo), zap.Error(err))
+			continue
+		}
+		if findCostComment(comments) != nil {
+			continue
+		}
+		if err := p.git.PostIssueComment(pr.owner, pr.repo, pr.number, body); err != nil {
+			logger.Warn("Failed to post cost cross-reference",
+				zap.String("repo", pr.repo), zap.Error(err))
+		}
+	}
+}

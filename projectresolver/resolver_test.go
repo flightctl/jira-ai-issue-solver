@@ -1402,6 +1402,75 @@ func TestResolveProject_ForkMode(t *testing.T) {
 	})
 }
 
+func TestResolveProject_MaxTicketCostUSD(t *testing.T) {
+	wi := models.WorkItem{
+		Key:        "PROJ-1",
+		Type:       "Bug",
+		Components: []string{"backend"},
+	}
+
+	t.Run("uses global default when project does not override", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Guardrails.MaxTicketCostUSD = 20.0
+
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(wi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.MaxTicketCostUSD != 20.0 {
+			t.Errorf("MaxTicketCostUSD = %v, want 20.0", ps.MaxTicketCostUSD)
+		}
+	})
+
+	t.Run("per-project override takes precedence", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Guardrails.MaxTicketCostUSD = 20.0
+		override := 50.0
+		cfg.Jira.Projects[0].MaxTicketCostUSD = &override
+
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(wi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.MaxTicketCostUSD != 50.0 {
+			t.Errorf("MaxTicketCostUSD = %v, want 50.0", ps.MaxTicketCostUSD)
+		}
+	})
+
+	t.Run("per-project negative disables cap", func(t *testing.T) {
+		cfg := minimalConfig()
+		cfg.Guardrails.MaxTicketCostUSD = 20.0
+		disabled := -1.0
+		cfg.Jira.Projects[0].MaxTicketCostUSD = &disabled
+
+		r, err := projectresolver.NewConfigResolver(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		ps, err := r.ResolveProject(wi)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if ps.MaxTicketCostUSD != -1.0 {
+			t.Errorf("MaxTicketCostUSD = %v, want -1.0 (disabled)", ps.MaxTicketCostUSD)
+		}
+	})
+}
+
 // assertContains is a test helper that fails if s does not contain substr.
 func assertContains(t *testing.T, s, substr string) {
 	t.Helper()

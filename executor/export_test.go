@@ -88,3 +88,19 @@ func SetPRValidationLabel(p *Pipeline, logger *zap.Logger, owner, repo string, p
 func ClearPRValidationLabels(p *Pipeline, logger *zap.Logger, owner, repo string, prNumber int, vl models.PRValidationLabels) {
 	p.clearPRValidationLabels(logger, owner, repo, prNumber, vl)
 }
+
+// TicketCostPath exposes the ticket cost file path constant for tests.
+const TicketCostPath = ticketCostPath
+
+// ErrTicketCostCapExceeded exposes the sentinel error for tests.
+var ErrTicketCostCapExceeded = errTicketCostCapExceeded
+
+// CheckTicketCostCap exposes checkTicketCostCap for testing.
+func CheckTicketCostCap(p *Pipeline, logger *zap.Logger, wsPath string, maxCost float64) bool {
+	return p.checkTicketCostCap(logger, wsPath, maxCost)
+}
+
+// RecordTicketCost exposes recordTicketCost for testing.
+func RecordTicketCost(p *Pipeline, logger *zap.Logger, wsPath string, maxCost float64, cost float64) {
+	p.recordTicketCost(logger, wsPath, maxCost, cost)
+}

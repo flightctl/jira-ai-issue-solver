@@ -419,6 +419,13 @@ guardrails:
   # Zero or negative disables cost-based limiting.
   max_daily_cost_usd: 50.0
 
+  # Maximum per-ticket AI session cost in USD. No new AI sessions start
+  # for a ticket once its cumulative cost reaches or exceeds this value.
+  # The cost file lives in the workspace, so it shares the workspace TTL
+  # lifecycle. Can be overridden per-project via max_ticket_cost_usd on
+  # the project config. Zero or negative disables per-ticket cost capping.
+  max_ticket_cost_usd: 20.0
+
   # Maximum duration (in minutes) for an AI session inside a container.
   # Zero means no timeout.
   max_container_runtime_minutes: 60
