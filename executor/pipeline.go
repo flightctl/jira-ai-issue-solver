@@ -980,6 +980,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 
 	result.PRURL = prs[0].url
 	result.PRNumber = prs[0].number
+	result.Draft = prs[0].draft
 	result.ValidationPassed = validationPassed(session, exitCode)
 
 	p.setLifecycleLabel(logger, job.TicketKey, settings.LifecycleLabels, settings.LifecycleLabels.Review)
@@ -1061,6 +1062,7 @@ type repoPR struct {
 	repo   string
 	url    string
 	number int
+	draft  bool
 }
 
 // fanOutCommitAndPR iterates each repo, commits changes via the GitHub
@@ -1124,7 +1126,7 @@ func (p *Pipeline) fanOutCommitAndPR(
 				pr.Number, params.settings.PRValidationLabels, params.vlTarget)
 		}
 
-		prs = append(prs, repoPR{owner: repo.Owner, repo: repo.Repo, url: pr.URL, number: pr.Number})
+		prs = append(prs, repoPR{owner: repo.Owner, repo: repo.Repo, url: pr.URL, number: pr.Number, draft: params.repoConfigs[i].PR.Draft})
 		logger.Info("PR created",
 			zap.String("repo", repo.Name),
 			zap.String("url", pr.URL),

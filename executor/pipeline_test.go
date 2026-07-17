@@ -3191,11 +3191,15 @@ func TestFeedbackPipeline_NoChanges_LabelsUntouched(t *testing.T) {
 	}
 
 	p := d.pipeline(t)
-	_, _ = p.Execute(context.Background(), &jobmanager.Job{
+	_, err := p.Execute(context.Background(), &jobmanager.Job{
 		ID: "j1", TicketKey: "PROJ-1", Type: jobmanager.JobTypeFeedback,
 		AttemptNum: 1,
 	})
 
+	// Non-final attempt with no changes returns an error — that's expected.
+	if err == nil {
+		t.Fatal("expected error for no-changes on non-final attempt, got nil")
+	}
 	if labelTouched {
 		t.Error("validation labels should not be touched when no changes are pushed")
 	}

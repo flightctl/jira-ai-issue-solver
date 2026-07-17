@@ -493,9 +493,12 @@ func (p *Pipeline) executeMultiRepoFeedback(
 
 	p.clearFailureLabels(logger, job.TicketKey, settings.FailureLabels)
 
-	// Apply or clear PR validation labels on each repo's PR.
+	// Apply or clear PR validation labels only on repos that received a commit.
 	vlTarget := validationLabel(session, exitCode, settings.PRValidationLabels)
 	for _, ri := range repoInfos {
+		if repoSHAs[ri.repo.Name] == "" {
+			continue
+		}
 		if vlTarget != "" {
 			p.setPRValidationLabel(logger, ri.repo.Owner, ri.repo.Repo,
 				ri.pr.Number, settings.PRValidationLabels, vlTarget)

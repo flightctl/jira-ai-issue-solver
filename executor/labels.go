@@ -136,7 +136,9 @@ func (p *Pipeline) setPRValidationLabel(
 		if label != "" && label != targetLabel {
 			if err := p.git.RemovePRLabel(owner, repo, prNumber, label); err != nil {
 				logger.Debug("Failed to remove PR validation label",
-					zap.String("label", label), zap.Error(err))
+					zap.String("owner", owner), zap.String("repo", repo),
+					zap.Int("pr", prNumber), zap.String("label", label),
+					zap.Error(err))
 			}
 		}
 	}
@@ -144,7 +146,9 @@ func (p *Pipeline) setPRValidationLabel(
 	if targetLabel != "" {
 		if err := p.git.AddPRLabel(owner, repo, prNumber, targetLabel); err != nil {
 			logger.Warn("Failed to add PR validation label",
-				zap.String("label", targetLabel), zap.Error(err))
+				zap.String("owner", owner), zap.String("repo", repo),
+				zap.Int("pr", prNumber), zap.String("label", targetLabel),
+				zap.Error(err))
 		}
 	}
 }
@@ -162,7 +166,9 @@ func (p *Pipeline) clearPRValidationLabels(
 		if label != "" {
 			if err := p.git.RemovePRLabel(owner, repo, prNumber, label); err != nil {
 				logger.Debug("Failed to remove PR validation label",
-					zap.String("label", label), zap.Error(err))
+					zap.String("owner", owner), zap.String("repo", repo),
+					zap.Int("pr", prNumber), zap.String("label", label),
+					zap.Error(err))
 			}
 		}
 	}
