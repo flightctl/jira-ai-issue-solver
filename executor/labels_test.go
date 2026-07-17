@@ -474,6 +474,15 @@ func TestValidationLabel(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("falls through to nonzero_exit when validation_failed is disabled", func(t *testing.T) {
+		partial := models.PRValidationLabels{NonzeroExit: "ai-nonzero-exit"}
+		session := executor.SessionOutput{ValidationPassed: boolPtr(false)}
+		got := executor.ValidationLabel(session, 1, partial)
+		if got != "ai-nonzero-exit" {
+			t.Errorf("validationLabel() = %q, want ai-nonzero-exit", got)
+		}
+	})
 }
 
 func TestValidationPassed(t *testing.T) {

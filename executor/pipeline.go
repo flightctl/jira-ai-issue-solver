@@ -1293,7 +1293,9 @@ func mergeMultiRepoImports(
 // NonzeroExit because it is the more specific signal.
 func validationLabel(session SessionOutput, exitCode int, vl models.PRValidationLabels) string {
 	if session.ValidationPassed != nil && !*session.ValidationPassed {
-		return vl.ValidationFailed
+		if vl.ValidationFailed != "" {
+			return vl.ValidationFailed
+		}
 	}
 	if exitCode != 0 {
 		return vl.NonzeroExit
