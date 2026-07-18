@@ -2013,6 +2013,7 @@ workspaces:
 `
 
 	t.Run("default value", func(t *testing.T) {
+		t.Setenv("JIRA_AI_GUARDRAILS_MAX_TICKET_COST_USD", "")
 		tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 		if err != nil {
 			t.Fatal(err)
@@ -2033,6 +2034,7 @@ workspaces:
 	})
 
 	t.Run("YAML override", func(t *testing.T) {
+		t.Setenv("JIRA_AI_GUARDRAILS_MAX_TICKET_COST_USD", "")
 		yamlConfig := baseConfig + `
 guardrails:
   max_ticket_cost_usd: 50.0
