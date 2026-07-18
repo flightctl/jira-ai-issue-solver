@@ -117,6 +117,11 @@ type ProjectSettings struct {
 	// Empty when the assignee has no mapping or the ticket is
 	// unassigned. Only used when ForkMode is true.
 	GitHubUsername string
+
+	// MaxTicketCostUSD is the per-ticket cost cap in USD. No new AI
+	// sessions are started for a ticket once its cumulative cost
+	// reaches or exceeds this value. Zero or negative means no cap.
+	MaxTicketCostUSD float64
 }
 
 // IsMultiRepo returns true when the workspace contains more than

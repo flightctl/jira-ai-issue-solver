@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -362,6 +363,12 @@ type ProjectConfig struct {
 	// Empty strings disable the corresponding label. Suggested values:
 	// "ai-validation-failed" and "ai-nonzero-exit".
 	PRValidationLabels PRValidationLabels `yaml:"pr_validation_labels" mapstructure:"pr_validation_labels"`
+
+	// MaxTicketCostUSD overrides the global
+	// guardrails.max_ticket_cost_usd for this project. Nil means use
+	// the global default; an explicit negative value disables per-ticket
+	// cost capping for this project.
+	MaxTicketCostUSD *float64 `yaml:"max_ticket_cost_usd,omitempty" mapstructure:"max_ticket_cost_usd"`
 }
 
 // FailureLabels holds optional Jira label names applied to tickets in
@@ -679,6 +686,13 @@ type GuardrailsConfig struct {
 	// negative disables cost-based limiting.
 	MaxDailyCostUSD float64 `yaml:"max_daily_cost_usd" mapstructure:"max_daily_cost_usd"`
 
+	// MaxTicketCostUSD is the default per-ticket AI session cost cap
+	// in USD. No new AI sessions are started for a ticket once its
+	// cumulative cost reaches or exceeds this value. Can be overridden
+	// per-project in ProjectConfig. Zero or negative disables
+	// per-ticket cost capping.
+	MaxTicketCostUSD float64 `yaml:"max_ticket_cost_usd" mapstructure:"max_ticket_cost_usd"`
+
 	// MaxContainerRuntimeMinutes is the maximum duration (in minutes)
 	// for an AI session inside a container. Zero means no timeout.
 	MaxContainerRuntimeMinutes int `yaml:"max_container_runtime_minutes" mapstructure:"max_container_runtime_minutes" default:"60"`
@@ -857,6 +871,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	bindEnv("guardrails.max_concurrent_jobs")
 	bindEnv("guardrails.max_retries")
 	bindEnv("guardrails.max_daily_cost_usd")
+	bindEnv("guardrails.max_ticket_cost_usd")
 	bindEnv("guardrails.max_container_runtime_minutes")
 	bindEnv("guardrails.circuit_breaker_threshold")
 	bindEnv("guardrails.circuit_breaker_window_minutes")
@@ -1099,6 +1114,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("guardrails.retry_label", "ai-retry")
 	v.SetDefault("guardrails.min_comment_length", 20)
 	v.SetDefault("guardrails.max_commit_files", 100)
+	v.SetDefault("guardrails.max_ticket_cost_usd", 20.0)
 
 	// Merge configuration defaults
 	v.SetDefault("merge.idle_days", 7)
@@ -1292,6 +1308,10 @@ func (p *ProjectConfig) validate(index int) error {
 		}
 	}
 
+	if p.MaxTicketCostUSD != nil && (math.IsNaN(*p.MaxTicketCostUSD) || math.IsInf(*p.MaxTicketCostUSD, 0)) {
+		return fmt.Errorf("%s.max_ticket_cost_usd must be a finite number", prefix)
+	}
+
 	return nil
 }
 
@@ -1328,6 +1348,12 @@ func repoNameFromURL(rawURL string) string {
 
 // validate checks guardrails configuration values.
 func (g *GuardrailsConfig) validate() error {
+	if math.IsNaN(g.MaxDailyCostUSD) || math.IsInf(g.MaxDailyCostUSD, 0) {
+		return errors.New("guardrails.max_daily_cost_usd must be a finite number")
+	}
+	if math.IsNaN(g.MaxTicketCostUSD) || math.IsInf(g.MaxTicketCostUSD, 0) {
+		return errors.New("guardrails.max_ticket_cost_usd must be a finite number")
+	}
 	if g.MaxConcurrentJobs <= 0 {
 		return errors.New("guardrails.max_concurrent_jobs must be positive")
 	}

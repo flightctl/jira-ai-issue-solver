@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"jira-ai-issue-solver/models"
 )
 
@@ -370,5 +372,147 @@ func TestFeedbackCostLabel(t *testing.T) {
 				t.Errorf("feedbackCostLabel() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// costCommentGitStub is a minimal GitService stub for testing
+// postCostCrossReference. Only ListIssueComments and
+// PostIssueComment are implemented; all other methods panic.
+type costCommentGitStub struct {
+	GitService
+	listFunc func(owner, repo string, prNumber int) ([]models.IssueComment, error)
+	postFunc func(owner, repo string, prNumber int, body string) error
+}
+
+func (s *costCommentGitStub) ListIssueComments(owner, repo string, prNumber int) ([]models.IssueComment, error) {
+	if s.listFunc != nil {
+		return s.listFunc(owner, repo, prNumber)
+	}
+	return []models.IssueComment{}, nil
+}
+
+func (s *costCommentGitStub) PostIssueComment(owner, repo string, prNumber int, body string) error {
+	if s.postFunc != nil {
+		return s.postFunc(owner, repo, prNumber, body)
+	}
+	return nil
+}
+
+func TestPostCostCrossReference_PostsOnSecondaryPRs(t *testing.T) {
+	var posted []string
+	stub := &costCommentGitStub{
+		postFunc: func(owner, repo string, prNumber int, body string) error {
+			posted = append(posted, fmt.Sprintf("%s/%s#%d", owner, repo, prNumber))
+			return nil
+		},
+	}
+
+	p := &Pipeline{git: stub, logger: zap.NewNop()}
+	ref := costCrossRefFromRepoPRs([]repoPR{
+		{owner: "org", repo: "svc-a", url: "https://github.com/org/svc-a/pull/1", number: 1},
+		{owner: "org", repo: "svc-b", url: "https://github.com/org/svc-b/pull/2", number: 2},
+		{owner: "org", repo: "svc-c", url: "https://github.com/org/svc-c/pull/3", number: 3},
+	})
+
+	p.postCostCrossReference(zap.NewNop(), ref)
+
+	if len(posted) != 2 {
+		t.Fatalf("expected 2 comments posted, got %d", len(posted))
+	}
+	if posted[0] != "org/svc-b#2" {
+		t.Errorf("posted[0] = %q, want %q", posted[0], "org/svc-b#2")
+	}
+	if posted[1] != "org/svc-c#3" {
+		t.Errorf("posted[1] = %q, want %q", posted[1], "org/svc-c#3")
+	}
+}
+
+func TestPostCostCrossReference_SkipsWhenCrossRefExists(t *testing.T) {
+	var posted int
+	stub := &costCommentGitStub{
+		listFunc: func(owner, repo string, prNumber int) ([]models.IssueComment, error) {
+			return []models.IssueComment{
+				{ID: 1, Body: costCrossRefMarker + "\nAlready here"},
+			}, nil
+		},
+		postFunc: func(_, _ string, _ int, _ string) error {
+			posted++
+			return nil
+		},
+	}
+
+	p := &Pipeline{git: stub, logger: zap.NewNop()}
+	ref := costCrossRefFromRepoPRs([]repoPR{
+		{owner: "org", repo: "svc-a", url: "https://github.com/org/svc-a/pull/1", number: 1},
+		{owner: "org", repo: "svc-b", url: "https://github.com/org/svc-b/pull/2", number: 2},
+	})
+
+	p.postCostCrossReference(zap.NewNop(), ref)
+
+	if posted != 0 {
+		t.Errorf("expected 0 comments posted (already exists), got %d", posted)
+	}
+}
+
+func TestPostCostCrossReference_NopWhenNilRef(t *testing.T) {
+	var called int
+	stub := &costCommentGitStub{
+		listFunc: func(_, _ string, _ int) ([]models.IssueComment, error) {
+			called++
+			return nil, nil
+		},
+	}
+
+	p := &Pipeline{git: stub, logger: zap.NewNop()}
+	p.postCostCrossReference(zap.NewNop(), nil)
+
+	if called != 0 {
+		t.Error("ListIssueComments should not be called with nil ref")
+	}
+}
+
+func TestPostCostCrossReference_CommentContainsLink(t *testing.T) {
+	var body string
+	stub := &costCommentGitStub{
+		postFunc: func(_, _ string, _ int, b string) error {
+			body = b
+			return nil
+		},
+	}
+
+	p := &Pipeline{git: stub, logger: zap.NewNop()}
+	ref := costCrossRefFromRepoPRs([]repoPR{
+		{owner: "org", repo: "svc-a", url: "https://github.com/org/svc-a/pull/1", number: 1},
+		{owner: "org", repo: "svc-b", url: "https://github.com/org/svc-b/pull/2", number: 2},
+	})
+
+	p.postCostCrossReference(zap.NewNop(), ref)
+
+	if !strings.Contains(body, costCrossRefMarker) {
+		t.Error("cross-reference comment should contain cross-ref marker")
+	}
+	if strings.Contains(body, costCommentMarker) {
+		t.Error("cross-reference comment should not contain the primary cost marker")
+	}
+	if !strings.Contains(body, "[org/svc-a#1](https://github.com/org/svc-a/pull/1)") {
+		t.Errorf("cross-reference comment should link to primary PR, got: %s", body)
+	}
+}
+
+func TestCostCrossRefFromRepoPRs_SinglePR(t *testing.T) {
+	ref := costCrossRefFromRepoPRs([]repoPR{
+		{owner: "org", repo: "svc-a", number: 1},
+	})
+	if ref != nil {
+		t.Error("expected nil ref for single PR")
+	}
+}
+
+func TestCostCrossRefFromRepoInfos_SinglePR(t *testing.T) {
+	ref := costCrossRefFromRepoInfos([]repoPRInfo{
+		{repo: models.RepoSettings{Owner: "org", Repo: "svc-a"}, pr: &models.PRDetails{Number: 1}},
+	})
+	if ref != nil {
+		t.Error("expected nil ref for single repoInfo")
 	}
 }

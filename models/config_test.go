@@ -1971,3 +1971,112 @@ workspaces:
 		}
 	})
 }
+
+func TestLoadConfig_MaxTicketCostUSD(t *testing.T) {
+	tmpKeyPath := createTempKeyFile(t)
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+
+	baseConfig := `
+ai_provider: claude
+claude:
+  api_key: sk-test
+jira:
+  base_url: https://test.atlassian.net
+  username: test-user
+  api_token: test-token
+  projects:
+    - project_keys:
+        - "PROJ1"
+      status_transitions:
+        bug:
+          todo: "To Do"
+          in_progress: "In Progress"
+          in_review: "In Review"
+      workspaces:
+        default:
+          repos:
+            - name: repo
+              url: "https://github.com/test/repo"
+              profile: default
+      components:
+        "comp":
+          workspace: default
+      profiles:
+        default: {}
+github:
+  app_id: 123456
+  private_key_path: "` + tmpKeyPath + `"
+  bot_username: "test-bot"
+workspaces:
+  base_dir: /tmp/test-workspaces
+  ttl_days: 7
+`
+
+	t.Run("default value", func(t *testing.T) {
+		t.Setenv("JIRA_AI_GUARDRAILS_MAX_TICKET_COST_USD", "")
+		tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Remove(tmpfile.Name()) }()
+		if _, err := tmpfile.WriteString(baseConfig); err != nil {
+			t.Fatal(err)
+		}
+		_ = tmpfile.Close()
+
+		config, err := LoadConfig(tmpfile.Name())
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+		if config.Guardrails.MaxTicketCostUSD != 20.0 {
+			t.Errorf("MaxTicketCostUSD = %v, want 20.0 (default)", config.Guardrails.MaxTicketCostUSD)
+		}
+	})
+
+	t.Run("YAML override", func(t *testing.T) {
+		t.Setenv("JIRA_AI_GUARDRAILS_MAX_TICKET_COST_USD", "")
+		yamlConfig := baseConfig + `
+guardrails:
+  max_ticket_cost_usd: 50.0
+`
+		tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Remove(tmpfile.Name()) }()
+		if _, err := tmpfile.WriteString(yamlConfig); err != nil {
+			t.Fatal(err)
+		}
+		_ = tmpfile.Close()
+
+		config, err := LoadConfig(tmpfile.Name())
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+		if config.Guardrails.MaxTicketCostUSD != 50.0 {
+			t.Errorf("MaxTicketCostUSD = %v, want 50.0", config.Guardrails.MaxTicketCostUSD)
+		}
+	})
+
+	t.Run("environment variable override", func(t *testing.T) {
+		tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Remove(tmpfile.Name()) }()
+		if _, err := tmpfile.WriteString(baseConfig); err != nil {
+			t.Fatal(err)
+		}
+		_ = tmpfile.Close()
+
+		t.Setenv("JIRA_AI_GUARDRAILS_MAX_TICKET_COST_USD", "75.0")
+
+		config, err := LoadConfig(tmpfile.Name())
+		if err != nil {
+			t.Fatalf("Failed to load config: %v", err)
+		}
+		if config.Guardrails.MaxTicketCostUSD != 75.0 {
+			t.Errorf("MaxTicketCostUSD = %v, want 75.0 (from env)", config.Guardrails.MaxTicketCostUSD)
+		}
+	})
+}

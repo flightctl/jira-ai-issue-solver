@@ -133,6 +133,15 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		return result, err
 	}
 
+	// --- Step 2b: Check per-ticket cost cap ---
+	if p.ticketCostCapExceeded(logger, job.TicketKey, settings.MaxTicketCostUSD) {
+		logger.Info("Per-ticket cost cap exceeded, skipping",
+			zap.String("ticket", job.TicketKey),
+			zap.Float64("cap_usd", settings.MaxTicketCostUSD))
+		p.setFailureLabel(logger, job.TicketKey, settings.FailureLabels, settings.FailureLabels.Blocked)
+		return result, errTicketCostCapExceeded
+	}
+
 	// --- Clean retry: delete stale branches and workspace ---
 	if job.CleanRetry {
 		p.cleanRetryState(logger, job.TicketKey, settings)
@@ -258,6 +267,7 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		zap.Any("validation_passed", session.ValidationPassed),
 		zap.String("summary", session.Summary))
 	result.CostUSD = session.CostUSD
+	p.recordTicketCost(logger, wsPath, settings.MaxTicketCostUSD, result.CostUSD)
 
 	// --- Step 12a: Restore remote auth ---
 	// Must happen before SyncWithRemote which needs fetch access.
@@ -927,6 +937,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 		zap.Any("validation_passed", session.ValidationPassed),
 		zap.String("summary", session.Summary))
 	result.CostUSD = session.CostUSD
+	p.recordTicketCost(logger, wsPath, settings.MaxTicketCostUSD, result.CostUSD)
 
 	// --- Step 12a: Restore remote auth per repo ---
 	for _, repo := range settings.Repos {
@@ -977,6 +988,7 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	p.postOrUpdateCostComment(logger,
 		prs[0].owner, prs[0].repo,
 		prs[0].number, result.CostUSD, "New ticket", 0)
+	p.postCostCrossReference(logger, costCrossRefFromRepoPRs(prs))
 
 	result.PRURL = prs[0].url
 	result.PRNumber = prs[0].number
