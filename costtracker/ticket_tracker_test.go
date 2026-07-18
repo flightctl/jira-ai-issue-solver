@@ -216,3 +216,18 @@ func TestTicketCostTracker_LoadFromDisk_RejectsNaNTotal(t *testing.T) {
 		t.Errorf("Total() = %v, want 0 (Inf total from disk should be rejected)", got)
 	}
 }
+
+func TestTicketCostTracker_LoadFromDisk_RejectsNegativeTotal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ticket-cost.json")
+
+	if err := os.WriteFile(path, []byte(`{"total_usd": -100}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := costtracker.NewTicketCostTracker(path, 20, zap.NewNop())
+
+	if got := tracker.Total(); got != 0 {
+		t.Errorf("Total() = %v, want 0 (negative total from disk should be rejected)", got)
+	}
+}

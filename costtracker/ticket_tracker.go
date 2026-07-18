@@ -94,7 +94,7 @@ func (t *TicketCostTracker) loadFromDisk() {
 		return
 	}
 
-	if math.IsNaN(rec.TotalUSD) || math.IsInf(rec.TotalUSD, 0) {
+	if math.IsNaN(rec.TotalUSD) || math.IsInf(rec.TotalUSD, 0) || rec.TotalUSD < 0 {
 		t.logger.Warn("invalid total in ticket cost file, starting fresh",
 			zap.String("path", t.path),
 			zap.Float64("total_usd", rec.TotalUSD))
