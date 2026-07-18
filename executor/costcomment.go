@@ -10,6 +10,7 @@ import (
 )
 
 const costCommentMarker = "<!-- AI-BOT-COST -->"
+const costCrossRefMarker = "<!-- AI-BOT-COST-XREF -->"
 
 type costEntry struct {
 	Label string
@@ -219,17 +220,28 @@ func costCrossRefFromRepoInfos(infos []repoPRInfo) *costCrossRef {
 	}
 }
 
+// findCostCrossRef returns the existing cross-reference comment from
+// a list of issue comments, or nil if none exists.
+func findCostCrossRef(comments []models.IssueComment) *models.IssueComment {
+	for i := range comments {
+		if strings.Contains(comments[i].Body, costCrossRefMarker) {
+			return &comments[i]
+		}
+	}
+	return nil
+}
+
 // postCostCrossReference posts a comment on secondary PRs (PRs 2..N
 // in a multi-repo workspace) linking to the cost comment on the
-// primary PR. Uses the same marker so findCostComment detects it and
-// prevents duplicates on subsequent sessions.
+// primary PR. Uses a dedicated marker distinct from the cost table
+// marker so the two comment types are not confused.
 func (p *Pipeline) postCostCrossReference(logger *zap.Logger, ref *costCrossRef) {
 	if ref == nil {
 		return
 	}
 
 	body := fmt.Sprintf("%s\nAI session costs are tracked on [%s/%s#%d](%s).",
-		costCommentMarker, ref.primaryOwner, ref.primaryRepo,
+		costCrossRefMarker, ref.primaryOwner, ref.primaryRepo,
 		ref.primaryNumber, ref.primaryURL)
 
 	for _, pr := range ref.secondaryPRs {
@@ -239,7 +251,7 @@ func (p *Pipeline) postCostCrossReference(logger *zap.Logger, ref *costCrossRef)
 				zap.String("repo", pr.repo), zap.Error(err))
 			continue
 		}
-		if findCostComment(comments) != nil {
+		if findCostCrossRef(comments) != nil {
 			continue
 		}
 		if err := p.git.PostIssueComment(pr.owner, pr.repo, pr.number, body); err != nil {

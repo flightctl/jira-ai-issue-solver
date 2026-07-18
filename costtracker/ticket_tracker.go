@@ -2,6 +2,7 @@ package costtracker
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -41,9 +42,10 @@ func NewTicketCostTracker(path string, maxCap float64, logger *zap.Logger) *Tick
 }
 
 // Record adds the given amount to the cumulative total and persists
-// the updated total to disk. Non-positive amounts are ignored.
+// the updated total to disk. Non-positive, NaN, and infinite amounts
+// are ignored.
 func (t *TicketCostTracker) Record(amount float64) {
-	if amount <= 0 {
+	if amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
 		return
 	}
 
@@ -89,6 +91,13 @@ func (t *TicketCostTracker) loadFromDisk() {
 		t.logger.Warn("corrupt ticket cost file, starting fresh",
 			zap.String("path", t.path),
 			zap.Error(err))
+		return
+	}
+
+	if math.IsNaN(rec.TotalUSD) || math.IsInf(rec.TotalUSD, 0) {
+		t.logger.Warn("invalid total in ticket cost file, starting fresh",
+			zap.String("path", t.path),
+			zap.Float64("total_usd", rec.TotalUSD))
 		return
 	}
 

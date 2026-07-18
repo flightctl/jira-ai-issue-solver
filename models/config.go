@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -1307,6 +1308,10 @@ func (p *ProjectConfig) validate(index int) error {
 		}
 	}
 
+	if p.MaxTicketCostUSD != nil && (math.IsNaN(*p.MaxTicketCostUSD) || math.IsInf(*p.MaxTicketCostUSD, 0)) {
+		return fmt.Errorf("%s.max_ticket_cost_usd must be a finite number", prefix)
+	}
+
 	return nil
 }
 
@@ -1343,6 +1348,12 @@ func repoNameFromURL(rawURL string) string {
 
 // validate checks guardrails configuration values.
 func (g *GuardrailsConfig) validate() error {
+	if math.IsNaN(g.MaxDailyCostUSD) || math.IsInf(g.MaxDailyCostUSD, 0) {
+		return errors.New("guardrails.max_daily_cost_usd must be a finite number")
+	}
+	if math.IsNaN(g.MaxTicketCostUSD) || math.IsInf(g.MaxTicketCostUSD, 0) {
+		return errors.New("guardrails.max_ticket_cost_usd must be a finite number")
+	}
 	if g.MaxConcurrentJobs <= 0 {
 		return errors.New("guardrails.max_concurrent_jobs must be positive")
 	}

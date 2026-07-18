@@ -18,7 +18,10 @@ func TestCheckTicketCostCap_ExceededWhenOverLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := json.Marshal(map[string]float64{"total_usd": 25.0})
+	data, err := json.Marshal(map[string]float64{"total_usd": 25.0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(costDir, "ticket-cost.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +39,10 @@ func TestCheckTicketCostCap_NotExceededWhenUnderLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := json.Marshal(map[string]float64{"total_usd": 15.0})
+	data, err := json.Marshal(map[string]float64{"total_usd": 15.0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(costDir, "ticket-cost.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +69,10 @@ func TestCheckTicketCostCap_FalseWhenCapDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, _ := json.Marshal(map[string]float64{"total_usd": 100.0})
+	data, err := json.Marshal(map[string]float64{"total_usd": 100.0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(costDir, "ticket-cost.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +166,10 @@ func TestTicketCostCapExceeded_WorkspaceExists_CapExceeded(t *testing.T) {
 	if err := os.MkdirAll(costDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(map[string]float64{"total_usd": 25.0})
+	data, err := json.Marshal(map[string]float64{"total_usd": 25.0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(costDir, "ticket-cost.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +207,10 @@ func TestTicketCostCapExceeded_WorkspaceExists_UnderCap(t *testing.T) {
 	if err := os.MkdirAll(costDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(map[string]float64{"total_usd": 10.0})
+	data, err := json.Marshal(map[string]float64{"total_usd": 10.0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(costDir, "ticket-cost.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}

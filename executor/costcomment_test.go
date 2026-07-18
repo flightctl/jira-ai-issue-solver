@@ -427,12 +427,12 @@ func TestPostCostCrossReference_PostsOnSecondaryPRs(t *testing.T) {
 	}
 }
 
-func TestPostCostCrossReference_SkipsWhenCostCommentExists(t *testing.T) {
+func TestPostCostCrossReference_SkipsWhenCrossRefExists(t *testing.T) {
 	var posted int
 	stub := &costCommentGitStub{
 		listFunc: func(owner, repo string, prNumber int) ([]models.IssueComment, error) {
 			return []models.IssueComment{
-				{ID: 1, Body: costCommentMarker + "\nAlready here"},
+				{ID: 1, Body: costCrossRefMarker + "\nAlready here"},
 			}, nil
 		},
 		postFunc: func(_, _ string, _ int, _ string) error {
@@ -488,8 +488,11 @@ func TestPostCostCrossReference_CommentContainsLink(t *testing.T) {
 
 	p.postCostCrossReference(zap.NewNop(), ref)
 
-	if !strings.Contains(body, costCommentMarker) {
-		t.Error("cross-reference comment should contain cost marker")
+	if !strings.Contains(body, costCrossRefMarker) {
+		t.Error("cross-reference comment should contain cross-ref marker")
+	}
+	if strings.Contains(body, costCommentMarker) {
+		t.Error("cross-reference comment should not contain the primary cost marker")
 	}
 	if !strings.Contains(body, "[org/svc-a#1](https://github.com/org/svc-a/pull/1)") {
 		t.Errorf("cross-reference comment should link to primary PR, got: %s", body)

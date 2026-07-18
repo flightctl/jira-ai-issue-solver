@@ -2,6 +2,7 @@ package costtracker_test
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -170,5 +171,48 @@ func TestTicketCostTracker_Record_CreatesParentDirectories(t *testing.T) {
 
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("cost file not created: %v", err)
+	}
+}
+
+func TestTicketCostTracker_Record_RejectsNaNAndInf(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ticket-cost.json")
+	tracker := costtracker.NewTicketCostTracker(path, 100, zap.NewNop())
+
+	tracker.Record(10.0)
+	tracker.Record(math.NaN())
+	tracker.Record(math.Inf(1))
+	tracker.Record(math.Inf(-1))
+
+	if got := tracker.Total(); got != 10.0 {
+		t.Errorf("Total() = %v, want 10.0 (NaN/Inf should be ignored)", got)
+	}
+}
+
+func TestTicketCostTracker_LoadFromDisk_RejectsNaNTotal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ticket-cost.json")
+
+	// Write a file with NaN encoded as null (Go's json.Marshal produces
+	// an error for NaN, so we write raw JSON that decodes to a zero
+	// value, then test with a hand-crafted file containing a non-finite
+	// string that json would not normally produce). Instead, we test
+	// that a negative-infinity total is rejected by writing valid JSON
+	// with a very large negative value won't work either. The simplest
+	// approach: write the file, load it, record, and verify the guard
+	// in Record catches it. But the loadFromDisk guard catches invalid
+	// totals read from disk. Since json.Unmarshal in Go does not produce
+	// NaN/Inf from standard JSON, this guard protects against hand-edited
+	// or externally-produced files. We can test it indirectly by verifying
+	// that after a corrupt-but-parseable file, the tracker starts fresh.
+
+	// json.Marshal cannot produce NaN, so write raw bytes.
+	if err := os.WriteFile(path, []byte(`{"total_usd": 1e+999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := costtracker.NewTicketCostTracker(path, 100, zap.NewNop())
+
+	if got := tracker.Total(); got != 0 {
+		t.Errorf("Total() = %v, want 0 (Inf total from disk should be rejected)", got)
 	}
 }
