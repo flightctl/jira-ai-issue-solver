@@ -64,6 +64,19 @@ jira:
         validation_failed: "ai-validation-failed"  # AI explicitly reported validation failure
         nonzero_exit: "ai-nonzero-exit"            # AI container exited with non-zero code
 
+      # Triage label cleanup: when a ticket leaves new_status and is
+      # assigned to a human, active triage labels are replaced with stale.
+      triage_labels:
+        active:                                    # Labels applied by the triage bot
+          - "jira-triage-pending"
+          - "jira-triage-missing-info"
+          - "jira-triage-not-fixable"
+          - "jira-triage-external"
+          - "jira-triage-security-review"
+          - "jira-autofix"
+        stale: "jira-triage-stale"                 # Replacement label
+        new_status: "New"                          # Status meaning "still in triage"
+
       # Status transitions can be configured per ticket type
       # All ticket types must be explicitly configured
       # IMPORTANT: Status names are case-sensitive and must match Jira exactly
