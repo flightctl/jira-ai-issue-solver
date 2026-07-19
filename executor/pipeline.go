@@ -138,7 +138,8 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		logger.Info("Per-ticket cost cap exceeded, skipping",
 			zap.String("ticket", job.TicketKey),
 			zap.Float64("cap_usd", settings.MaxTicketCostUSD))
-		p.setFailureLabel(logger, job.TicketKey, settings.FailureLabels, settings.FailureLabels.Blocked)
+		allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
+		p.setPipelineLabel(logger, job.TicketKey, allLabels, settings.FailureLabels.Blocked)
 		return result, errTicketCostCapExceeded
 	}
 
@@ -358,12 +359,10 @@ func (p *Pipeline) executeNewTicket(ctx context.Context, job *jobmanager.Job) (r
 		settings.Repos[0].Owner, settings.Repos[0].Repo,
 		pr.Number, result.CostUSD, "New ticket", 0)
 
-	if !draft {
-		allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
-		p.setPipelineLabel(logger, job.TicketKey, allLabels, settings.LifecycleLabels.Review)
-		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
-			logger.Warn("Failed to transition to in-review", zap.Error(err))
-		}
+	allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
+	p.setPipelineLabel(logger, job.TicketKey, allLabels, settings.LifecycleLabels.Review)
+	if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
+		logger.Warn("Failed to transition to in-review", zap.Error(err))
 	}
 
 	return result, nil
@@ -999,12 +998,10 @@ func (p *Pipeline) executeMultiRepoNewTicket(
 	result.Draft = prs[0].draft
 	result.ValidationPassed = validationPassed(session, exitCode)
 
-	if !sessionDraft {
-		allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
-		p.setPipelineLabel(logger, job.TicketKey, allLabels, settings.LifecycleLabels.Review)
-		if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
-			logger.Warn("Failed to transition to in-review", zap.Error(err))
-		}
+	allLabels := models.AllPipelineLabels(settings.FailureLabels, settings.LifecycleLabels)
+	p.setPipelineLabel(logger, job.TicketKey, allLabels, settings.LifecycleLabels.Review)
+	if err := p.tracker.TransitionStatus(job.TicketKey, settings.InReviewStatus); err != nil {
+		logger.Warn("Failed to transition to in-review", zap.Error(err))
 	}
 
 	return result, nil

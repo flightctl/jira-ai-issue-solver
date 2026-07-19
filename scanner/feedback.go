@@ -277,7 +277,7 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 		allLabels = models.AllPipelineLabels(fl, ll)
 	}
 
-	s.updateFailureLabels(logger, item, repos, heads, obs, fl, allLabels)
+	s.updateFailureLabels(logger, item, repos, heads, obs, fl, ll, allLabels)
 	s.checkAndApplyMergedLabel(logger, item, repos, heads, ll, allLabels)
 
 	if !obs.actionable {
@@ -443,6 +443,7 @@ func (s *FeedbackScanner) updateFailureLabels(
 	heads []string,
 	obs repoObservation,
 	fl models.FailureLabels,
+	ll models.LifecycleLabels,
 	allLabels []string,
 ) {
 	if s.labels == nil || fl == (models.FailureLabels{}) {
@@ -452,16 +453,24 @@ func (s *FeedbackScanner) updateFailureLabels(
 	switch {
 	case !obs.hasOpenPR:
 		if s.detectRejection(logger, repos, heads) {
-			s.applyPipelineLabel(logger, item.Key, allLabels, fl.Rejected)
+			if fl.Rejected != "" {
+				s.applyPipelineLabel(logger, item.Key, allLabels, fl.Rejected)
+			}
 			return
 		}
 	case obs.ciIsFailing:
-		s.applyPipelineLabel(logger, item.Key, allLabels, fl.CIFailing)
+		if fl.CIFailing != "" {
+			s.applyPipelineLabel(logger, item.Key, allLabels, fl.CIFailing)
+		}
 		return
 	case obs.ciChecked && !obs.ciIsFailing:
 		if fl.CIFailing != "" {
-			if err := s.labels.RemoveLabel(item.Key, fl.CIFailing); err != nil {
-				logger.Debug("Failed to remove CI-failing label", zap.Error(err))
+			if ll.Review != "" {
+				s.applyPipelineLabel(logger, item.Key, allLabels, ll.Review)
+			} else {
+				if err := s.labels.RemoveLabel(item.Key, fl.CIFailing); err != nil {
+					logger.Debug("Failed to remove CI-failing label", zap.Error(err))
+				}
 			}
 		}
 	}

@@ -1142,6 +1142,92 @@ func TestFeedbackScanner_FailureLabels_CIPassing(t *testing.T) {
 	}
 }
 
+func TestFeedbackScanner_FailureLabels_CIFailing_EmptyLabel(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{{Name: "build"}}, true, nil
+		},
+	}
+	d.cfg.MaxCIFixAttempts = 0
+
+	var added, removed []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { added = append(added, label); return nil },
+		RemoveLabelFunc: func(_, label string) error { removed = append(removed, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{Blocked: "blocked"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 0 {
+		t.Errorf("added = %v, want empty (CIFailing not configured)", added)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want empty (CIFailing not configured)", removed)
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_CIRecovery_RestoresReview(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRCommentsFunc = func(_, _ string, _ int, _ time.Time) ([]models.PRComment, error) {
+		return []models.PRComment{}, nil
+	}
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, HeadSHA: "abc123"}, nil
+	}
+	d.ci = &scannertest.StubCIChecker{
+		ListCheckRunsForRefFunc: func(_, _, _ string) ([]models.CheckRunFailure, bool, error) {
+			return []models.CheckRunFailure{}, true, nil
+		},
+	}
+
+	var added, removed []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { added = append(added, label); return nil },
+		RemoveLabelFunc: func(_, label string) error { removed = append(removed, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail", Blocked: "blocked"}
+		},
+	}
+	d.lifecycleLabelResolver = &scannertest.StubLifecycleLabelResolver{
+		ResolveLifecycleLabelsFunc: func(_ models.WorkItem) models.LifecycleLabels {
+			return models.LifecycleLabels{Queued: "jira-autofix", Review: "jira-autofix-review"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 1 || added[0] != "jira-autofix-review" {
+		t.Errorf("added = %v, want [jira-autofix-review]", added)
+	}
+	removedSet := make(map[string]bool, len(removed))
+	for _, l := range removed {
+		removedSet[l] = true
+	}
+	if !removedSet["ci-fail"] {
+		t.Error("expected ci-fail to be removed during recovery")
+	}
+	if !removedSet["blocked"] {
+		t.Error("expected sibling failure label 'blocked' to be removed")
+	}
+	if !removedSet["jira-autofix"] {
+		t.Error("expected lifecycle label 'jira-autofix' to be removed (cross-group)")
+	}
+}
+
 func TestFeedbackScanner_FailureLabels_Rejected(t *testing.T) {
 	d := newFeedbackDeps()
 	// No open PR — simulate PR not found.
@@ -1167,6 +1253,36 @@ func TestFeedbackScanner_FailureLabels_Rejected(t *testing.T) {
 
 	if len(added) != 1 || added[0] != "rejected" {
 		t.Errorf("added = %v, want [rejected]", added)
+	}
+}
+
+func TestFeedbackScanner_FailureLabels_Rejected_EmptyLabel(t *testing.T) {
+	d := newFeedbackDeps()
+	d.prs.GetPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return nil, nil
+	}
+	d.prs.GetClosedPRForBranchFunc = func(_, _, _ string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, URL: "https://github.com/org/repo/pull/1"}, nil
+	}
+
+	var added, removed []string
+	d.labels = &scannertest.StubLabelManager{
+		AddLabelFunc:    func(_, label string) error { added = append(added, label); return nil },
+		RemoveLabelFunc: func(_, label string) error { removed = append(removed, label); return nil },
+	}
+	d.labelResolver = &scannertest.StubFailureLabelResolver{
+		ResolveFailureLabelsFunc: func(_ models.WorkItem) models.FailureLabels {
+			return models.FailureLabels{CIFailing: "ci-fail"}
+		},
+	}
+
+	runOneFeedbackScan(t, d.scanner(t))
+
+	if len(added) != 0 {
+		t.Errorf("added = %v, want empty (Rejected not configured)", added)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want empty (Rejected not configured)", removed)
 	}
 }
 
