@@ -507,13 +507,16 @@ func (s *FeedbackScanner) detectRejection(
 // applyPipelineLabel sets one pipeline label and removes all others
 // from both failure and lifecycle groups. This enforces mutual
 // exclusivity — a ticket should have exactly one pipeline label.
-// Skips labels that are empty (not configured).
+// No-op when target is empty (not configured).
 func (s *FeedbackScanner) applyPipelineLabel(
 	logger *zap.Logger,
 	ticketKey string,
 	allLabels []string,
 	target string,
 ) {
+	if target == "" {
+		return
+	}
 	for _, label := range allLabels {
 		if label != "" && label != target {
 			if err := s.labels.RemoveLabel(ticketKey, label); err != nil {

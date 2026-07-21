@@ -104,7 +104,7 @@ func TestSetPipelineLabel(t *testing.T) {
 		}
 	})
 
-	t.Run("empty target only removes all", func(t *testing.T) {
+	t.Run("empty target is a no-op", func(t *testing.T) {
 		var added, removed []string
 		d := newTestDeps(t)
 		d.tracker.AddLabelFunc = func(_, label string) error { added = append(added, label); return nil }
@@ -116,8 +116,8 @@ func TestSetPipelineLabel(t *testing.T) {
 		if len(added) != 0 {
 			t.Errorf("added = %v, want empty", added)
 		}
-		if len(removed) != 7 {
-			t.Errorf("removed = %v, want 7 entries", removed)
+		if len(removed) != 0 {
+			t.Errorf("removed = %v, want empty (empty target should no-op)", removed)
 		}
 	})
 

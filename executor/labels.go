@@ -12,8 +12,8 @@ import (
 // setPipelineLabel applies the given label to a ticket and removes all
 // other configured pipeline labels (both failure and lifecycle groups).
 // This enforces mutual exclusivity across both groups — a ticket should
-// have exactly one pipeline label at any time. If targetLabel is empty,
-// only clears the others. All operations are best-effort: errors are
+// have exactly one pipeline label at any time. No-op when targetLabel
+// is empty (not configured). All operations are best-effort: errors are
 // logged but never propagated.
 func (p *Pipeline) setPipelineLabel(
 	logger *zap.Logger,
@@ -21,6 +21,9 @@ func (p *Pipeline) setPipelineLabel(
 	allLabels []string,
 	targetLabel string,
 ) {
+	if targetLabel == "" {
+		return
+	}
 	for _, label := range allLabels {
 		if label != "" && label != targetLabel {
 			if err := p.tracker.RemoveLabel(ticketKey, label); err != nil {
