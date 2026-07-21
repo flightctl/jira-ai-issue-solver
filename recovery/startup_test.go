@@ -1058,8 +1058,12 @@ func TestRun_MultiRepo_PRURLFieldConfigured_UsesFieldNotComments(t *testing.T) {
 	}
 
 	// Second PR posted as overflow comment; first goes in custom field.
+	wantComment := "[AI-BOT-PR] https://github.com/org/svc-b/pull/1"
 	if len(comments) != 1 {
-		t.Errorf("comments = %d, want 1 (only overflow PR)", len(comments))
+		t.Fatalf("comments = %d, want 1 (only overflow PR)", len(comments))
+	}
+	if comments[0] != wantComment {
+		t.Errorf("comment[0] = %q, want %q", comments[0], wantComment)
 	}
 }
 

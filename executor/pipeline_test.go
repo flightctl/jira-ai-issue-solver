@@ -3410,12 +3410,16 @@ func TestMultiRepoNewTicket_PRURLFieldConfigured(t *testing.T) {
 	}
 
 	// Remaining 2 PRs posted as comments; first goes in custom field.
-	if len(comments) != 2 {
-		t.Errorf("comments = %d, want 2 (only overflow PRs)", len(comments))
+	wantComments := []string{
+		"[AI-BOT-PR] https://github.com/org/svc-b/pull/2",
+		"[AI-BOT-PR] https://github.com/org/svc-c/pull/3",
+	}
+	if len(comments) != len(wantComments) {
+		t.Fatalf("comments = %d, want %d", len(comments), len(wantComments))
 	}
 	for i, c := range comments {
-		if !strings.Contains(c, "[AI-BOT-PR]") {
-			t.Errorf("comment[%d] = %q, want [AI-BOT-PR] marker", i, c)
+		if c != wantComments[i] {
+			t.Errorf("comment[%d] = %q, want %q", i, c, wantComments[i])
 		}
 	}
 }
