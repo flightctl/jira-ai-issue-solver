@@ -3350,6 +3350,76 @@ func TestMultiRepoNewTicket_HappyPath(t *testing.T) {
 	}
 }
 
+func TestMultiRepoNewTicket_PRURLFieldConfigured(t *testing.T) {
+	d := newMultiRepoTestDeps(t)
+
+	d.projects.ResolveProjectFunc = func(workItem models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", CloneURL: "https://github.com/org/svc-a.git", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", CloneURL: "https://github.com/org/svc-b.git", BaseBranch: "main"},
+				{Name: "svc-c", Owner: "org", Repo: "svc-c", CloneURL: "https://github.com/org/svc-c.git", BaseBranch: "main"},
+			},
+			Container:        models.ContainerSettings{Image: "fat-container:latest"},
+			InProgressStatus: "In Progress",
+			InReviewStatus:   "In Review",
+			TodoStatus:       "To Do",
+			PRURLFieldName:   "Git Pull Request",
+			PRValidationLabels: models.PRValidationLabels{
+				ValidationFailed: "ai-validation-failed",
+				NonzeroExit:      "ai-nonzero-exit",
+			},
+		}, nil
+	}
+
+	var prCount int
+	d.git.CreatePRFunc = func(params models.PRParams) (*models.PR, error) {
+		prCount++
+		return &models.PR{
+			Number: prCount,
+			URL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", params.Owner, params.Repo, prCount),
+		}, nil
+	}
+
+	var fieldName, fieldValue string
+	d.tracker.SetFieldValueFunc = func(key, field, value string) error {
+		fieldName = field
+		fieldValue = value
+		return nil
+	}
+
+	var comments []string
+	d.tracker.AddCommentFunc = func(key, body string) error {
+		comments = append(comments, body)
+		return nil
+	}
+
+	p := d.pipeline(t)
+	_, err := p.Execute(context.Background(), newTicketJob("PROJ-1"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fieldName != "Git Pull Request" {
+		t.Errorf("field name = %q, want %q", fieldName, "Git Pull Request")
+	}
+	wantURL := "https://github.com/org/svc-a/pull/1"
+	if fieldValue != wantURL {
+		t.Errorf("field value = %q, want %q", fieldValue, wantURL)
+	}
+
+	// Remaining 2 PRs posted as comments; first goes in custom field.
+	if len(comments) != 2 {
+		t.Errorf("comments = %d, want 2 (only overflow PRs)", len(comments))
+	}
+	for i, c := range comments {
+		if !strings.Contains(c, "[AI-BOT-PR]") {
+			t.Errorf("comment[%d] = %q, want [AI-BOT-PR] marker", i, c)
+		}
+	}
+}
+
 func TestMultiRepoNewTicket_PartialChanges(t *testing.T) {
 	d := newMultiRepoTestDeps(t)
 

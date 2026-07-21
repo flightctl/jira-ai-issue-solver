@@ -668,15 +668,17 @@ func (p *Pipeline) setPRURL(logger *zap.Logger, ticketKey string, settings *mode
 }
 
 func (p *Pipeline) setMultiRepoPRURLs(logger *zap.Logger, ticketKey string, settings *models.ProjectSettings, prs []repoPR) {
-	for _, pr := range prs {
-		comment := fmt.Sprintf("[AI-BOT-PR] %s", pr.url)
-		if err := p.tracker.AddComment(ticketKey, comment); err != nil {
-			logger.Warn("Failed to add PR URL comment", zap.Error(err))
-		}
-	}
+	commentPRs := prs
 	if settings.PRURLFieldName != "" {
 		if err := p.tracker.SetFieldValue(ticketKey, settings.PRURLFieldName, prs[0].url); err != nil {
 			logger.Warn("Failed to set PR URL field", zap.Error(err))
+		}
+		commentPRs = prs[1:]
+	}
+	for _, pr := range commentPRs {
+		comment := fmt.Sprintf("[AI-BOT-PR] %s", pr.url)
+		if err := p.tracker.AddComment(ticketKey, comment); err != nil {
+			logger.Warn("Failed to add PR URL comment", zap.Error(err))
 		}
 	}
 }
