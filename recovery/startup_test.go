@@ -1009,6 +1009,64 @@ func TestRun_MultiRepo_CommitsNoPR_CreatesPR(t *testing.T) {
 	}
 }
 
+func TestRun_MultiRepo_PRURLFieldConfigured_UsesFieldNotComments(t *testing.T) {
+	d := newDeps()
+	d.tracker.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
+		return []models.WorkItem{{Key: "PROJ-1", Type: "Bug", Components: []string{}, Labels: []string{}}}, nil
+	}
+	d.projects.ResolveProjectFunc = func(_ models.WorkItem) (*models.ProjectSettings, error) {
+		return &models.ProjectSettings{
+			Repos: []models.RepoSettings{
+				{Name: "svc-a", Owner: "org", Repo: "svc-a", BaseBranch: "main"},
+				{Name: "svc-b", Owner: "org", Repo: "svc-b", BaseBranch: "main"},
+			},
+			InReviewStatus: "In Review",
+			TodoStatus:     "To Do",
+			PRURLFieldName: "Git Pull Request",
+		}, nil
+	}
+
+	d.git.GetPRForBranchFunc = func(owner, repo, head string) (*models.PRDetails, error) {
+		return &models.PRDetails{Number: 1, URL: "https://github.com/org/" + repo + "/pull/1"}, nil
+	}
+	d.git.BranchHasCommitsFunc = func(_, _, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	var fieldName, fieldValue string
+	d.tracker.SetFieldValueFunc = func(key, field, value string) error {
+		fieldName = field
+		fieldValue = value
+		return nil
+	}
+
+	var comments []string
+	d.tracker.AddCommentFunc = func(key, body string) error {
+		comments = append(comments, body)
+		return nil
+	}
+
+	r := d.runner(t)
+	_ = r.Run(context.Background())
+
+	if fieldName != "Git Pull Request" {
+		t.Errorf("field name = %q, want %q", fieldName, "Git Pull Request")
+	}
+	wantURL := "https://github.com/org/svc-a/pull/1"
+	if fieldValue != wantURL {
+		t.Errorf("field value = %q, want %q", fieldValue, wantURL)
+	}
+
+	// Second PR posted as overflow comment; first goes in custom field.
+	wantComment := "[AI-BOT-PR] https://github.com/org/svc-b/pull/1"
+	if len(comments) != 1 {
+		t.Fatalf("comments = %d, want 1 (only overflow PR)", len(comments))
+	}
+	if comments[0] != wantComment {
+		t.Errorf("comment[0] = %q, want %q", comments[0], wantComment)
+	}
+}
+
 func TestRun_MultiRepo_NoPRsNoCommits_Reverts(t *testing.T) {
 	d := newDeps()
 	d.tracker.SearchWorkItemsFunc = func(_ models.SearchCriteria) ([]models.WorkItem, error) {
