@@ -364,6 +364,11 @@ type ProjectConfig struct {
 	// "ai-validation-failed" and "ai-nonzero-exit".
 	PRValidationLabels PRValidationLabels `yaml:"pr_validation_labels" mapstructure:"pr_validation_labels"`
 
+	// TriageLabels configures triage label cleanup. When a ticket
+	// leaves NewStatus and is assigned to a human, active triage
+	// labels are replaced with the stale label.
+	TriageLabels TriageLabels `yaml:"triage_labels" mapstructure:"triage_labels"`
+
 	// MaxTicketCostUSD overrides the global
 	// guardrails.max_ticket_cost_usd for this project. Nil means use
 	// the global default; an explicit negative value disables per-ticket
@@ -442,6 +447,21 @@ type PRValidationLabels struct {
 // strings (disabled labels) are included; callers should skip them.
 func (vl PRValidationLabels) All() []string {
 	return []string{vl.ValidationFailed, vl.NonzeroExit}
+}
+
+// TriageLabels configures triage label cleanup for tickets that leave
+// the triage phase. Active lists the labels applied by the triage bot
+// during assessment. When a ticket leaves NewStatus and is assigned to
+// a human, active labels are replaced with Stale.
+type TriageLabels struct {
+	// Active lists triage labels to clean up (e.g., "jira-triage-missing-info").
+	Active []string `yaml:"active" mapstructure:"active"`
+
+	// Stale is the replacement label (e.g., "jira-triage-stale").
+	Stale string `yaml:"stale" mapstructure:"stale"`
+
+	// NewStatus is the ticket status meaning "still in triage" (e.g., "New").
+	NewStatus string `yaml:"new_status" mapstructure:"new_status"`
 }
 
 // ImportConfig declares an auxiliary repository to clone into the workspace.
@@ -1310,6 +1330,15 @@ func (p *ProjectConfig) validate(index int) error {
 
 	if p.MaxTicketCostUSD != nil && (math.IsNaN(*p.MaxTicketCostUSD) || math.IsInf(*p.MaxTicketCostUSD, 0)) {
 		return fmt.Errorf("%s.max_ticket_cost_usd must be a finite number", prefix)
+	}
+
+	if len(p.TriageLabels.Active) > 0 {
+		if p.TriageLabels.NewStatus == "" {
+			return fmt.Errorf("%s.triage_labels.new_status is required when active labels are configured", prefix)
+		}
+		if p.TriageLabels.Stale == "" {
+			return fmt.Errorf("%s.triage_labels.stale is required when active labels are configured", prefix)
+		}
 	}
 
 	return nil

@@ -218,6 +218,17 @@ func (r *ConfigResolver) ResolveLifecycleLabels(item models.WorkItem) models.Lif
 	return pc.LifecycleLabels
 }
 
+// ResolveTriageLabels returns the triage label configuration for the
+// given work item's project. Returns a zero-value TriageLabels (no
+// cleanup configured) if the project cannot be resolved.
+func (r *ConfigResolver) ResolveTriageLabels(item models.WorkItem) models.TriageLabels {
+	pc, err := r.findProjectConfig(item)
+	if err != nil {
+		return models.TriageLabels{}
+	}
+	return pc.TriageLabels
+}
+
 // ResolveMergedStatus returns the merged status transition for the
 // given work item's project and ticket type. Returns an empty string
 // if no merged status is configured or the project cannot be resolved.
