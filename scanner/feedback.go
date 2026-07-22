@@ -263,8 +263,22 @@ func (s *FeedbackScanner) checkAndSubmit(item models.WorkItem) bool {
 	heads := s.repos.ForkOwnerHeads(item, branchName)
 
 	obs := s.observeRepos(logger, repos, heads)
-	s.updateFailureLabels(logger, item, repos, heads, obs)
-	s.checkAndApplyMergedLabel(logger, item, repos, heads)
+
+	var allLabels []string
+	var fl models.FailureLabels
+	var ll models.LifecycleLabels
+	if s.labels != nil {
+		if s.labelResolver != nil {
+			fl = s.labelResolver.ResolveFailureLabels(item)
+		}
+		if s.lifecycleLabelResolver != nil {
+			ll = s.lifecycleLabelResolver.ResolveLifecycleLabels(item)
+		}
+		allLabels = models.AllPipelineLabels(fl, ll)
+	}
+
+	s.updateFailureLabels(logger, item, repos, heads, obs, fl, ll, allLabels)
+	s.checkAndApplyMergedLabel(logger, item, repos, heads, ll, allLabels)
 
 	if !obs.actionable {
 		return false
@@ -428,28 +442,35 @@ func (s *FeedbackScanner) updateFailureLabels(
 	repos []models.RepoCoord,
 	heads []string,
 	obs repoObservation,
+	fl models.FailureLabels,
+	ll models.LifecycleLabels,
+	allLabels []string,
 ) {
-	if s.labels == nil || s.labelResolver == nil {
-		return
-	}
-	fl := s.labelResolver.ResolveFailureLabels(item)
-	if fl == (models.FailureLabels{}) {
+	if s.labels == nil || fl == (models.FailureLabels{}) {
 		return
 	}
 
 	switch {
 	case !obs.hasOpenPR:
 		if s.detectRejection(logger, repos, heads) {
-			s.applyFailureLabel(logger, item.Key, fl, fl.Rejected)
+			if fl.Rejected != "" {
+				s.applyPipelineLabel(logger, item.Key, allLabels, fl.Rejected)
+			}
 			return
 		}
 	case obs.ciIsFailing:
-		s.applyFailureLabel(logger, item.Key, fl, fl.CIFailing)
+		if fl.CIFailing != "" {
+			s.applyPipelineLabel(logger, item.Key, allLabels, fl.CIFailing)
+		}
 		return
 	case obs.ciChecked && !obs.ciIsFailing:
 		if fl.CIFailing != "" {
-			if err := s.labels.RemoveLabel(item.Key, fl.CIFailing); err != nil {
-				logger.Debug("Failed to remove CI-failing label", zap.Error(err))
+			if ll.Review != "" {
+				s.applyPipelineLabel(logger, item.Key, allLabels, ll.Review)
+			} else {
+				if err := s.labels.RemoveLabel(item.Key, fl.CIFailing); err != nil {
+					logger.Debug("Failed to remove CI-failing label", zap.Error(err))
+				}
 			}
 		}
 	}
@@ -483,25 +504,30 @@ func (s *FeedbackScanner) detectRejection(
 	return false
 }
 
-// applyFailureLabel sets one failure label and removes the others.
-// Skips labels that are empty (not configured).
-func (s *FeedbackScanner) applyFailureLabel(
+// applyPipelineLabel sets one pipeline label and removes all others
+// from both failure and lifecycle groups. This enforces mutual
+// exclusivity — a ticket should have exactly one pipeline label.
+// No-op when target is empty (not configured).
+func (s *FeedbackScanner) applyPipelineLabel(
 	logger *zap.Logger,
 	ticketKey string,
-	fl models.FailureLabels,
+	allLabels []string,
 	target string,
 ) {
-	for _, label := range fl.All() {
+	if target == "" {
+		return
+	}
+	for _, label := range allLabels {
 		if label != "" && label != target {
 			if err := s.labels.RemoveLabel(ticketKey, label); err != nil {
-				logger.Debug("Failed to remove failure label",
+				logger.Debug("Failed to remove pipeline label",
 					zap.String("label", label), zap.Error(err))
 			}
 		}
 	}
 	if target != "" {
 		if err := s.labels.AddLabel(ticketKey, target); err != nil {
-			logger.Warn("Failed to add failure label",
+			logger.Warn("Failed to add pipeline label",
 				zap.String("label", target), zap.Error(err))
 		}
 	}
@@ -518,12 +544,10 @@ func (s *FeedbackScanner) checkAndApplyMergedLabel(
 	item models.WorkItem,
 	repos []models.RepoCoord,
 	heads []string,
+	ll models.LifecycleLabels,
+	allLabels []string,
 ) {
-	if s.labels == nil || s.lifecycleLabelResolver == nil {
-		return
-	}
-	ll := s.lifecycleLabelResolver.ResolveLifecycleLabels(item)
-	if ll == (models.LifecycleLabels{}) {
+	if s.labels == nil || ll == (models.LifecycleLabels{}) {
 		return
 	}
 
@@ -531,7 +555,7 @@ func (s *FeedbackScanner) checkAndApplyMergedLabel(
 		return
 	}
 
-	s.applyLifecycleLabel(logger, item.Key, ll, ll.Merged)
+	s.applyPipelineLabel(logger, item.Key, allLabels, ll.Merged)
 
 	if s.mergedStatusResolver == nil || s.statusTransitioner == nil {
 		return
@@ -637,30 +661,6 @@ func (s *FeedbackScanner) detectRepoPRState(
 		}
 	}
 	return prStateNone
-}
-
-// applyLifecycleLabel sets one lifecycle label and removes the others.
-// Skips labels that are empty (not configured).
-func (s *FeedbackScanner) applyLifecycleLabel(
-	logger *zap.Logger,
-	ticketKey string,
-	ll models.LifecycleLabels,
-	target string,
-) {
-	for _, label := range ll.All() {
-		if label != "" && label != target {
-			if err := s.labels.RemoveLabel(ticketKey, label); err != nil {
-				logger.Debug("Failed to remove lifecycle label",
-					zap.String("label", label), zap.Error(err))
-			}
-		}
-	}
-	if target != "" {
-		if err := s.labels.AddLabel(ticketKey, target); err != nil {
-			logger.Warn("Failed to add lifecycle label",
-				zap.String("label", target), zap.Error(err))
-		}
-	}
 }
 
 // checkCI queries CI status for a PR and returns the full state:
